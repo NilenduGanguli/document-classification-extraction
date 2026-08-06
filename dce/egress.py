@@ -1,20 +1,34 @@
-"""The invariant, made executable.
+"""The invariant, made executable — and it has **two** directions.
 
-Other business units hand this service documents that have **not** been classified. Sending
-their bytes, their text, or an *embedding of* their text to any external service before we
-know what the document is, is the exact failure this service exists to prevent. A comment in
-a design document does not prevent that; a guard that raises does.
+**Before classification: nothing leaves.** Other business units hand this service documents
+that have **not** been classified. Sending their bytes, their text, or an *embedding of*
+their text to any external service before we know what the document is, is the exact failure
+this service exists to prevent. A comment in a design document does not prevent that; a guard
+that raises does.
 
-Three pieces:
+**After a doctype is accepted: egress is allowed, on purpose.** That is the entire point of
+the tiering. Once the cascade has said "this is a US W-9", calling an Azure prebuilt
+specialist (T2/T3) or a constrained LLM (T4) is a considered decision about a *known* document
+type, made by a deployment that switched that tier on. What must never happen is a tier
+reaching the network on behalf of a document the cascade **abstained** on: ``unknown`` routes
+to a human, never to a model.
+
+Five pieces:
 
 * :func:`classification_scope` — marks the current task/thread as *pre-classification*. The
   cascade wraps its whole run in it. It is a :class:`contextvars.ContextVar`, so it follows
   ``asyncio`` tasks (which copy the context) and does not leak between threads (which each
   start from their own context).
+* :func:`post_classification_scope` — the other direction. Entered with the accepted
+  ``doctype_id``, it *permits* egress and refuses to open at all for ``unknown``/empty. Every
+  remote tier opens one before it touches a client, so "we only call out about documents we
+  have identified" is enforced at the one place that can enforce it rather than re-checked in
+  each tier.
 * :func:`assert_no_egress` — called by any code that is about to leave the process. Inside a
   classification scope it raises :class:`EgressViolation` unless an operator has deliberately
   set ``allow_preclassification_egress``. Outside a classification scope it is a no-op:
   post-classification egress (fetching a layout payload from DES, calling a model) is normal.
+* :func:`no_egress` — the decorator form, for whole functions.
 * :func:`socket_tripwire` — an audit/test utility that makes *any* socket creation raise, so
   a test can prove the classification path opened zero connections rather than asserting a
   code path was not taken.
@@ -33,6 +47,7 @@ from contextlib import contextmanager
 from typing import Any, TypeVar
 
 from dce.config import Settings, get_settings
+from dce.models import UNKNOWN
 
 __all__ = [
     "EgressViolation",
@@ -40,6 +55,8 @@ __all__ = [
     "classification_scope",
     "in_classification_scope",
     "no_egress",
+    "post_classification_doctype",
+    "post_classification_scope",
     "socket_tripwire",
 ]
 
@@ -57,7 +74,28 @@ _IN_CLASSIFICATION: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "dce_in_classification", default=False
 )
 
+#: The accepted doctype the current task/thread is permitted to talk to the outside world
+#: about, or ``None``. Set only by :func:`post_classification_scope`.
+_POST_CLASSIFICATION: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "dce_post_classification_doctype", default=None
+)
+
 _F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _record_block(component: str) -> None:
+    """Count a refused egress attempt, if metrics are available.
+
+    Imported lazily and swallowed defensively: this runs only on the path that is about to
+    raise :class:`EgressViolation`, and a metrics problem must never replace the exception a
+    caller needs to see.
+    """
+    try:
+        from dce import observability
+
+        observability.observe_egress_block(component)
+    except Exception:  # noqa: BLE001 - the guard's job is to raise, not to report
+        return
 
 
 @contextmanager
@@ -82,6 +120,72 @@ def in_classification_scope() -> bool:
     return _IN_CLASSIFICATION.get()
 
 
+@contextmanager
+def post_classification_scope(doctype_id: str) -> Iterator[str]:
+    """Permit egress for a document whose type is **known**, and refuse otherwise.
+
+    This is the second half of the invariant and the gate every remote tier (T2 Azure
+    specialists, T3 query fields, T4 the constrained LLM) opens before it constructs a client.
+    Two things make it worth being a context manager rather than an ``if``:
+
+    * the refusal happens **once, here**, so a new tier cannot forget it — asking for a scope
+      is the only way to get one, and asking with ``unknown`` raises;
+    * it is a :class:`contextvars.ContextVar` like :func:`classification_scope`, so it follows
+      ``asyncio`` tasks (an async tier that fans out over ``asyncio.gather`` keeps the scope in
+      every child task) and does not leak into threads.
+
+    Entering while a classification is still running is itself a violation: a tier called from
+    *inside* the cascade is pre-classification egress no matter what doctype id it was handed,
+    and silently clearing the flag would turn this helper into the bypass the service exists to
+    prevent.
+
+    Args:
+        doctype_id: The doctype the cascade **accepted**. ``unknown``, empty or whitespace is
+            an abstention, and an abstention routes to a human, never to a model.
+
+    Yields:
+        The normalised doctype id, so a caller can use it in a prompt or a request path
+        without re-deriving it.
+
+    Raises:
+        EgressViolation: When ``doctype_id`` is empty or ``unknown``, or when the caller is
+            still inside :func:`classification_scope`.
+    """
+    resolved = (doctype_id or "").strip()
+    if not resolved or resolved.casefold() == UNKNOWN:
+        _record_block("post_classification_scope")
+        raise EgressViolation(
+            f"post_classification_scope({doctype_id!r}) refused: the cascade abstained, so "
+            "this document has no accepted type. An abstention routes to the human review "
+            "queue — it must never be forwarded to Azure, to an LLM, or to any other remote "
+            "tier, because 'ask a model what this is' is pre-classification egress wearing a "
+            "different hat."
+        )
+    if _IN_CLASSIFICATION.get():
+        _record_block("post_classification_scope")
+        raise EgressViolation(
+            f"post_classification_scope({resolved!r}) was opened inside classification_scope. "
+            "A remote tier is being called from within the cascade, which is pre-classification "
+            "egress whatever doctype id it was handed. Run the tier after classify() returns."
+        )
+    scope_token = _IN_CLASSIFICATION.set(False)
+    doctype_token = _POST_CLASSIFICATION.set(resolved)
+    try:
+        yield resolved
+    finally:
+        _POST_CLASSIFICATION.reset(doctype_token)
+        _IN_CLASSIFICATION.reset(scope_token)
+
+
+def post_classification_doctype() -> str | None:
+    """Return the doctype the caller is inside a :func:`post_classification_scope` for.
+
+    ``None`` outside such a scope. Tiers use it for audit strings and to assert they were not
+    invoked bare — the scope is the authority on which document a remote call is about.
+    """
+    return _POST_CLASSIFICATION.get()
+
+
 def assert_no_egress(stage: str, *, settings: Settings | None = None) -> None:
     """Assert that leaving the process is permitted right now.
 
@@ -102,6 +206,7 @@ def assert_no_egress(stage: str, *, settings: Settings | None = None) -> None:
     resolved = settings if settings is not None else get_settings()
     if resolved.allow_preclassification_egress:
         return
+    _record_block(stage)
     raise EgressViolation(
         f"{stage!r} attempted network egress during classification. The document type is not "
         "known yet, so its content must not leave this process. Classification is anchors, "

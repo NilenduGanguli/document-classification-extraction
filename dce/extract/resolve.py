@@ -9,6 +9,19 @@ particular hit, and the factor is what the validator made of the value. A checks
 passes is worth more than any amount of layout luck, and a validator that rejects the value
 drops the candidate to the rejected pool.
 
+Tightness rides in on the middle term: a locator that had to cut a span short of the next
+label, or narrow it to the field's shape, discounts its own confidence (see
+:mod:`dce.extract.locators.trim`). What that buys is the ordering that matters —
+**a candidate the validator accepted beats one it did not, however clean the span was, and
+between two the validator accepted the tighter span wins.** The multiplication does both;
+the tie-break below makes the second half deterministic when the scores land equal.
+
+**Verification comes from the validator, never from the locator.** The one exception is a
+locator that carries its own proof — an MRZ whose ICAO check digits cover every field it
+yields — which sets ``Candidate.verified`` and says so. A pattern the locator matched is not
+a validation: it is how the locator found the value in the first place, and reporting it as
+``format_valid`` would tell a reviewer that something checked the value when nothing did.
+
 **Early stop.** The moment a checksum-verified candidate appears, resolution of that field
 stops. Nothing beats a value that carries its own proof, and continuing would only spend
 time discovering that.
@@ -49,6 +62,13 @@ _MULTI_LIMIT = 10
 VERIFICATION_UNVERIFIED = "unverified"
 VERIFICATION_FORMAT_VALID = "format_valid"
 VERIFICATION_CHECKSUM_VERIFIED = "checksum_verified"
+
+#: Used only to break a tie between candidates whose fused scores are equal.
+_VERIFICATION_RANK = {
+    VERIFICATION_UNVERIFIED: 0,
+    VERIFICATION_FORMAT_VALID: 1,
+    VERIFICATION_CHECKSUM_VERIFIED: 2,
+}
 
 
 class ScoredCandidate:
@@ -108,10 +128,10 @@ def resolve_field(
     if not accepted:
         # Everything was rejected. Surface the best rejected value so a reviewer can see
         # what was on the page and why it was not trusted, rather than a blank field.
-        best = max(scored, key=lambda s: s.score)
+        best = min(scored, key=_rank)
         return [_to_field(field, best, rejected=True)]
 
-    accepted.sort(key=lambda s: -s.score)
+    accepted.sort(key=_rank)
     if not field.multi:
         return [_to_field(field, accepted[0])]
 
@@ -126,6 +146,22 @@ def resolve_field(
         if len(out) >= _MULTI_LIMIT:
             break
     return out
+
+
+def _rank(item: ScoredCandidate) -> tuple[float, int, bool, str]:
+    """Sort key, best first.
+
+    The fused score decides; everything after it exists so that two candidates which scored
+    the same are still ordered by something meaningful rather than by dict iteration. A
+    value the validator *verified* comes first, then one it accepted without a note, and the
+    locator name only ever breaks a total tie so the result is reproducible.
+    """
+    return (
+        -item.score,
+        -_VERIFICATION_RANK.get(item.verification, 0),
+        bool(item.error),
+        item.candidate.locator,
+    )
 
 
 def _collect(field: FieldSpec, view: LayoutView, ctx: LocatorContext) -> list[ScoredCandidate]:
@@ -157,9 +193,11 @@ def _score(
 ) -> ScoredCandidate:
     """Validate a candidate and fuse the locator prior, its confidence and the outcome."""
     if not field.validator:
-        # No validator: the field's pattern (already enforced by the locator) is all the
-        # structure we have — unless the locator proved the value itself, which is what a
-        # verified MRZ does for every field it yields, names included.
+        # No validator: nothing checked this value, so nothing may claim it was checked.
+        # The field's pattern does not count — the locator matched it to *find* the value,
+        # which makes it a search key rather than a verification. The one thing that does
+        # count is a locator carrying its own proof: a verified MRZ's check digits cover
+        # every field it yields, names included.
         if candidate.verified:
             return ScoredCandidate(
                 candidate,
@@ -169,11 +207,10 @@ def _score(
                 "",
                 True,
             )
-        verification = (
-            VERIFICATION_FORMAT_VALID if field.pattern else VERIFICATION_UNVERIFIED
-        )
         score = prior * candidate.confidence * _FACTOR_NO_VALIDATOR
-        return ScoredCandidate(candidate, score, candidate.value, verification, "", True)
+        return ScoredCandidate(
+            candidate, score, candidate.value, VERIFICATION_UNVERIFIED, "", True
+        )
 
     result = V.validate(field.validator, candidate.value, ctx.validation_context)
     level = V.verification_level(field.validator)
@@ -237,6 +274,31 @@ def _to_field(
     )
 
 
+def _as_spec(schema: DocSchema) -> DocTypeSpec | None:
+    """Wrap the active schema so the locators can see the fields *other than* the one
+    being resolved.
+
+    Knowing where a value ends means knowing every caption printed on the document, and the
+    only place that list exists is the schema. A caller that already holds the
+    :class:`~dce.models.DocTypeSpec` passes it; a caller that registered a schema on its own
+    would otherwise leave every locator guessing, and the value bound to
+    ``Signature of U.S. person`` would run on through ``Date:`` and take the next field's
+    value with it.
+
+    Carries no ``id_patterns`` deliberately: those say which identifiers make the *doctype*
+    recognisable, a schema does not have them, and inventing some here would change what the
+    regex locator is allowed to borrow.
+    """
+    if not schema.fields:
+        return None
+    return DocTypeSpec(
+        doctype_id=schema.doctype_id,
+        label=schema.doctype_id,
+        country="XX",
+        fields=list(schema.fields),
+    )
+
+
 def _empty(field: FieldSpec) -> ExtractedField:
     """A field nothing was found for — reported, not omitted."""
     return ExtractedField(
@@ -284,7 +346,7 @@ def resolve(
     conf = settings or get_settings()
     if ctx is None:
         ctx = LocatorContext.for_view(
-            view, spec=spec, settings=conf, doctype_id=schema.doctype_id
+            view, spec=spec or _as_spec(schema), settings=conf, doctype_id=schema.doctype_id
         )
 
     fields: list[ExtractedField] = []

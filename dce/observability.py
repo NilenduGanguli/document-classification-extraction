@@ -20,6 +20,18 @@ being able to say "I don't know", which is the one thing this service must alway
 say. Pair it with ``dce_classification_confidence`` (are accepts clustering just above the
 threshold?) and ``dce_classifications_by_doctype_total`` (did one class swallow the traffic?).
 
+**The second number to watch is spend.** Extraction tiers 2-4 leave the process and bill per
+page, so their calls are counted separately from their invocations
+(``dce_extraction_tier_cost_calls_total{tier,provider}`` vs
+``dce_extraction_tier_invocations_total{tier,outcome}``) and separately again from what they
+actually produced (``dce_extraction_tier_fields_filled_total{tier}``). Cost per field, per
+tier, is the ratio that decides whether a paid tier stays switched on:
+
+.. code-block:: promql
+
+   sum by (tier) (rate(dce_extraction_tier_cost_calls_total[1d]))
+     / sum by (tier) (rate(dce_extraction_tier_fields_filled_total[1d]))
+
 Cardinality: every label here is bounded by the registry — doctype ids, field names, tier names
 and validator names are all authored, never taken from document content.
 """
@@ -139,6 +151,18 @@ _TIER_BUCKETS = (
 #: (0.65), so "how many accepts land just over the line" is answerable from the histogram.
 _UNIT_BUCKETS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.65, 0.7, 0.8, 0.9, 0.95, 1.0)
 _HTTP_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, float("inf"))
+#: Extraction tiers 2-4 leave the process: a remote analyse call is seconds, sometimes tens of
+#: seconds, never microseconds. Sharing the millisecond buckets with the local tiers would put
+#: every paid call in the overflow bucket and make "is Azure slow today" unanswerable.
+_PAID_TIER_BUCKETS = (
+    0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, float("inf"),
+)
+#: Time a document waits for a human, in seconds: minutes to a week. This is an SLA curve, not
+#: a latency curve — the interesting question is what share of the queue is older than a day.
+_REVIEW_BUCKETS = (
+    60.0, 300.0, 900.0, 3600.0, 4 * 3600.0, 8 * 3600.0, 24 * 3600.0,
+    2 * 24 * 3600.0, 7 * 24 * 3600.0, float("inf"),
+)
 
 _DISABLED_CONTENT_TYPE = "text/plain; charset=utf-8"
 _DISABLED_PAYLOAD = b"# metrics disabled: prometheus_client is not installed\n"
@@ -162,6 +186,13 @@ class _Metrics:
     review_depth: Any
     egress_blocked: Any
     http_seconds: Any
+    tier_runs: Any
+    tier_fields: Any
+    extract_tier_seconds: Any
+    tier_cost_calls: Any
+    review_enqueued: Any
+    review_decisions: Any
+    review_decision_seconds: Any
 
 
 def _find_collector(name: str) -> Any | None:
@@ -284,6 +315,52 @@ def _build_metrics() -> _Metrics | None:
                 "HTTP request latency by route and status class.",
                 labelnames=("method", "route", "status"),
                 buckets=_HTTP_BUCKETS,
+            ),
+            tier_runs=_get_or_create(
+                _prom.Counter,
+                "dce_extraction_tier_invocations_total",
+                "Extraction tier invocations by tier and outcome "
+                "(ran|error|unavailable|misconfigured).",
+                labelnames=("tier", "outcome"),
+            ),
+            tier_fields=_get_or_create(
+                _prom.Counter,
+                "dce_extraction_tier_fields_filled_total",
+                "Fields filled by each extraction tier — what the tier actually bought you.",
+                labelnames=("tier",),
+            ),
+            extract_tier_seconds=_get_or_create(
+                _prom.Histogram,
+                "dce_extraction_tier_seconds",
+                "Latency of one extraction tier, by tier.",
+                labelnames=("tier",),
+                buckets=_PAID_TIER_BUCKETS,
+            ),
+            tier_cost_calls=_get_or_create(
+                _prom.Counter,
+                "dce_extraction_tier_cost_calls_total",
+                "Calls to a tier that BILLS: T2/T3 (Azure) and T4 (LLM). Kept separate from "
+                "the invocation counter so spend is legible without a PromQL filter.",
+                labelnames=("tier", "provider"),
+            ),
+            review_enqueued=_get_or_create(
+                _prom.Counter,
+                "dce_review_enqueued_total",
+                "Documents placed on the human review queue, by reason.",
+                labelnames=("reason",),
+            ),
+            review_decisions=_get_or_create(
+                _prom.Counter,
+                "dce_review_decisions_total",
+                "Human decisions taken on the review queue (approve|reject|correct).",
+                labelnames=("decision",),
+            ),
+            review_decision_seconds=_get_or_create(
+                _prom.Histogram,
+                "dce_review_time_to_decision_seconds",
+                "Time from enqueue to human decision, by decision.",
+                labelnames=("decision",),
+                buckets=_REVIEW_BUCKETS,
             ),
         )
     except Exception:
@@ -411,6 +488,76 @@ def observe_validator_failure(doctype: str, field: str, validator: str) -> None:
     metrics.validator_failures.labels(doctype=doctype, field=field, validator=validator).inc()
 
 
+def observe_extraction_tier(
+    tier: str,
+    *,
+    seconds: float,
+    fields_filled: int = 0,
+    outcome: str = "ran",
+    cost_bearing: bool = False,
+    provider: str = "local",
+) -> None:
+    """Record one extraction tier's contribution to a single document.
+
+    The two questions an operator has about the tiered extractor are *what did this document
+    cost* and *was it worth it*, and neither is answerable from a single counter. So the spend
+    signal (:data:`dce_extraction_tier_cost_calls_total`) is separate from the invocation
+    signal, and the yield signal (:data:`dce_extraction_tier_fields_filled_total`) is separate
+    from both. Divide the third by the first and you have cost per field, per tier, which is
+    the number that decides whether a tier stays switched on.
+
+    A tier that raised still counts as a cost-bearing call when it is one: the remote call was
+    made and will appear on the bill whether or not we could parse the answer.
+
+    Args:
+        tier: Tier id — ``t1_local`` | ``t2_azure_prebuilt`` | ``t3_azure_query`` | ``t4_llm``.
+        seconds: Wall-clock duration of the tier.
+        fields_filled: Fields this tier filled that were still missing when it ran.
+        outcome: ``ran`` | ``error`` | ``unavailable`` | ``misconfigured`` | ``skipped``.
+        cost_bearing: Whether a billable call was made.
+        provider: Who bills for it (``azure`` | ``llm`` | ``local``).
+    """
+    metrics = _METRICS
+    if metrics is None:
+        return
+    metrics.tier_runs.labels(tier=str(tier), outcome=str(outcome)).inc()
+    metrics.extract_tier_seconds.labels(tier=str(tier)).observe(max(0.0, seconds))
+    if fields_filled:
+        metrics.tier_fields.labels(tier=str(tier)).inc(fields_filled)
+    if cost_bearing:
+        metrics.tier_cost_calls.labels(tier=str(tier), provider=str(provider)).inc()
+
+
+def observe_review_enqueued(reason: str) -> None:
+    """Count one document placed on the human review queue.
+
+    Args:
+        reason: Why it was queued — ``abstained`` | ``missing_required`` | ``low_confidence``.
+    """
+    metrics = _METRICS
+    if metrics is None:
+        return
+    metrics.review_enqueued.labels(reason=str(reason)).inc()
+
+
+def observe_review_decision(decision: str, seconds: float | None = None) -> None:
+    """Count one human decision, and how long the document waited for it.
+
+    Time-to-decision is the queue's real SLA: depth alone cannot distinguish a queue of 40
+    documents that are each ten minutes old from a queue of 40 that have been there a week.
+
+    Args:
+        decision: ``approve`` | ``reject`` | ``correct``.
+        seconds: Seconds between enqueue and this decision, when it can be determined.
+    """
+    metrics = _METRICS
+    if metrics is None:
+        return
+    metrics.review_decisions.labels(decision=str(decision)).inc()
+    if seconds is not None and seconds >= 0:
+        metrics.review_decision_seconds.labels(decision=str(decision)).observe(seconds)
+
+
 def set_needs_review_depth(depth: int) -> None:
     """Set the human-review queue depth gauge.
 
@@ -421,6 +568,12 @@ def set_needs_review_depth(depth: int) -> None:
     if metrics is None:
         return
     metrics.review_depth.set(max(0, depth))
+
+
+#: The queue is now run in-process (``dce.review``) rather than only reported about, so the
+#: gauge has a name that says what it measures. The old name stays: it is what the existing
+#: alerting calls.
+set_review_queue_depth = set_needs_review_depth
 
 
 def observe_egress_block(component: str) -> None:

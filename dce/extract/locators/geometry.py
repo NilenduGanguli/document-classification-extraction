@@ -20,8 +20,10 @@ __all__ = [
     "Rect",
     "below_gap",
     "h_overlap",
+    "h_overlap_ratio",
     "is_below",
     "is_right_of",
+    "is_same_line",
     "page_size",
     "quad_from_rect",
     "reading_order",
@@ -29,6 +31,7 @@ __all__ = [
     "right_gap",
     "union",
     "v_overlap",
+    "v_overlap_ratio",
 ]
 
 T = TypeVar("T")
@@ -96,6 +99,25 @@ def v_overlap(a: Rect, b: Rect) -> float:
     return max(0.0, min(a.y1, b.y1) - max(a.y0, b.y0))
 
 
+def h_overlap_ratio(a: Rect, b: Rect) -> float:
+    """Horizontal overlap as a fraction of the **narrower** box, clamped to 0..1.
+
+    Measuring against the narrower box is what makes the test symmetric, and symmetry is
+    what the callers actually want: a narrow label ("DOB") above a wide value and a wide
+    label ("Signature of U.S. person") above a narrow value are the same relationship, and
+    a ratio taken against whichever box happens to be the label reports one of them as an
+    overlap of 1.0 and the other as 0.1.
+    """
+    narrower = min(a.width, b.width) or 1e-9
+    return min(1.0, h_overlap(a, b) / narrower)
+
+
+def v_overlap_ratio(a: Rect, b: Rect) -> float:
+    """Vertical overlap as a fraction of the **shorter** box, clamped to 0..1."""
+    shorter = min(a.height, b.height) or 1e-9
+    return min(1.0, v_overlap(a, b) / shorter)
+
+
 def right_gap(label: Rect, candidate: Rect) -> float:
     """Horizontal distance from the label's right edge to the candidate's left edge."""
     return candidate.x0 - label.x1
@@ -104,6 +126,17 @@ def right_gap(label: Rect, candidate: Rect) -> float:
 def below_gap(label: Rect, candidate: Rect) -> float:
     """Vertical distance from the label's bottom edge to the candidate's top edge."""
     return candidate.y0 - label.y1
+
+
+def is_same_line(a: Rect, b: Rect, *, min_overlap: float = 0.3) -> bool:
+    """``True`` when two boxes share a printed line.
+
+    Decided by **bbox overlap on the perpendicular (vertical) axis**, never by comparing
+    baselines or centres: OCR reports a tall block and a short one on the same row with
+    different centres all the time, and a centre-distance test then splits a row that a
+    human reads as one.
+    """
+    return v_overlap_ratio(a, b) >= min_overlap
 
 
 def is_right_of(
@@ -118,8 +151,7 @@ def is_right_of(
     gap = right_gap(label, candidate)
     if gap < -0.25 * label.width or gap > max_dx:
         return False
-    shorter = min(label.height, candidate.height) or 1e-9
-    return v_overlap(label, candidate) / shorter >= min_v_overlap
+    return is_same_line(label, candidate, min_overlap=min_v_overlap)
 
 
 def is_below(
@@ -127,14 +159,14 @@ def is_below(
 ) -> bool:
     """``True`` when ``candidate`` sits under the label, inside the window, and aligned.
 
-    ``min_h_overlap`` is a fraction of the *label's* width, so a narrow label ("DOB") still
-    binds the wide value printed beneath it, while a value in the next column does not.
+    ``min_h_overlap`` is a fraction of the *narrower* box's width, so a narrow label ("DOB")
+    still binds the wide value printed beneath it **and** a wide label still binds the narrow
+    value tucked under one end of it, while a value in the next column does not.
     """
     gap = below_gap(label, candidate)
     if gap < -0.25 * label.height or gap > max_dy:
         return False
-    width = label.width or 1e-9
-    return h_overlap(label, candidate) / width >= min_h_overlap
+    return h_overlap_ratio(label, candidate) >= min_h_overlap
 
 
 def page_size(view: LayoutView, page: int) -> tuple[float, float]:

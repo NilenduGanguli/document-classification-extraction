@@ -7,9 +7,18 @@ field's labels, which is a fuzzy string match per language and nothing more.
 
 That is why ``kv`` carries the second-highest prior after the MRZ: the geometry was done by
 something with more signal than we have.
+
+It does **not** carry a guarantee that the value stops where it should. A provider that
+draws its value box across a whole form line reports
+``key="Signature of U.S. person", value="J. Smith  Date: 2026-03-14"`` — the next key,
+swallowed whole. Every value therefore goes through
+:mod:`dce.extract.locators.trim`, with the *other* detected keys on the page added to the
+known captions: the provider having called something a key on this page is the strongest
+possible evidence that it is one.
 """
 from __future__ import annotations
 
+from dce.extract.locators import trim
 from dce.extract.locators.base import (
     Candidate,
     LocatorContext,
@@ -17,7 +26,6 @@ from dce.extract.locators.base import (
     field_labels,
     match_label,
     passes_pattern,
-    refine_to_pattern,
 )
 from dce.models import FieldSpec, LayoutView
 
@@ -42,6 +50,10 @@ def locate(field: FieldSpec, view: LayoutView, ctx: LocatorContext) -> list[Cand
     if not labels or not view.key_values:
         return []
 
+    # Every key the provider detected is a caption on this page — including this pair's own,
+    # which trimming discards for us because it is the label the span was anchored on.
+    captions = trim.known_labels(field, ctx, extra=[p.key for p in view.key_values])
+
     out: list[Candidate] = []
     for pair in view.key_values:
         matched, score = match_label(pair.key, labels, ctx.min_label_score)
@@ -57,16 +69,18 @@ def locate(field: FieldSpec, view: LayoutView, ctx: LocatorContext) -> list[Cand
             # The provider's own belief in the pairing is real evidence; respect it.
             confidence *= max(0.5, min(1.0, float(pair.confidence)))
 
-        if not passes_pattern(field, value):
+        trimmed = trim.trim_span(field, value, labels=captions, matched=pair.key)
+        if not trimmed.value:
             continue
-        narrowed = refine_to_pattern(field, value)
-        if narrowed != value:
-            confidence *= 0.95
-            detail += "; narrowed to pattern"
+        if not passes_pattern(field, trimmed.value):
+            continue
+        confidence *= trimmed.penalty
+        if trimmed.note:
+            detail += f"; {trimmed.note}"
 
         out.append(
             Candidate(
-                value=narrowed,
+                value=trimmed.value,
                 locator="kv",
                 confidence=round(min(confidence, 0.97), 4),
                 page=pair.page,

@@ -4,6 +4,22 @@
 # default, and baking it in would make every deployment pay for a feature most never enable —
 # so it is mounted read-only at /models instead (see docker-compose.yml).
 #
+# Neither is an HTTP client. That is the strongest form the invariant takes: the default image
+# cannot make a network call about a document, because the capability is not installed, and
+# that is checkable on the shipped artifact rather than in the source tree:
+#
+#   docker run --rm --entrypoint python dce:latest -c \
+#     "import importlib.util as u; print({m: bool(u.find_spec(m)) for m in ('httpx','requests','aiohttp','openai','azure','boto3')})"
+#
+# The post-classification tiers (T2 Azure prebuilt, T3 queryFields, T4 LLM) import httpx
+# INSIDE the call that needs it, so a build without one degrades to "tier unavailable" in the
+# /process response instead of failing at import. To use them, install it deliberately:
+#
+#   docker build --build-arg EXTRA_PACKAGES="httpx>=0.27" .
+#
+# and understand what you traded: from that build on, the guarantee rests on dce/egress.py,
+# the abstain rule and the socket tripwire test rather than on the absence of the capability.
+#
 # What IS in the image is the whole classification path, because that is the point: an
 # unclassified document is classified by this container, on this CPU, with no network.
 
@@ -18,13 +34,18 @@ ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
 
+#: Extra runtime packages, empty by default. This is where an HTTP client goes when a
+#: deployment enables T2/T3/T4 — as a deliberate build argument, not as a base dependency
+#: everybody carries.
+ARG EXTRA_PACKAGES=""
+
 WORKDIR /src
 # pyproject declares the readme, so it has to be present for the build to resolve metadata.
 COPY pyproject.toml README.md ./
 COPY dce ./dce
 
 RUN uv venv /opt/venv \
-    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache .
+    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache . ${EXTRA_PACKAGES}
 
 # ---------------------------------------------------------------------------
 # Runtime
@@ -35,12 +56,20 @@ LABEL org.opencontainers.image.title="document-classification-extraction" \
       org.opencontainers.image.description="In-process document classification and field extraction" \
       org.opencontainers.image.source="https://github.com/NilenduGanguli/document-classification-extraction"
 
+# The posture, baked in so `docker inspect` answers "what can this container do?" without a
+# trip to the config. Every tier that can leave the process is off; an operator turns one on
+# deliberately, per deployment, and /readyz then reports it.
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8200 \
     BERT_ENABLED=false \
-    ALLOW_PRECLASSIFICATION_EGRESS=false
+    ALLOW_PRECLASSIFICATION_EGRESS=false \
+    T2_ENABLED=false \
+    T3_ENABLED=false \
+    T4_ENABLED=false \
+    REVIEW_QUEUE_BACKEND=memory \
+    REVIEW_QUEUE_PATH=/app/data/review_queue.json
 
 RUN groupadd --gid 10001 dce \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin dce \

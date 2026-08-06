@@ -14,18 +14,33 @@ Three bindings, in descending order of how certain they are:
 Nearest wins within each binding, and the whole thing is gated on the field's pattern: an
 ``address`` field whose label happens to sit left of a date must not bind that date. That
 rejection is the entire reason ``FieldSpec.pattern`` exists.
+
+**Where the span ends is as important as where it begins.** A form line carries several
+fields — ``Signature of U.S. person: J. Smith  Date: 2026-03-14`` — so taking everything to
+the right of a matched label swallows the next field's label *and its value*. Every span
+this locator captures therefore goes through :mod:`dce.extract.locators.trim`, which
+terminates it at the next known caption and narrows it to the field's own shape. A span that
+needed either is reported with a lower confidence than one that did not, so a clean binding
+elsewhere on the page wins on tightness alone.
+
+That line is also why a block is matched against **every** label the field declares rather
+than only its best-scoring one: ``signature_date`` declares both captions on it, and only
+one of them is followed by the date.
 """
 from __future__ import annotations
 
+import re
+
 from dce.extract.locators import geometry as geo
+from dce.extract.locators import trim
 from dce.extract.locators.base import (
     Candidate,
     LocatorContext,
     clean_value,
     field_labels,
+    label_similarity,
     match_label,
     passes_pattern,
-    refine_to_pattern,
     split_on_label,
 )
 from dce.models import FieldSpec, LayoutView, TextBlock, Zone
@@ -40,8 +55,8 @@ _CONF_BELOW = 0.70
 _DISTANCE_PENALTY = 0.35
 #: Field types whose value legitimately runs over several printed lines.
 _MULTILINE_TYPES = frozenset({"address"})
-#: A block that is itself a label should never be taken as a value.
-_LABEL_TAIL = (":", "\uff1a")
+#: A bracketed clarifier printed as part of a caption, not as part of the value.
+_CLARIFIER_RE = re.compile(r"^[\s:.\-\u2013\u2014]*[(\[][^)\]]*[)\]]")
 
 
 def locate(field: FieldSpec, view: LayoutView, ctx: LocatorContext) -> list[Candidate]:
@@ -59,6 +74,7 @@ def locate(field: FieldSpec, view: LayoutView, ctx: LocatorContext) -> list[Cand
     if not labels or not view.blocks:
         return []
 
+    captions = trim.known_labels(field, ctx)
     blocks = list(view.blocks)
     rects = [geo.rect_from_quad(b.bbox) for b in blocks]
     out: list[Candidate] = []
@@ -66,21 +82,19 @@ def locate(field: FieldSpec, view: LayoutView, ctx: LocatorContext) -> list[Cand
     for index, block in enumerate(blocks):
         if not block.text.strip():
             continue
-        matched, score = match_label(block.text, labels, ctx.min_label_score)
-        if not matched:
+        matches = _matching_labels(block.text, labels, ctx.min_label_score)
+        if not matches:
             continue
+
+        same_line = _same_line_candidates(
+            field, block, matches, captions, ctx.min_label_score
+        )
+        if same_line:
+            out.extend(same_line)
+            continue
+
+        matched, score = matches[0]
         weight = score / 100.0
-
-        tail = split_on_label(block.text, matched)
-        if tail:
-            out.append(
-                _make(
-                    field, tail, block, block, _CONF_SAME_LINE * weight,
-                    f"label {matched!r} same line ({score:.0f})",
-                )
-            )
-            continue
-
         label_rect = rects[index]
         if label_rect is None:
             continue
@@ -89,7 +103,7 @@ def locate(field: FieldSpec, view: LayoutView, ctx: LocatorContext) -> list[Cand
         max_dy = ctx.settings.label_window_y * height
 
         right = _nearest(
-            blocks, rects, index, block.page, label_rect, labels, ctx,
+            blocks, rects, index, block.page, label_rect, labels, captions, ctx,
             horizontal=True, limit=max_dx,
         )
         if right is not None:
@@ -100,30 +114,94 @@ def locate(field: FieldSpec, view: LayoutView, ctx: LocatorContext) -> list[Cand
                     field, clean_value(candidate_block.text), block, candidate_block,
                     _CONF_RIGHT * weight * decay,
                     f"label {matched!r} -> right, gap {gap:.1f} ({score:.0f})",
+                    captions=captions, matched=matched,
+                    min_label_score=ctx.min_label_score,
                 )
             )
 
         below = _nearest(
-            blocks, rects, index, block.page, label_rect, labels, ctx,
+            blocks, rects, index, block.page, label_rect, labels, captions, ctx,
             horizontal=False, limit=max_dy,
         )
         if below is not None:
             candidate_block, gap = below
             decay = 1.0 - _DISTANCE_PENALTY * min(1.0, gap / max_dy if max_dy else 0.0)
             text, last_block = _extend_multiline(
-                field, blocks, rects, candidate_block, labels, ctx, max_dy
+                field, blocks, rects, candidate_block, labels, captions, ctx, max_dy
             )
             out.append(
                 _make(
                     field, text, block, candidate_block, _CONF_BELOW * weight * decay,
                     f"label {matched!r} -> below, gap {gap:.1f} ({score:.0f})",
-                    span_to=last_block,
+                    span_to=last_block, captions=captions, matched=matched,
+                    min_label_score=ctx.min_label_score,
                 )
             )
 
     accepted = [c for c in out if c is not None]
     accepted.sort(key=lambda c: -c.confidence)
     return accepted
+
+
+def _matching_labels(
+    text: str, labels: list[tuple[str, float]], min_score: float
+) -> list[tuple[str, float]]:
+    """Every declared label this block clears the fuzzy floor for, best-scoring first.
+
+    :func:`~dce.extract.locators.base.match_label` returns only the winner, which is the
+    right answer when asking "is this block my label?" and the wrong one when asking "where
+    does my value start?": a single printed line can carry two of a field's own captions,
+    and the higher-scoring one is not necessarily the one the value follows.
+    """
+    scored = [
+        (label, label_similarity(label, text) * weight) for label, weight in labels
+    ]
+    clearing = [(label, score) for label, score in scored if score >= min_score]
+    clearing.sort(key=lambda pair: -pair[1])
+    return clearing
+
+
+def _same_line_candidates(
+    field: FieldSpec,
+    block: TextBlock,
+    matches: list[tuple[str, float]],
+    captions: tuple[str, ...],
+    min_label_score: float,
+) -> list[Candidate]:
+    """Candidates for every one of the field's captions that this line carries."""
+    out: list[Candidate] = []
+    seen: set[str] = set()
+    for matched, score in matches:
+        tail = _strip_clarifier(split_on_label(block.text, matched))
+        if not tail:
+            continue
+        candidate = _make(
+            field, tail, block, block, _CONF_SAME_LINE * (score / 100.0),
+            f"label {matched!r} same line ({score:.0f})",
+            captions=captions, matched=matched, min_label_score=min_label_score,
+        )
+        if candidate is None or candidate.value in seen:
+            continue
+        seen.add(candidate.value)
+        out.append(candidate)
+    return out
+
+
+def _strip_clarifier(tail: str) -> str:
+    """Drop the parenthetical a caption trails behind it.
+
+    ``1 Name (as shown on your income tax return)`` is one caption, not a caption and a
+    value: splitting on ``Name`` leaves the clarifier, and reporting it fills ``full_name``
+    with the form's own instructions. Stripping it leaves nothing, which correctly sends the
+    lookup on to the geometry bindings and finds the name printed below.
+
+    It also does the useful half of the same job for ``Date (MM-DD-YYYY): 2026-03-14``.
+    """
+    previous = None
+    while tail != previous:
+        previous = tail
+        tail = clean_value(_CLARIFIER_RE.sub("", tail, count=1))
+    return tail
 
 
 def _make(
@@ -135,17 +213,26 @@ def _make(
     detail: str,
     *,
     span_to: TextBlock | None = None,
+    captions: tuple[str, ...] = (),
+    matched: str = "",
+    min_label_score: float = 0.0,
 ) -> Candidate | None:
-    """Build a candidate, or ``None`` when the value cannot satisfy the field's pattern."""
-    value = clean_value(value)
-    if not value or _looks_like_a_label(value):
+    """Build a candidate, or ``None`` when what is left is not a value at all.
+
+    The last guard is the one that catches a bilingual card: ``Name / नाम`` splits on
+    ``Name`` and leaves the *other half of its own caption*, which would be reported as the
+    holder's name. Whatever survives trimming still has to not be a caption.
+    """
+    trimmed = trim.trim_span(field, value, labels=captions, matched=matched)
+    if not trimmed.value:
         return None
-    if not passes_pattern(field, value):
+    if trim.reads_as_caption(trimmed.value, captions, min_label_score):
         return None
-    narrowed = refine_to_pattern(field, value)
-    if narrowed != value:
-        confidence *= 0.95
-        detail += "; narrowed to pattern"
+    if not passes_pattern(field, trimmed.value):
+        return None
+    confidence *= trimmed.penalty
+    if trimmed.note:
+        detail += f"; {trimmed.note}"
 
     bbox = value_block.bbox
     if span_to is not None and span_to is not value_block:
@@ -156,7 +243,7 @@ def _make(
         if merged is not None:
             bbox = geo.quad_from_rect(merged)
     return Candidate(
-        value=narrowed,
+        value=trimmed.value,
         locator="label",
         confidence=round(min(confidence, 0.95), 4),
         page=value_block.page,
@@ -167,11 +254,6 @@ def _make(
     )
 
 
-def _looks_like_a_label(text: str) -> bool:
-    """``True`` for a block that is plainly another field's caption, not a value."""
-    return text.endswith(_LABEL_TAIL)
-
-
 def _nearest(
     blocks: list[TextBlock],
     rects: list[geo.Rect | None],
@@ -179,6 +261,7 @@ def _nearest(
     page: int,
     label_rect: geo.Rect,
     labels: list[tuple[str, float]],
+    captions: tuple[str, ...],
     ctx: LocatorContext,
     *,
     horizontal: bool,
@@ -200,8 +283,11 @@ def _nearest(
             if not geo.is_below(label_rect, rect, max_dy=limit):
                 continue
             gap = max(0.0, geo.below_gap(label_rect, rect))
-        # A block that restates the label (bilingual caption) is furniture, not a value.
+        # A block that restates the label (bilingual caption) is furniture, not a value —
+        # and so is a block that states some *other* field's label.
         if match_label(block.text, labels, ctx.min_label_score)[0]:
+            continue
+        if trim.reads_as_caption(block.text, captions, ctx.min_label_score):
             continue
         if best is None or gap < best[1]:
             best = (block, gap)
@@ -214,14 +300,16 @@ def _extend_multiline(
     rects: list[geo.Rect | None],
     start: TextBlock,
     labels: list[tuple[str, float]],
+    captions: tuple[str, ...],
     ctx: LocatorContext,
     max_dy: float,
 ) -> tuple[str, TextBlock]:
     """Absorb the continuation lines of a multi-line value (addresses, mostly).
 
     Only runs for field types that genuinely wrap. Stops at the first block that reads like
-    a caption, restates the label, sits too far below, or drifts out of the column — the
-    conditions under which the next printed line belongs to a different field.
+    a caption — its own label, any other field's label, or anything ending in a colon — or
+    that sits too far below or drifts out of the column: the conditions under which the next
+    printed line belongs to a different field.
     """
     if field.type not in _MULTILINE_TYPES and not field.multi:
         return start.text, start
@@ -243,7 +331,7 @@ def _extend_multiline(
             continue
         if geo.h_overlap(current_rect, rect) / (current_rect.width or 1e-9) < 0.35:
             continue
-        if _looks_like_a_label(block.text.strip()):
+        if trim.reads_as_caption(block.text, captions, ctx.min_label_score):
             break
         if match_label(block.text, labels, ctx.min_label_score)[0]:
             break

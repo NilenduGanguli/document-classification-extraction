@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/
+data/
+*.egg-info/
+.DS_Store
+# The BERT checkpoint is mounted at runtime, never committed (~1.3 GB)
+models/*
+!models/.gitkeep

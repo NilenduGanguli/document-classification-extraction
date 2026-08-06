@@ -1,0 +1,69 @@
+services:
+  dce:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: document-classification-extraction:0.1.0
+    container_name: dce
+    ports:
+      - "8200:8200"
+    environment:
+      # Empty disables the X-API-Key gate — fine behind a service mesh that already
+      # authenticates, not fine on anything reachable from a desk.
+      API_KEY: "${API_KEY:-}"
+
+      # THE INVARIANT. Leave this false. Turning it on lets unclassified document content
+      # reach the network, which is the exact failure this service exists to prevent; it also
+      # makes /readyz return 503, so the change is visible rather than quiet.
+      ALLOW_PRECLASSIFICATION_EGRESS: "false"
+
+      # Thresholds. Raising them raises the abstention rate (more human review, fewer silent
+      # mistakes); lowering them does the opposite. Watch dce_classifications_total before
+      # touching either.
+      CLASSIFY_ACCEPT_PROBABILITY: "0.65"
+      CLASSIFY_MIN_MARGIN: "0.25"
+      CLASSIFY_MIN_COVERAGE: "0.20"
+
+      # ---- Optional local BERT tier (L3) -------------------------------------------------
+      # Off by default. Enable it only if anchors + lexical prove insufficient on your corpus
+      # — see README, "The optional local BERT tier". Uncomment BOTH this and the /models
+      # volume below, and build the image with the `bert` extra installed.
+      BERT_ENABLED: "false"
+      # BERT_MODEL_DIR: "/models/bert_uncased_L-12_H-768_A-12"
+      # BERT_DEVICE: "cpu"
+
+    volumes:
+      # The checkpoint is ~1.3 GB and optional, so it is mounted read-only rather than baked
+      # into the image. Put it in ./models on the host and uncomment.
+      # - ./models:/models:ro
+      - dce-data:/app/data
+
+    # Hardening. The service holds other people's unclassified documents in memory; there is
+    # no reason for it to be able to write to its own filesystem or gain privileges.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8200/health', timeout=2).status == 200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+    restart: unless-stopped
+
+    # Classification is CPU-bound and single-pass; it wants cores, not memory. The ceiling is
+    # generous enough for the optional BERT tier — halve it if you leave the tier off.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+
+volumes:
+  dce-data:

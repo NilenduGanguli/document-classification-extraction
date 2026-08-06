@@ -1,0 +1,39 @@
+# Keep the build context small and the image free of anything that is not the service.
+.git
+.gitignore
+.github
+.venv
+venv
+env
+
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+tests
+docs
+*.md
+# pyproject declares the readme, so the build needs this one back.
+# (.dockerignore has no trailing-comment syntax — a comment here would become part of the
+# pattern and silently stop the re-include from matching.)
+!README.md
+
+# The BERT checkpoint is mounted at runtime, never copied into the image (~1.3 GB).
+models
+data
+
+.env
+.env.*
+*.pem
+*.key
+service-account.json
+
+.DS_Store
+.idea
+.vscode

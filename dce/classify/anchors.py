@@ -76,6 +76,14 @@ _ZONE_ORDER: tuple[Zone, ...] = (Zone.title, Zone.heading, Zone.table, Zone.body
 #: Raw-score contributions. A verified check digit is worth more than any single anchor; a
 #: merely well-shaped identifier is worth about one good anchor; a pattern hit that nothing
 #: accepted is worth almost nothing, because "nine digits appeared" is not evidence.
+#:
+#: These are the weights of a **corroborated** identifier — one the document either labels or
+#: backs with an anchor of the same doctype. An uncorroborated one, however clean its check
+#: digit, is scored at ``_CHECKSUM_UNVERIFIED_WEIGHT`` with the bare pattern hits. The raw
+#: score is read as evidence in bits (the squash is ``1 - 2^-raw``), and the bits an
+#: unlabelled Luhn-valid nine-digit number carries about *what document this is* are close to
+#: zero: about one in ten arbitrary nine-digit strings passes Luhn, and ordinary bank
+#: statements, invoices and tax forms are full of nine-digit strings.
 _CHECKSUM_VERIFIED_WEIGHT = 3.0
 _FORMAT_VALID_WEIGHT = 1.0
 _CHECKSUM_UNVERIFIED_WEIGHT = 0.25
@@ -130,6 +138,21 @@ class ChecksumHit:
         validator: Name of the validator that accepted it (empty when nothing accepted it).
         level: ``"checksum"`` | ``"format"`` | ``"none"``.
         verified: ``True`` only for a clean, checksum-grade acceptance.
+        corroborated: Whether the document *labels* this identifier — one of the declared
+            labels for the field that owns the validator appears on the identifier's own line
+            or the line above it.
+
+            This is the difference between evidence about a **number** and evidence about a
+            **document**, and it is not a nicety. A Canadian SIN is nine digits with a Luhn
+            check digit; roughly one in ten arbitrary nine-digit strings passes Luhn, and a
+            bank statement, an invoice or a tax form is full of nine-digit strings. So "a
+            Luhn-valid nine-digit number appeared" carries about 3.3 bits about *that number*
+            and close to zero bits about *what document this is* — the likelihood ratio
+            ``P(some 9-digit Luhn-valid number | SIN letter) / P(same | any other document)``
+            is near 1. "A Luhn-valid nine-digit number appeared **next to the words Social
+            Insurance Number**" is a different observation entirely. A machine-readable zone
+            is self-labelling (the ``P<`` record structure plus four agreeing check digits)
+            and is therefore always corroborated.
     """
 
     doctype_id: str
@@ -138,6 +161,7 @@ class ChecksumHit:
     validator: str = ""
     level: str = "none"
     verified: bool = False
+    corroborated: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,26 +170,58 @@ class AnchorOutcome:
 
     Attributes:
         scores: ``doctype_id -> [0, 0.97]`` squashed anchor+checksum score.
+        bits: ``doctype_id -> raw evidence in bits``, the quantity ``scores`` is the squash
+            **of**: ``score = min(0.97, 1 - 2^-bits)``. Anchor specificity, match quality, the
+            zone multiplier, the decisive multiplier and the checksum weights all *add* here,
+            which is what makes this the additive channel and ``scores`` the saturating one.
+
+            **Anything that COMPARES two doctypes must read this, not** ``scores``. The squash
+            is monotone, so it preserves the *ranking* — but it does not preserve *differences*
+            and it is clipped: every doctype holding 5.06 bits or more reports exactly 0.97.
+            Two doctypes at 5.1 and 9.4 bits are 4.3 bits apart and 0.0000 apart on ``scores``.
+            A difference taken on ``scores`` therefore measures the ceiling rather than the
+            evidence, and it *shrinks as the evidence for both grows* — which is exactly how
+            zone weighting, which multiplies bits for the winner and the rival alike, came to
+            reduce the measured separation between them. The ceiling itself is deliberate and
+            stays: it caps the *certainty* this tier may report on its own. A cap on reported
+            certainty is not a scale for comparing candidates.
         hits: Anchor hits per doctype.
         checksums: Checksum hits per doctype (verified and not).
         evidence: Human-readable evidence per doctype.
         coverage: Fraction of a doctype's declared anchors that were observed. Used by the
             cascade's short-circuit, which never pays for the lexical tier and therefore has
             no profile coverage to report.
+        muted_decisive: Decisive anchors this payload was unable to *evaluate*, per doctype.
+            An entry means: the anchor is declared ``zone=X``, the document carries no zone
+            ``X`` at all, and the anchor's text is nevertheless present somewhere in the
+            document. That is a claim we failed to hear, not a claim that failed — and the
+            difference matters, because a text-layer PDF has no title zone, so a doctype whose
+            decisive anchors are all title-gated is silent on this route while an identically
+            confusable doctype that gated nothing is heard. See
+            :func:`dce.classify.cascade._decisive_short_circuit`.
     """
 
     scores: Mapping[str, float] = field(default_factory=dict)
+    bits: Mapping[str, float] = field(default_factory=dict)
     hits: Mapping[str, tuple[AnchorHit, ...]] = field(default_factory=dict)
     checksums: Mapping[str, tuple[ChecksumHit, ...]] = field(default_factory=dict)
     evidence: Mapping[str, tuple[Evidence, ...]] = field(default_factory=dict)
     coverage: Mapping[str, float] = field(default_factory=dict)
+    muted_decisive: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def verified_doctypes(self) -> tuple[str, ...]:
-        """Doctypes holding at least one checksum-verified identifier."""
+        """Doctypes holding at least one checksum-verified **and corroborated** identifier.
+
+        Corroborated means the document said what the number is: either the identifier sits
+        next to one of its declared labels (:attr:`ChecksumHit.corroborated`), or the doctype
+        independently matched one of its own anchors. A check digit on an unlabelled number
+        found on a document that shows no other sign of being that doctype identifies a
+        number, not a document — see :class:`ChecksumHit`.
+        """
         return tuple(
             doctype
             for doctype, hits in self.checksums.items()
-            if any(h.verified for h in hits)
+            if any(h.verified and (h.corroborated or self.hits.get(doctype)) for h in hits)
         )
 
     def decisive_doctypes(self) -> tuple[str, ...]:
@@ -343,14 +399,28 @@ def _case_confirmed(anchor_text: str, index: _ZoneIndex) -> bool:
     return all(token.upper() in index.caps_tokens for token in tokens)
 
 
-def _locate(anchor: Anchor, index: _ZoneIndex) -> tuple[Zone, str] | None:
-    """Find the heaviest zone in which ``anchor`` matches, honouring its zone restriction."""
+def _locate(
+    anchor: Anchor, index: _ZoneIndex, *, zone_blind: bool = False
+) -> tuple[Zone, str] | None:
+    """Find the heaviest zone in which ``anchor`` matches, honouring its zone restriction.
+
+    Args:
+        anchor: The declared anchor.
+        index: The payload's per-zone text.
+        zone_blind: Ignore ``anchor.zone``, matching anywhere in the document. Used only by
+            the cascade's zone-free second reading, where the question is "is this string in
+            the document at all" — a fact about the document — rather than "did the layout
+            provider put it where the registry says it lives", which is a fact about the
+            provider. Silencing a gated anchor there would answer neither: the zone-free
+            reading exists to be *independent* of the labels, and refusing to hear a gated
+            anchor is as label-dependent as crediting one, in the opposite direction.
+    """
     if len(anchor.text.strip()) <= _CASE_SENSITIVE_MAX_CHARS and not _case_confirmed(
         anchor.text, index
     ):
         return None
     normalized_anchor = normalize(anchor.text)
-    if anchor.zone is not None:
+    if anchor.zone is not None and not zone_blind:
         how = _match_in(
             index.per_zone[anchor.zone], normalized_anchor, decisive=anchor.decisive
         )
@@ -364,6 +434,38 @@ def _locate(anchor: Anchor, index: _ZoneIndex) -> tuple[Zone, str] | None:
         if how:
             return zone, how
     return None
+
+
+def _is_muted(anchor: Anchor, index: _ZoneIndex) -> bool:
+    """Whether a decisive anchor was *unmeasurable* on this payload rather than absent.
+
+    True when the anchor is gated to a zone the document does not have at all, and the anchor's
+    text is present somewhere else in the document. Both halves are required:
+
+    * If the declared zone exists and the anchor is not in it, the anchor genuinely did not
+      match — the registry said "only in the title" and the title says otherwise. That is
+      evidence, and it must keep counting as evidence.
+    * If the text appears nowhere in the document, there is nothing to be uncertain about.
+
+    Only the gap between the two is a muted claim, and it is real: no adapter on the text-layer
+    route emits a ``title`` zone (``from_plain_text`` labels every block ``body``, honestly, on
+    the grounds that a guessed title would be amplified 3x). So five registry doctypes whose
+    decisive anchors are *all* title-gated are structurally inaudible on that route — while
+    their ungated confusable peers are heard, and win uncontested. That asymmetry produced a US
+    driver licence classified as a Canadian one.
+
+    Ordered so the cheap test runs first: most anchors are ungated, and of the gated ones most
+    are on payloads that do have the zone.
+    """
+    if not anchor.decisive or anchor.zone is None:
+        return False
+    if not index.per_zone[anchor.zone].is_empty:
+        return False
+    if len(anchor.text.strip()) <= _CASE_SENSITIVE_MAX_CHARS and not _case_confirmed(
+        anchor.text, index
+    ):
+        return False
+    return _match_in(index.combined, normalize(anchor.text), decisive=True) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +811,51 @@ def _spec_validators(spec: DocTypeSpec) -> tuple[str, ...]:
     return tuple(dict.fromkeys(f.validator for f in spec.fields if f.validator))
 
 
+def _validator_labels(spec: DocTypeSpec) -> dict[str, tuple[str, ...]]:
+    """``validator name -> the labels the registry says appear next to that identifier``.
+
+    Every language the field declares, flattened: an issuer prints ``Numéro d'assurance
+    sociale`` or ``Social Insurance Number`` and either one labels the same number.
+    """
+    out: dict[str, list[str]] = {}
+    for field_spec in spec.fields:
+        if not field_spec.validator:
+            continue
+        bucket = out.setdefault(field_spec.validator, [])
+        for labels in field_spec.labels.values():
+            bucket.extend(labels)
+    return {name: tuple(dict.fromkeys(labels)) for name, labels in out.items()}
+
+
+def _line_window(text: str, start: int, end: int) -> str:
+    """The line containing ``text[start:end]``, plus the line above it.
+
+    A label and its value are printed on one line ("Social Insurance Number: 046 454 286") or
+    stacked, label above value — that is the whole layout vocabulary of a form field, and it
+    is why the window is defined in *lines* rather than in a tuned character count. There is
+    no constant here to calibrate.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    previous_start = text.rfind("\n", 0, max(line_start - 1, 0)) + 1
+    line_end = text.find("\n", end)
+    if line_end == -1:
+        line_end = len(text)
+    return text[previous_start:line_end]
+
+
+def _is_label_anchored(window: str, labels: Sequence[str]) -> bool:
+    """Whether any declared label for this identifier appears in ``window``.
+
+    Matched with the same token machinery as anchors, never with ``in`` — the substring test
+    is the bug this module exists to have removed, and it is no less a bug when the haystack
+    is one line long.
+    """
+    if not labels:
+        return False
+    normalized_window = normalize(window)
+    return any(_match_in(normalized_window, normalize(label)) is not None for label in labels)
+
+
 def _wants_mrz(spec: DocTypeSpec) -> bool:
     """Whether this doctype declares a machine-readable zone."""
     if any("P<" in p or "MRZ" in p.upper() for p in spec.id_patterns):
@@ -752,6 +899,7 @@ def checksum_sweep(
         hits: list[ChecksumHit] = []
         seen: set[str] = set()
         validators = _spec_validators(spec)
+        labels_by_validator = _validator_labels(spec)
 
         if td3 is not None and _wants_mrz(spec):
             accepted, level = check_identifier("mrz_td3", td3)
@@ -763,6 +911,10 @@ def checksum_sweep(
                     validator="mrz_td3" if accepted else "",
                     level=level if accepted else "none",
                     verified=accepted and level == "checksum",
+                    # A TD3 zone is self-labelling: the ``P<`` record structure IS the label,
+                    # and four independent check digits agreeing over it is not a coincidence
+                    # a nine-digit Luhn pass is comparable to.
+                    corroborated=True,
                 )
             )
             seen.add("TD3")
@@ -776,21 +928,41 @@ def checksum_sweep(
                 if not candidate or candidate in seen:
                     continue
                 seen.add(candidate)
-                hits.append(_best_validation(spec.doctype_id, candidate, pattern, validators))
+                window = _line_window(upper, match.start(), match.end())
+                hits.append(
+                    _best_validation(
+                        spec.doctype_id,
+                        candidate,
+                        pattern,
+                        validators,
+                        labels_by_validator,
+                        window,
+                    )
+                )
         if hits:
             out[spec.doctype_id] = tuple(hits)
     return out
 
 
 def _best_validation(
-    doctype_id: str, candidate: str, pattern: str, validators: Sequence[str]
+    doctype_id: str,
+    candidate: str,
+    pattern: str,
+    validators: Sequence[str],
+    labels_by_validator: Mapping[str, tuple[str, ...]] | None = None,
+    window: str = "",
 ) -> ChecksumHit:
     """Validate one candidate against a doctype's validators, keeping the strongest verdict.
 
     A doctype may declare several validators across its fields; a candidate is credited with
     the best one that accepted it, and a checksum-grade acceptance always beats a
     format-grade one.
+
+    ``corroborated`` is decided per accepting validator, against that validator's own declared
+    labels: an unlabelled number is not evidence about a document type however clean its check
+    digit is (see :class:`ChecksumHit`).
     """
+    labels = labels_by_validator or {}
     best = ChecksumHit(
         doctype_id=doctype_id, value=candidate, pattern=pattern, level="none", verified=False
     )
@@ -798,6 +970,7 @@ def _best_validation(
         accepted, level = check_identifier(name, candidate)
         if not accepted:
             continue
+        anchored = _is_label_anchored(window, labels.get(name, ()))
         if level == "checksum":
             return ChecksumHit(
                 doctype_id=doctype_id,
@@ -806,6 +979,7 @@ def _best_validation(
                 validator=name,
                 level="checksum",
                 verified=True,
+                corroborated=anchored,
             )
         if best.level == "none":
             best = ChecksumHit(
@@ -815,6 +989,7 @@ def _best_validation(
                 validator=name,
                 level=level,
                 verified=False,
+                corroborated=anchored,
             )
     return best
 
@@ -827,6 +1002,7 @@ def anchor_scores(
     specs: Iterable[DocTypeSpec],
     *,
     settings: Settings | None = None,
+    zone_blind: bool = False,
 ) -> AnchorOutcome:
     """Score every doctype on anchor and checksum evidence.
 
@@ -834,6 +1010,9 @@ def anchor_scores(
         view: The layout payload.
         specs: The doctype registry (or a subset).
         settings: Settings override; defaults to :func:`dce.config.get_settings`.
+        zone_blind: Evaluate every anchor as if it declared no zone restriction. For the
+            cascade's zone-free second reading only — see :func:`_locate`. Nothing is ever
+            recorded as ``muted_decisive`` in this mode, because nothing was gated.
 
     Returns:
         An :class:`AnchorOutcome`. Scores are squashed into ``[0, 0.97]`` so the fusion sees a
@@ -845,18 +1024,35 @@ def anchor_scores(
     checksums = checksum_sweep(index.raw_upper, spec_list)
 
     scores: dict[str, float] = {}
+    bits: dict[str, float] = {}
     hits_by_type: dict[str, tuple[AnchorHit, ...]] = {}
     evidence: dict[str, tuple[Evidence, ...]] = {}
     coverage: dict[str, float] = {}
+    muted: dict[str, tuple[str, ...]] = {}
 
     for spec in spec_list:
         raw = 0.0
         hits: list[AnchorHit] = []
         notes: list[Evidence] = []
+        unheard: list[str] = []
 
         for anchor in spec.anchors:
-            located = _locate(anchor, index)
+            located = _locate(anchor, index, zone_blind=zone_blind)
             if located is None:
+                if not zone_blind and _is_muted(anchor, index):
+                    unheard.append(anchor.text)
+                    notes.append(
+                        Evidence(
+                            tier="anchor",
+                            detail=(
+                                f"decisive anchor {anchor.text!r} is present in the document "
+                                f"but is declared {anchor.zone.value}-only, and this payload "
+                                f"has no {anchor.zone.value} zone — the claim could not be "
+                                "evaluated, so it scores nothing and is recorded as contested"
+                            ),
+                            weight=0.0,
+                        )
+                    )
                 continue
             zone, how = located
             weight = (
@@ -900,12 +1096,31 @@ def anchor_scores(
                 )
 
         spec_checksums = checksums.get(spec.doctype_id, ())
-        verified = [h for h in spec_checksums if h.verified][:_MAX_VERIFIED_HITS]
-        formatted = [h for h in spec_checksums if h.level == "format"][:_MAX_FORMAT_HITS]
-        unverified = [h for h in spec_checksums if h.level == "none"][:_MAX_UNVERIFIED_HITS]
+        # An identifier is corroborated when the document labels it, OR when the doctype
+        # independently matched one of its own anchors — either way the document has said
+        # what it is, and the check digit is then evidence about THIS DOCUMENT rather than
+        # about a nine-digit number that happened to satisfy Luhn. Uncorroborated hits fall
+        # all the way to the "a number of the right shape appeared" weight; there is no new
+        # constant, because that is exactly what an uncorroborated identifier is worth.
+        self_identified = bool(hits)
+
+        def corroborated(hit: ChecksumHit, identified: bool = self_identified) -> bool:
+            return hit.corroborated or identified
+
+        verified = [h for h in spec_checksums if h.verified and corroborated(h)]
+        formatted = [
+            h for h in spec_checksums if h.level == "format" and corroborated(h)
+        ]
+        uncorroborated = [
+            h for h in spec_checksums if h.level != "none" and not corroborated(h)
+        ]
+        unverified = [h for h in spec_checksums if h.level == "none"]
+        verified = verified[:_MAX_VERIFIED_HITS]
+        formatted = formatted[:_MAX_FORMAT_HITS]
+        weak = (uncorroborated + unverified)[:_MAX_UNVERIFIED_HITS]
         raw += _CHECKSUM_VERIFIED_WEIGHT * len(verified)
         raw += _FORMAT_VALID_WEIGHT * len(formatted)
-        raw += _CHECKSUM_UNVERIFIED_WEIGHT * len(unverified)
+        raw += _CHECKSUM_UNVERIFIED_WEIGHT * len(weak)
         for hit in verified:
             notes.append(
                 Evidence(
@@ -925,7 +1140,20 @@ def anchor_scores(
                     weight=_FORMAT_VALID_WEIGHT,
                 )
             )
-        for hit in unverified:
+        for hit in uncorroborated[:_MAX_UNVERIFIED_HITS]:
+            notes.append(
+                Evidence(
+                    tier="checksum",
+                    detail=(
+                        f"{hit.validator} accepted {_redact(hit.value)}, but the document "
+                        "neither labels that number nor matches any anchor of this doctype — "
+                        "an unlabelled identifier is evidence about a number, not about a "
+                        "document type, so it scores as a bare pattern hit"
+                    ),
+                    weight=_CHECKSUM_UNVERIFIED_WEIGHT,
+                )
+            )
+        for hit in unverified[:_MAX_UNVERIFIED_HITS]:
             notes.append(
                 Evidence(
                     tier="checksum",
@@ -934,6 +1162,10 @@ def anchor_scores(
                 )
             )
 
+        # Negative anchors can drive ``raw`` below zero; "less than no evidence" is not a
+        # thing, so the channel floors at zero — as it always has, implicitly, through the
+        # ``if raw > 0`` below. Made explicit because ``bits`` is now read directly.
+        bits[spec.doctype_id] = round(max(raw, 0.0), 6)
         scores[spec.doctype_id] = (
             round(min(_SCORE_CEILING, 1.0 - 0.5**raw), 4) if raw > 0 else 0.0
         )
@@ -944,13 +1176,17 @@ def anchor_scores(
             hits_by_type[spec.doctype_id] = tuple(hits)
         if notes:
             evidence[spec.doctype_id] = tuple(notes)
+        if unheard:
+            muted[spec.doctype_id] = tuple(unheard)
 
     return AnchorOutcome(
         scores=scores,
+        bits=bits,
         hits=hits_by_type,
         checksums=checksums,
         evidence=evidence,
         coverage=coverage,
+        muted_decisive=muted,
     )
 
 

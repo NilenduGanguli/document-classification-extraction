@@ -19,9 +19,17 @@ profile mass did we actually observe*. A bank statement matching two of the util
 forty profile terms has high overlap and low coverage — and the cascade refuses to accept a
 class whose coverage is below the floor, no matter how the softmax came out.
 
-Raw scores become probabilities through a robust z-score (median/MAD, so one runaway class
+**Explained mass.** The tier's decision-grade output. ``explained[c]`` is the fraction of class
+``c``'s own idf-weighted profile mass that the document exhibited, BM25 saturation included. It
+is defined from ``(document, spec_c)`` alone, so it does not move when an unrelated doctype
+joins the registry — which is precisely what ``probability`` does not have and cannot be given.
+
+Raw scores also become probabilities through a robust z-score (median/MAD, so one runaway class
 cannot drag the scale) and a temperature softmax, with a Platt-scaling hook that is the
-identity until somebody fits it on labelled data.
+identity until somebody fits it on labelled data. **Those probabilities are for the audit trail
+and the dashboards only.** They are normalised over the registry, so they are a function of how
+many doctypes exist as well as of the document, and nothing that decides anything may read
+them. The cascade ranks on ``explained``.
 """
 from __future__ import annotations
 
@@ -238,6 +246,20 @@ class LexicalOutcome:
         raw: BM25 score per doctype.
         z: Robust z-score of ``raw``.
         probability: Calibrated probability per doctype (sums to 1 across the registry).
+
+            **Reporting only. This number MUST NOT gate an accept decision.** It is a softmax
+            over the whole registry, so it shrinks monotonically as doctypes are added — every
+            new class contributes a strictly positive term to its denominator whether or not it
+            has anything to do with the document in hand. Comparing it to a fixed floor is
+            therefore comparing a registry-size-dependent quantity to a constant, which is the
+            defect that made the same US W-9 score 0.900 against 25 doctypes and 0.411 against
+            121. Measured swing of this quantity across a registry growing from 10 to 120
+            classes: p90 0.938, max 0.998. Use :attr:`explained` for anything that decides.
+        explained: **Absolute** lexical strength per doctype, in ``[0, 1]``: the fraction of
+            that class's own idf-weighted profile mass the document actually exhibited, with
+            BM25's saturation applied. Defined from ``(document, spec_c)`` alone — no other
+            doctype appears anywhere in its definition — which is exactly what makes it safe
+            to compare against a floor and safe to rank. See :func:`lexical_scores`.
         coverage: Fraction of each class profile's weighted mass that was observed.
         matched: The profile terms that fired per doctype, with their profile weights.
         terms: The document's zone-weighted term counts (reused for evidence).
@@ -246,6 +268,7 @@ class LexicalOutcome:
     raw: Mapping[str, float] = field(default_factory=dict)
     z: Mapping[str, float] = field(default_factory=dict)
     probability: Mapping[str, float] = field(default_factory=dict)
+    explained: Mapping[str, float] = field(default_factory=dict)
     coverage: Mapping[str, float] = field(default_factory=dict)
     matched: Mapping[str, tuple[tuple[str, float], ...]] = field(default_factory=dict)
     terms: DocumentTerms = field(default_factory=DocumentTerms)
@@ -257,6 +280,14 @@ def robust_z(scores: Mapping[str, float]) -> dict[str, float]:
     One class scoring far above the rest is the *normal* case here, and it would inflate a
     mean-based scale enough to flatten everything else. The median absolute deviation is
     unaffected by it.
+
+    **Landmine, for anyone tempted to reuse this on a shortlist.** Over two or three values the
+    MAD is degenerate, the fallback to ``pstdev`` kicks in, and the result is ``z = ±1``
+    *regardless of how close the raw BM25 scores were* — after which a softmax at ``T=0.6``
+    hands the winner about 0.85. Standardising a handful of scores manufactures separation it
+    did not measure. That was tried (37 correct but 3 wrong on the corpus, precision 92.5%,
+    below the baseline it was meant to beat) and rejected. The output of this function is
+    reporting-grade, not decision-grade; see :attr:`LexicalOutcome.probability`.
 
     Args:
         scores: Raw scores per class.
@@ -315,6 +346,21 @@ def lexical_scores(
 
     Returns:
         The :class:`LexicalOutcome`.
+
+    Note:
+        ``explained`` is computed in the same pass, from the same term and idf lookups, at no
+        extra I/O and no extra iteration. It is BM25's own numerator for a profile divided by
+        the largest value that profile could ever produce::
+
+            explained_c = SUM_{w in profile_c} weight_w * idf(w) * tf_w / (tf_w + norm)
+                          / SUM_{w in profile_c} weight_w * idf(w)
+
+        Read it as "what fraction of this class's discriminative vocabulary did the document
+        actually exhibit, with saturation applied". The ``(k1 + 1)`` factor cancels between
+        numerator and denominator so it is dropped; ``idf`` appears in both, so idf drift as
+        the registry grows very largely cancels too (removing idf altogether moves exactly one
+        document of fifty-nine, in either direction). Profile weights are non-negative and sum
+        to one, so the ratio is bounded in ``[0, 1]``.
     """
     resolved = settings if settings is not None else get_settings()
     platt = calibration or PlattCalibration()
@@ -326,6 +372,7 @@ def lexical_scores(
     norm = k1 * (1.0 - b + b * (doc.length / avgdl))
 
     raw: dict[str, float] = {}
+    explained: dict[str, float] = {}
     coverage: dict[str, float] = {}
     matched: dict[str, tuple[tuple[str, float], ...]] = {}
 
@@ -333,16 +380,32 @@ def lexical_scores(
         score = 0.0
         seen_mass = 0.0
         total_mass = 0.0
+        exhibited = 0.0
+        available = 0.0
         hits: list[tuple[str, float]] = []
         for term, weight in profile.terms.items():
+            idf = profiles.idf(term)
+            # `explained` is a *fraction of available mass*, so it is only meaningful over
+            # non-negative weights. Robertson/Sparck-Jones IDF goes negative when a term's
+            # document frequency exceeds half the collection, and it goes wildly negative if a
+            # ProfileSet is ever assembled with a ``doc_freq`` that outruns its own
+            # ``n_classes`` — at which point an unclamped ratio silently leaves [0, 1] and the
+            # accept rule is comparing leads on a channel that is no longer a channel. Clamped
+            # here rather than in ``idf`` itself, because BM25's ``raw`` score has always been
+            # allowed to take the penalty for a term that carries no information.
+            positive_idf = max(idf, 0.0)
             total_mass += weight
+            available += weight * positive_idf
             tf = doc.counts.get(term, 0.0)
             if tf <= 0.0:
                 continue
+            saturated = tf / (tf + norm)
             seen_mass += weight
+            exhibited += weight * positive_idf * saturated
             hits.append((term, weight))
-            score += weight * profiles.idf(term) * (tf * (k1 + 1.0)) / (tf + norm)
+            score += weight * idf * saturated * (k1 + 1.0)
         raw[doctype_id] = round(score, 6)
+        explained[doctype_id] = round(exhibited / available, 6) if available else 0.0
         coverage[doctype_id] = round(seen_mass / total_mass, 6) if total_mass else 0.0
         matched[doctype_id] = tuple(sorted(hits, key=lambda kv: -kv[1]))
 
@@ -355,6 +418,7 @@ def lexical_scores(
         raw=raw,
         z={k: round(v, 6) for k, v in z.items()},
         probability=probability,
+        explained=explained,
         coverage=coverage,
         matched=matched,
         terms=doc,

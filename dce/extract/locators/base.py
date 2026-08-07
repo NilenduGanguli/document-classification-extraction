@@ -28,6 +28,7 @@ __all__ = [
     "label_similarity",
     "match_label",
     "normalize_label",
+    "partition_on_label",
     "passes_pattern",
     "refine_to_pattern",
     "split_on_label",
@@ -150,6 +151,13 @@ _HSPACE_RE = re.compile(r"[^\S\n]+")
 #: against "middle"), so short labels are matched on whole-token equality only. Same class
 #: of bug that ``dce.models.tokenize`` exists to kill.
 _PARTIAL_RATIO_MIN_CHARS = 6
+#: A one-word label shorter than this is a word, not a name for something. ``To`` and ``AY``
+#: are declared labels on real forms, and whole-token containment hands them every line that
+#: happens to use the word — ``"To update PAN details, apply for a change request…"`` binds
+#: to ``employment_period`` on the strength of its first word. A label of two or more words
+#: is distinctive however short its parts are, and a script that writes words in three
+#: characters (``नाम``) is not being penalised for it.
+_CONTAINMENT_MIN_CHARS = 3
 
 
 def normalize_label(text: str) -> str:
@@ -184,7 +192,8 @@ def label_similarity(label: str, text: str) -> float:
 
     Whole-token containment ("Date of Birth" inside "Date of Birth / Fecha") scores 96 —
     high enough to win, low enough that an exact match still beats it. ``partial_ratio``
-    only participates for labels long enough for it to be safe.
+    only participates for labels long enough for it to be safe, and only in the direction
+    that means anything.
     """
     left, right = normalize_label(label), normalize_label(text)
     if not left or not right:
@@ -194,9 +203,16 @@ def label_similarity(label: str, text: str) -> float:
     ratio, token_sort, partial = _ratios(left, right)
     score = max(ratio, token_sort)
     label_tokens, text_tokens = left.split(), right.split()
-    if _is_token_subsequence(label_tokens, text_tokens):
+    if _is_token_subsequence(label_tokens, text_tokens) and (
+        len(label_tokens) > 1 or len(left) >= _CONTAINMENT_MIN_CHARS
+    ):
         score = max(score, 96.0)
-    if len(left) >= _PARTIAL_RATIO_MIN_CHARS:
+    if len(left) >= _PARTIAL_RATIO_MIN_CHARS and len(left) <= len(right):
+        # ``partial_ratio`` aligns the shorter string inside the longer one whichever way
+        # round they are given, so ``Trade Name`` scores 100 against a block that reads only
+        # ``Name`` — and every field whose label ends in a common word then claims every
+        # block printing that word. The question being asked is "does this text contain my
+        # label", which a text shorter than the label cannot.
         score = max(score, partial)
     return score
 
@@ -246,20 +262,38 @@ def match_label(text: str, labels: list[tuple[str, float]], min_score: float) ->
     return (best_label, best_score) if best_score >= min_score else ("", 0.0)
 
 
-def split_on_label(text: str, label: str) -> str:
-    """Return the value that follows ``label`` on the same line, or ``""``.
+def partition_on_label(text: str, label: str) -> tuple[str, str, str] | None:
+    """Split ``text`` around the first printing of ``label``.
 
     Matches the label's tokens with flexible separators so ``Date of Birth :``,
     ``Date  of Birth-`` and ``DATE OF BIRTH`` all split identically.
+
+    Args:
+        text: The line the label was matched in.
+        label: The declared label.
+
+    Returns:
+        ``(before, matched, after)`` verbatim (over the NFKC-normalised text, which is what
+        the match offsets are measured against), or ``None`` when the label is not printed
+        in ``text`` at all. **Nothing is cleaned** \u2014 a caller that needs to know whether the
+        caption was closed by a colon, or what word preceded it, cannot recover either fact
+        once the punctuation has been stripped.
     """
     tokens = [re.escape(tok) for tok in normalize_label(label).split()]
     if not tokens:
-        return ""
+        return None
     pattern = r"\b" + r"[\s:.\-\u2013\u2014_]*".join(tokens) + r"\b"
-    match = re.search(pattern, unicodedata.normalize("NFKC", text), flags=re.IGNORECASE)
+    normalized = unicodedata.normalize("NFKC", text or "")
+    match = re.search(pattern, normalized, flags=re.IGNORECASE)
     if match is None:
-        return ""
-    return clean_value(text[match.end() :])
+        return None
+    return normalized[: match.start()], match.group(0), normalized[match.end() :]
+
+
+def split_on_label(text: str, label: str) -> str:
+    """Return the value that follows ``label`` on the same line, or ``""``."""
+    parts = partition_on_label(text, label)
+    return clean_value(parts[2]) if parts is not None else ""
 
 
 def clean_value(text: str) -> str:

@@ -37,7 +37,7 @@ import time
 
 from dce.config import Settings, get_settings
 from dce.extract import validate as V
-from dce.extract.locators import LOCATOR_PRIOR, LOCATORS, Candidate, LocatorContext
+from dce.extract.locators import LOCATOR_PRIOR, LOCATORS, Candidate, LocatorContext, trim
 from dce.extract.schema import DocSchema
 from dce.models import DocTypeSpec, ExtractedField, ExtractionResult, FieldSpec, LayoutView
 
@@ -123,6 +123,23 @@ def resolve_field(
     scored = _collect(field, view, ctx)
     if not scored:
         return [_empty(field)]
+
+    # A shaped field only ever reports a value of its shape.
+    #
+    # ``date``, ``number`` and ``id`` fields — and any field declaring a pattern or a
+    # validator with a known one — describe values a machine can recognise. A candidate
+    # with no instance of that shape anywhere in it is not a poor reading of the value, it
+    # is a different thing entirely: a sentence of form instructions that a caption matched
+    # a word inside, a heading, a bare bullet. Reporting it, even flagged, puts prose in a
+    # KYC record under a field name, where everything downstream reads it as the value.
+    #
+    # This is a decision, not a proposal, so it is made here and not in the locator. What it
+    # does *not* do is second-guess a validator: a UID whose Verhoeff digit fails has the
+    # shape, survives this filter, and still reaches the reviewer exactly as printed.
+    shaped = [s for s in scored if trim.has_type_shape(field, s.candidate.value)]
+    if not shaped:
+        return [_empty(field, error="no_candidate_of_this_type")]
+    scored = shaped
 
     accepted = [s for s in scored if s.accepted]
     if not accepted:
@@ -299,8 +316,12 @@ def _as_spec(schema: DocSchema) -> DocTypeSpec | None:
     )
 
 
-def _empty(field: FieldSpec) -> ExtractedField:
-    """A field nothing was found for — reported, not omitted."""
+def _empty(field: FieldSpec, *, error: str = "no_candidate_found") -> ExtractedField:
+    """A field nothing was found for — reported, not omitted.
+
+    ``error`` distinguishes "nothing on the page matched" from "something matched and was
+    not of this field's kind", because they send a reviewer to different places.
+    """
     return ExtractedField(
         name=field.name,
         attribute_key=field.attribute_key,
@@ -308,7 +329,7 @@ def _empty(field: FieldSpec) -> ExtractedField:
         confidence=0.0,
         verification=VERIFICATION_UNVERIFIED,
         pii=field.pii,
-        validator_error="no_candidate_found",
+        validator_error=error,
     )
 
 

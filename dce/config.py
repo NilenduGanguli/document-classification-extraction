@@ -35,16 +35,136 @@ class Settings(BaseSettings):
     allow_preclassification_egress: bool = False
 
     # ---- Classification cascade ----
-    #: Accept a class when the calibrated probability clears its threshold AND it beats
-    #: the runner-up by the margin AND enough of its profile terms were actually seen.
-    #: Failing any of the three abstains to UNKNOWN, which routes to a human — never to a
-    #: model.
-    classify_accept_probability: float = 0.65
-    classify_min_margin: float = 0.25
+    # Acceptance is a conjunction of four conditions, and every one of them is measured on a
+    # quantity that depends ONLY on the document and the doctype being tested — never on how
+    # many other doctypes happen to be installed. See dce.classify.cascade for the rule and
+    # for why the previous formulation could not be repaired by moving a number.
+    #
+    # ``classify_accept_probability`` used to live here, at 0.65. It was the accept floor,
+    # applied to ``softmax(fused)[top]`` — a probability normalised over the whole registry, so
+    # every doctype ever added lowered it for every document, related or not. Measured on one
+    # unchanged US W-9 against identical evidence: p = 0.900 at 25 doctypes, 0.411 at 121.
+    # It left the accept path in the previous change and was kept defined "because the
+    # short-circuit reports a confidence above it". That short-circuit no longer exists, and a
+    # setting that nothing reads is a control-review hazard: it appears in `/readyz`, in the
+    # container's environment and in a reviewer's mental model of what governs the decision,
+    # while governing nothing. Removed rather than deprecated for that reason.
+    #
+    #: The minimum LEAD the winning doctype must hold over the next-best doctype on the
+    #: combined support channel ``S = 1 - (1 - anchor)(1 - explained)``. Not a difference of
+    #: two registry-normalised probabilities: it is "how large a gap on absolute evidence
+    #: counts as a real gap", a property of the evidence scale and not of the registry.
+    #:
+    #: **This value is a judgement call, not a calibration, and the previous claim that it was
+    #: calibrated does not reproduce.** It was documented as sitting on "a plateau where the
+    #: wrong-answer count is unchanged from 0.02 to 0.20, while recall only begins to erode
+    #: above ~0.20". Re-swept on the reference corpus against the quantity now being
+    #: thresholded (61 text-layer documents; margin 0.00 / 0.02 / 0.04 / 0.08 / 0.16 / 0.32,
+    #: other floors at default), the correct/wrong counts are:
+    #:
+    #:     0.00 -> 43/1   0.02 -> 38/1   0.04 -> 36/1   0.08 -> 32/1   0.16 -> 21/1
+    #:
+    #: There is no plateau. Recall erodes immediately and monotonically from 0.00 upward, and
+    #: the wrong-answer count is *flat at one* across the whole range — on this corpus the
+    #: margin floor buys no precision at all and costs seven correct answers at 0.04. Sixty-one
+    #: documents cannot settle that: a corpus with one wrong answer in it has no power to
+    #: measure a control whose job is to prevent wrong answers, and lowering the floor because
+    #: this corpus did not punish it would be fitting a constant to sixty-one files.
+    #:
+    #: So the value is unchanged and the reasoning is stated instead of a measurement: a lead
+    #: of under four points of combined evidence out of a hundred is not distinguishable from
+    #: noise on a channel whose inputs are an OCR-dependent anchor match and a BM25 saturation.
+    #: The floor also sets the confidence scale — ``lead / (lead + this)`` is one of the three
+    #: factors of the reported confidence — so it shapes every document's headline number
+    #: whether or not it refuses one.
+    #:
+    #: **What this is a floor ON changed in round 3, and the value did not.** It used to be
+    #: compared against ``S[1] - S[2]``, a difference of two supports each bounded above by 1
+    #: and each built on an anchor score clipped at 0.97. That is unfixable by any choice of
+    #: number, for an arithmetic reason: once ``S[2] > 0.96`` there is less than 0.04 of
+    #: headroom left below the bound, so the gate was **unsatisfiable at any level of evidence
+    #: for the winner** — and the anchor tier reaches 0.97 at 5.06 bits, which a title zone's
+    #: 2.0x multiplier makes routine. Measured consequence: the same 59 corpus documents scored
+    #: 36 correct with every block read as ``body`` and 32 correct with title/heading zones
+    #: present, all five losses refused by this gate with the winner's support at 0.98.
+    #: Production always has zones, so the better number was the one production could never
+    #: produce.
+    #:
+    #: It is now compared against ``1 - 2^-(B[1] - B[2])`` where ``B`` is the same evidence in
+    #: bits (``dce.classify.cascade.separation_of``). Same units, same ``[0, 1)`` range, and
+    #: the same meaning wherever nothing is saturated — the two agree to first order as
+    #: ``S -> 0`` — so this is not a re-tuning wearing a rewrite's clothes. Where they differ
+    #: is where the old one was broken: the ratio has no ceiling to be squeezed against, so
+    #: evidence that strengthens the winner and the rival together can no longer *shrink* the
+    #: measured separation.
+    #:
+    #: Read as a likelihood ratio, 0.04 asks the winner to be about 1.04x better supported than
+    #: the runner-up — 0.059 bits. That is a weak bar, and weaker than the old rule's effective
+    #: bar on well-evidenced documents (which was infinite). **Whether the floor should be
+    #: restated in bits at a level like "one distinguishing anchor" (~0.15 bits, the smallest
+    #: increment the anchor channel can produce) is a live question this corpus cannot settle**,
+    #: for the same reason recorded above: one wrong answer in 59 documents has no power to
+    #: measure a precision control. It needs labelled production data, and it is recorded in
+    #: the residual risks rather than guessed at here.
+    classify_min_margin: float = 0.04
+    #: Absolute backstop: the noisy-OR of the winner's own two channels,
+    #: ``1 - (1 - anchor)(1 - explained)``, must clear this. A lead says the winner beat its
+    #: rivals; this says the winner is actually supported.
+    #:
+    #: **It is a redundant control on the reference corpus and that is stated rather than
+    #: hidden.** It fires on 5 of the 61 text-layer documents, but on every one of them another
+    #: gate refuses too, so deleting it would change no verdict there (swept: the accepted set
+    #: is identical for every floor from 0.00 to 0.70). It is kept because it is the *only*
+    #: control that can catch one specific shape of registry-authoring accident, and that shape
+    #: is pinned by a test rather than asserted here: a doctype that declares exactly one weak
+    #: anchor has coverage 1.0 the moment that anchor matches — coverage is a fraction of
+    #: declared anchors, so it cannot refuse a one-anchor doctype at any floor — and if no
+    #: other doctype scores at all, its lead over a field of nothing clears any margin. Neither
+    #: of the other two gates can see it. See, in ``tests/test_classify.py``,
+    #: ``test_support_floor_is_the_only_gate_that_can_refuse_thin_evidence``.
+    classify_min_support: float = 0.30
+    #: The fraction of the winning class's own vocabulary that must have been present, taken
+    #: as ``max(profile coverage, anchor coverage)``. The one control the cascade has always
+    #: called load-bearing, and it is kept live and unchanged in value: it is why a photo-ID
+    #: specimen sheet with almost no text abstains cheaply instead of being argued about.
+    #: It is also the gate that stopped being decorative when the L1 short-circuits were
+    #: deleted. Five corpus documents used to be accepted below it, because the short-circuit
+    #: returned before it was evaluated. Two of those five are now abstentions — a Canadian
+    #: permanent-resident card that was being accepted as a US green card, and a Mexican INE
+    #: card. The other three still accept, and report a *higher* coverage than before rather
+    #: than a suppressed one: the short-circuit reported anchor coverage alone because it never
+    #: ran the lexical tier, so the number it published understated them.
+    #:
+    #: On the corpus it fires on 6 of 24 abstentions and is the sole reason for 1 of them.
     classify_min_coverage: float = 0.20
     #: Zone weights: a term in a title is worth far more than the same term in repeated
-    #: page furniture. This is what makes the scorer better than grep, and it is free —
-    #: the roles come from the Layout payload we were handed.
+    #: page furniture. The roles come from the Layout payload we were handed, so this is free.
+    #:
+    #: **What they can and cannot do to a VERDICT, stated here because it is not obvious from
+    #: the numbers and because a reviewer will ask.** Round 3 made the accept rule read the
+    #: *un-promoted* reading of a payload: every block whose zone weighs more than ``body`` is
+    #: re-read at ``body`` before the four gates are evaluated
+    #: (``dce.classify.cascade._unpromoted_view``). So the three weights ABOVE body —
+    #: ``title``, ``heading``, ``table`` — no longer change accept-or-abstain. They still shape
+    #: the audit trail (``lexical.raw``, ``probability``, the fused runners-up list, the anchor
+    #: evidence lines) and they are still what the extraction tiers read; they are not inert,
+    #: but they are not deciding either, and calling them "what makes the scorer better than
+    #: grep" would now be overstating them.
+    #:
+    #: This is deliberate and one-directional. A layout provider's ``title`` role is an
+    #: opinion, and Azure Document Intelligence routinely gives it to captions, watermarks and
+    #: marketing copy; at 3.0x lexical and 2.0x anchor it was worth up to four bits of
+    #: manufactured evidence. Measured by injecting ONE line carrying another doctype's
+    #: decisive anchor into eight correctly-classified documents, once labelled ``title`` and
+    #: once ``body`` — identical text, only the label differing: 23 confident wrong answers
+    #: versus 3 before, 5 versus 5 after. The label now buys nothing.
+    #:
+    #: ``furniture``, below body, is the exception and stays live in the decision: it can only
+    #: ever *lower* a score, so a wrong ``furniture`` label costs an accept (an abstention,
+    #: which routes to a human) and can never buy a wrong one. It is the control that stops a
+    #: term repeated in every page footer reading as evidence, and it is load-bearing — see
+    #: ``test_support_floor_is_the_only_gate_that_can_refuse_thin_evidence`` in
+    #: ``tests/test_classify.py``.
     zone_weight_title: float = 3.0
     zone_weight_heading: float = 2.0
     zone_weight_body: float = 1.0

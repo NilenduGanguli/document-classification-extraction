@@ -45,10 +45,16 @@ from dce.extract.locators.base import (
 from dce.models import FieldSpec
 
 __all__ = [
+    "CONNECTORS",
     "Trimmed",
     "cut_at_next_label",
+    "has_shape",
+    "has_substance",
+    "has_type_shape",
     "known_labels",
     "reads_as_caption",
+    "starts_with_caption",
+    "strip_fill_rules",
     "tighten",
     "trim_span",
 ]
@@ -82,13 +88,48 @@ _WORD_RE = re.compile(r"[^\W\d_][\w.&\u2019'/-]*")
 _DISTINCTIVE_WORDS = 2
 _DISTINCTIVE_CHARS = 10
 
-_CONNECTORS = frozenset(
+CONNECTORS = frozenset(
     {
         "of", "the", "a", "an", "and", "for", "in", "on", "to", "or",
         "de", "del", "la", "el", "los", "las", "y", "en", "por",
         "du", "des", "d", "et", "da", "das", "dos", "do",
     }
 )
+_CONNECTORS = CONNECTORS
+
+#: Printed fill-in furniture: the rule a blank form leaves for a human to write on, and the
+#: dot leader a printed one uses instead. Never part of a value, in any document type.
+_FILL_RULE_RE = re.compile(r"_{2,}|\.{4,}|…+|·{4,}|•{2,}")
+#: Collapses the whitespace a removed fill rule leaves behind, per line.
+_HSPACE_RE = re.compile(r"[^\S\n]+")
+
+
+def strip_fill_rules(text: str) -> str:
+    """Remove the blank-form fill rule (``____``, ``....``, ``…``) from a span.
+
+    A rule is where a value *would* be written, so it is furniture in exactly the sense a
+    caption is: ``"Verified today, the _____ day"`` carries no value, and ``"________"``
+    on its own is an empty field, not a value that happens to look odd. Removing it is what
+    lets :func:`has_substance` tell the two apart.
+    """
+    if not text:
+        return ""
+    lines = [
+        _HSPACE_RE.sub(" ", _FILL_RULE_RE.sub(" ", line)).strip()
+        for line in text.splitlines()
+    ]
+    return "\n".join(line for line in lines if line)
+
+
+def has_substance(text: str) -> bool:
+    """``True`` when a span carries something a value could be made of.
+
+    A span with no alphanumeric character left once the fill rule is gone — ``"________"``,
+    ``"."``, ``"-- / --"`` — is punctuation the locator captured, not a value. Reporting it
+    fills a KYC field with a mark off the page, which is strictly worse than leaving the
+    field empty for a human.
+    """
+    return any(ch.isalnum() for ch in strip_fill_rules(text or ""))
 
 #: Human-written dates, in the four shapes :func:`dce.extract.validate.generic_date` parses.
 _DATE_SHAPE = re.compile(
@@ -335,6 +376,26 @@ def cut_at_next_label(
     return head, True
 
 
+def starts_with_caption(value: str, labels: Iterable[str] = (), *, matched: str = "") -> bool:
+    """``True`` when a span *begins* with another field's caption.
+
+    The mirror image of :func:`cut_at_next_label`, which deliberately ignores a caption at
+    offset 0 because there is nothing in front of it to keep. For a span carved out of the
+    line its own label was printed on, a caption sitting at offset 0 means something else:
+    the label matched **part of a longer caption**, and everything after it is the rest of
+    that caption rather than a value.
+
+    ``Last name (in capital letters) -- Nom de famille`` is the case. Anchoring ``full_name``
+    on ``Last Name`` leaves the French half of the same caption, which
+    :func:`reads_as_caption` will not reject — the parenthetical means the caption accounts
+    for well under its coverage floor — and which would otherwise be reported as somebody's
+    surname.
+    """
+    if not value:
+        return False
+    return any(start == 0 for start in _caption_starts(value, labels, matched))
+
+
 # ---------------------------------------------------------------------------
 # Type-aware tightening
 # ---------------------------------------------------------------------------
@@ -353,6 +414,58 @@ def _shape_for(field: FieldSpec) -> tuple[re.Pattern[str] | None, str]:
     if field.type in _SHAPED_TYPES:
         return _TYPE_SHAPES[field.type], f"tightened to {field.type}"
     return None, ""
+
+
+def _shape_matches(shape: re.Pattern[str], value: str) -> list[re.Match[str]]:
+    """Shape matches in ``value`` that are whole tokens, not the front of a longer one.
+
+    ``\\d{1,3}(?:,\\d{3})*`` finds ``101`` inside ``"Enter on line 10100."`` and ``201``
+    inside ``"January 1, 2016"``. Both satisfy the pattern; neither is a number printed on
+    the document. A truncated number reported as a KYC amount is the exact failure this
+    module exists to prevent — it is confidently wrong, and nothing downstream can tell.
+
+    So a match is kept only when the character on either side of it is not a digit: the
+    shape has to account for the whole numeric token it sits in. A match bounded by
+    ``$``, a space, a comma or the end of the span is a value; one bounded by ``0`` is a
+    piece of one.
+    """
+    kept: list[re.Match[str]] = []
+    for match in shape.finditer(value):
+        before = value[match.start() - 1] if match.start() > 0 else ""
+        after = value[match.end()] if match.end() < len(value) else ""
+        if before.isdigit() or after.isdigit():
+            continue
+        kept.append(match)
+    return kept
+
+
+def has_shape(field: FieldSpec) -> bool:
+    """``True`` when this field's values are machine-recognisable at all.
+
+    True for ``date``, ``number`` and ``id``, and for any field declaring a pattern or a
+    validator with a known one. False for ``name``, ``address`` and ``string``, whose values
+    are prose and look exactly like the captions printed around them.
+    """
+    return _shape_for(field)[0] is not None
+
+
+def has_type_shape(field: FieldSpec, value: str) -> bool:
+    """``True`` when ``value`` contains this field's shape as a whole token.
+
+    A field with no known shape (``name``, ``address``, ``string``) always passes: prose has
+    no shape to check it against.
+    """
+    shape, _note = _shape_for(field)
+    if shape is None:
+        return True
+    found = _shape_matches(shape, value or "")
+    if field.type == "id" and not field.pattern and not field.validator:
+        # Same rule :func:`tighten` narrows by: an identifier declared only as ``type="id"``
+        # is a run of capitals and digits *containing a digit*. Without it, the leading
+        # capital of any ordinary word satisfies the shape — ``"Content"``, ``"Marriages"``
+        # — and the check passes on prose it was written to reject.
+        found = [m for m in found if any(ch.isdigit() for ch in m.group(0))]
+    return bool(found)
 
 
 def tighten(field: FieldSpec, value: str) -> tuple[str, bool, str]:
@@ -374,7 +487,7 @@ def tighten(field: FieldSpec, value: str) -> tuple[str, bool, str]:
     shape, note = _shape_for(field)
     if shape is None or not value:
         return value, False, ""
-    found = [match.group(0).strip() for match in shape.finditer(value)]
+    found = [match.group(0).strip() for match in _shape_matches(shape, value)]
     if field.type == "id" and not field.pattern and not field.validator:
         found = [item for item in found if any(ch.isdigit() for ch in item)]
     found = [item for item in found if item]
@@ -401,10 +514,12 @@ def trim_span(
         matched: The label the span was anchored on.
 
     Returns:
-        The :class:`Trimmed` outcome; ``Trimmed(value)`` when nothing needed doing.
+        The :class:`Trimmed` outcome. ``Trimmed("")`` — which every caller reads as "no
+        candidate" — when the span is only fill rule and punctuation, because there is
+        nothing there for a locator to propose or for a reviewer to read.
     """
-    cleaned = clean_value(value or "")
-    if not cleaned:
+    cleaned = clean_value(strip_fill_rules(value or ""))
+    if not cleaned or not has_substance(cleaned):
         return Trimmed("")
     cut_value, cut = cut_at_next_label(cleaned, labels, matched=matched)
     tight_value, tightened, note = tighten(field, cut_value)

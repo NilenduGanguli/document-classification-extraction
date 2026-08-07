@@ -7,7 +7,9 @@ failure are pinned below.
 """
 from __future__ import annotations
 
+import math
 import sys
+from itertools import pairwise
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -369,25 +371,46 @@ def passport_view() -> LayoutView:
 
 
 def test_passport_classifies_confidently():
-    """The old implementation scored a real passport at 0.5335, below its own 0.55 floor."""
+    """The old implementation scored a real passport at 0.5335, below its own 0.55 floor.
+
+    ``confidence`` is no longer a probability and is not asserted as one. It is the distance
+    to whichever gate came closest to blocking the accept, on a scale where 0.5 is exactly the
+    decision boundary — so the assertion that carries meaning is "comfortably clear of the
+    boundary", not "close to 1.0". A number in [0, 1] that looked like a posterior but was not
+    one is how the registry-normalised softmax got into the accept path in the first place.
+    """
     result = classify(passport_view(), registry(), settings=SETTINGS)
 
     assert result.doctype_id == "passport"
     assert result.abstained is False
-    assert result.confidence >= SETTINGS.classify_accept_probability
-    assert result.confidence > 0.9, "a checksum-verified MRZ is near-proof"
+    assert result.confidence >= 0.5, "0.5 is the accept boundary; an accept cannot be below it"
+    assert result.confidence > 0.6, "a checksum-verified MRZ should clear every gate widely"
     assert result.margin >= SETTINGS.classify_min_margin
     tiers = {e.tier for e in result.evidence}
     assert "checksum" in tiers and "anchor" in tiers
 
 
-def test_passport_short_circuits_before_the_lexical_tier():
-    """A checksum-verified decisive identifier must not pay for BM25."""
+def test_checksum_evidence_goes_through_the_accept_rule_not_around_it():
+    """A checksum-verified decisive identifier is evidence, not a bypass.
+
+    It used to short-circuit: :func:`classify` returned before the lexical tier ran and before
+    the support and coverage gates were evaluated, with a hard-coded confidence. That path is
+    gone. The passport still classifies — the evidence is overwhelming — but it does so by
+    clearing the same four gates as everything else, and the record shows the lexical tier's
+    contribution rather than an explanation of why it was skipped.
+    """
     result = classify(passport_view(), registry(), settings=SETTINGS)
 
     assert result.doctype_id == "passport"
-    assert not any(e.tier == "lexical" for e in result.evidence)
-    assert any("was not run" in e.detail for e in result.evidence)
+    assert any(e.tier == "lexical" for e in result.evidence), (
+        "the lexical tier must run: a gate that is not evaluated is not a gate"
+    )
+    assert not any("was not run" in e.detail for e in result.evidence)
+    fusion = [e for e in result.evidence if e.tier == "fusion"]
+    assert fusion, "every decision, including this one, carries the accept rule's own record"
+    assert "route=" in fusion[0].detail
+    assert result.coverage >= SETTINGS.classify_min_coverage
+    assert result.margin >= 0.0
 
 
 def test_mrz_shape_is_visible_to_the_structural_tier():
@@ -579,6 +602,189 @@ def test_thin_margin_abstains_with_a_reason():
     assert "margin below floor" in result.reason
     assert result.runners_up and result.runners_up[0][0].startswith("state_id_")
     assert result.margin < SETTINGS.classify_min_margin
+
+
+# ---------------------------------------------------------------------------
+# (e2) Decisive-anchor collisions must never be resolved silently
+# ---------------------------------------------------------------------------
+def licence_pair(
+    *, us_zone: Zone | None, ca_zone: Zone | None, declare_confusable: bool = True
+) -> list[DocTypeSpec]:
+    """The exact shape of the real US/CA driving-licence pair, with the gating parameterised.
+
+    In the production registry the US doctype gated both of its decisive anchors to
+    ``zone=title`` and the Canadian one gated neither. That asymmetry is the bug; these
+    fixtures let each side be built either way.
+    """
+    us = DocTypeSpec(
+        doctype_id="us_licence",
+        label="US Driver License",
+        country="US",
+        category=Category.identity,
+        anchors=[
+            Anchor(text="DRIVER LICENSE", zone=us_zone, decisive=True),
+            Anchor(text="DRIVER'S LICENSE", zone=us_zone, decisive=True),
+            Anchor(text="Endorsements"),
+            Anchor(text="Restrictions"),
+            Anchor(text="CLASS"),
+        ],
+        confusable_with=(
+            {"ca_licence": "the Canadian card spells it LICENCE and is bilingual"}
+            if declare_confusable
+            else {}
+        ),
+        fields=[FieldSpec(name="licence_number", labels={"en": ["DL No"]})],
+    )
+    ca = DocTypeSpec(
+        doctype_id="ca_licence",
+        label="Canadian Driver's Licence",
+        country="CA",
+        category=Category.identity,
+        anchors=[
+            Anchor(text="DRIVER'S LICENCE", zone=ca_zone, decisive=True),
+            Anchor(text="PERMIS DE CONDUIRE", zone=ca_zone, lang="fr", decisive=True),
+            Anchor(text="CLASS"),
+        ],
+        fields=[FieldSpec(name="licence_number", labels={"en": ["Licence No"]})],
+    )
+    return [us, ca]
+
+
+def us_licence_sheet() -> LayoutView:
+    """A US barcode-calibration sheet — which really does print both spellings.
+
+    Every block is ``body`` because that is what a text-layer PDF produces: ``from_plain_text``
+    labels everything ``body`` on purpose, since a guessed title would be amplified 3x. No
+    adapter on that route can emit a ``title`` zone at all, so a title-gated decisive anchor is
+    structurally inaudible there.
+    """
+    return view_of(
+        [
+            TextBlock(text="Standard Driver's License Card - Under 21", zone=Zone.body),
+            TextBlock(text="AAMVA 2020 ANSI 636 Encoding Reference", zone=Zone.body),
+            TextBlock(text="Endorsements: NONE", zone=Zone.body),
+            TextBlock(text="Restrictions: B", zone=Zone.body),
+            TextBlock(text="CLASS C  USA", zone=Zone.body),
+            TextBlock(text="Standard Driver's Licence Card Under 21 - Encoding", zone=Zone.body),
+        ]
+    )
+
+
+def test_two_doctypes_claiming_one_decisive_anchor_do_not_short_circuit():
+    """A shared decisive anchor is a conflict, and a conflict is not a winner.
+
+    The property the cascade has always claimed and must keep: when the count of doctypes
+    holding a decisive hit is not exactly one, nobody is accepted at L1 and the lexical tier
+    arbitrates. Pinned explicitly rather than left implicit in the thin-margin test, because it
+    is the invariant a registry author relies on when they declare a genuinely shared header.
+    """
+    specs = licence_pair(us_zone=None, ca_zone=None)
+    outcome = anchor_scores(us_licence_sheet(), specs, settings=SETTINGS)
+
+    assert set(outcome.decisive_doctypes()) == {"us_licence", "ca_licence"}
+
+    result = classify(us_licence_sheet(), specs, settings=SETTINGS)
+    assert result.doctype_id != "ca_licence", "the wrong country was accepted on a tie"
+    assert result.confidence != 0.90, "a decisive short-circuit fired on a contested claim"
+
+
+def test_a_decisive_claim_muted_by_a_missing_zone_blocks_the_short_circuit():
+    """The audibility guard, on the exact shape that produced the original wrong answer.
+
+    The US doctype gates its decisive anchors to ``title``; the payload has no title zone; the
+    Canadian doctype gates nothing. Before the guard, ``decisive_doctypes()`` came back as
+    exactly ``('ca_licence',)`` and the cascade accepted a Canadian licence at 0.90 — never
+    reading the anchor scores, which favoured the US doctype. Unmeasurable evidence is not
+    evidence of absence.
+    """
+    specs = licence_pair(us_zone=Zone.title, ca_zone=None)
+    view = us_licence_sheet()
+    outcome = anchor_scores(view, specs, settings=SETTINGS)
+
+    assert outcome.decisive_doctypes() == ("ca_licence",), (
+        "fixture no longer reproduces the asymmetry this test is about"
+    )
+    assert "DRIVER'S LICENSE" in outcome.muted_decisive["us_licence"]
+
+    result = classify(view, specs, settings=SETTINGS)
+    assert result.doctype_id != "ca_licence"
+    assert result.confidence != 0.90
+
+
+def test_a_muted_claim_is_named_in_the_audit_trail():
+    """A suppressed identification route must say so; a silent fallthrough is unreviewable."""
+    specs = licence_pair(us_zone=Zone.title, ca_zone=None)
+    result = classify(us_licence_sheet(), specs, settings=SETTINGS)
+
+    details = " ".join(e.detail for e in result.evidence)
+    assert "conclusive-evidence route was suppressed" in details
+    assert "us_licence" in details
+
+
+def test_a_zone_that_exists_without_the_anchor_is_still_evidence_of_absence():
+    """The guard must not swallow a genuine negative.
+
+    If the payload *has* the declared zone and the anchor is not in it, the registry's zone
+    restriction did its job and the anchor genuinely did not match. Treating that as
+    "unmeasurable" would disarm zone gating everywhere and abstain on everything.
+    """
+    specs = licence_pair(us_zone=Zone.title, ca_zone=None)
+    view = view_of(
+        [
+            TextBlock(text="PERMIS DE CONDUIRE", zone=Zone.title),
+            TextBlock(text="Standard Driver's Licence Card", zone=Zone.body),
+            TextBlock(text="CLASS 5", zone=Zone.body),
+        ]
+    )
+    outcome = anchor_scores(view, specs, settings=SETTINGS)
+
+    assert "us_licence" not in outcome.muted_decisive, (
+        "the title zone exists and does not contain the US anchor — that is a real negative"
+    )
+    result = classify(view, specs, settings=SETTINGS)
+    assert result.doctype_id == "ca_licence"
+
+
+def test_a_muted_claim_outside_the_confusable_cluster_does_not_block():
+    """The guard is scoped to declared confusables, and must stay that way.
+
+    Some doctype somewhere will always have a muted decisive anchor on some payload. If any
+    such doctype could contest any other, the conclusive-L1 route would never fire and the
+    cascade would lose the path that rescues photo IDs. Only a doctype the registry has
+    declared confusable with the candidate is a contender — which is also why an
+    asymmetrically gated cluster is a registry defect as well as a cascade one.
+
+    The assertion is on the guard, not on the final doctype. Since the conclusive-L1 route
+    stopped being an accept and became one way of satisfying one gate, this payload abstains
+    on the *other* gates instead — which is the better answer for a calibration sheet that
+    prints both spellings, and is not what this test is about.
+    """
+    specs = licence_pair(us_zone=Zone.title, ca_zone=None, declare_confusable=False)
+    view = us_licence_sheet()
+
+    assert "DRIVER'S LICENSE" in anchor_scores(
+        view, specs, settings=SETTINGS
+    ).muted_decisive["us_licence"]
+    details = " ".join(e.detail for e in classify(view, specs, settings=SETTINGS).evidence)
+    assert "conclusive-evidence route was suppressed" not in details, (
+        "an undeclared confusable must not be able to contest the route"
+    )
+
+
+def test_a_symmetrically_gated_cluster_needs_no_guard_at_all():
+    """The registry-side remedy, pinned so it is not undone later.
+
+    When both sides of a confusable cluster gate their decisive anchors the same way, both
+    claims are audible, the count comes to two, and the *existing* fallthrough handles it with
+    no guard involved. Symmetric gating within a cluster is the property a registry lint should
+    enforce; the runtime guard is the safety net for when it is violated.
+    """
+    outcome = anchor_scores(
+        us_licence_sheet(), licence_pair(us_zone=None, ca_zone=None), settings=SETTINGS
+    )
+
+    assert outcome.muted_decisive == {}
+    assert len(outcome.decisive_doctypes()) == 2
 
 
 def test_empty_registry_abstains_rather_than_guessing():
@@ -801,3 +1007,489 @@ def test_evidence_masks_identifiers():
     assert checksum_evidence
     assert "130-692-544" not in checksum_evidence[0].detail
     assert "-544" in checksum_evidence[0].detail
+
+
+# ---------------------------------------------------------------------------
+# (k) One accept rule: coherence of the numbers it reports
+#
+# The cascade used to have two-and-a-half accept paths — a checksum short-circuit and a
+# decisive-anchor short-circuit, each returning before the accept rule ran and each with its
+# own hard-coded confidence. Three incoherences followed, and each one gets a test here so
+# that reintroducing a parallel path fails loudly rather than quietly.
+# ---------------------------------------------------------------------------
+def _every_verdict_in(specs: list[DocTypeSpec], views: list[LayoutView]) -> list:
+    return [classify(view, specs, settings=SETTINGS) for view in views]
+
+
+def sample_views() -> list[LayoutView]:
+    """A spread of payloads: strong evidence, thin evidence, contested, and none at all."""
+    return [
+        passport_view(),
+        bank_statement_view(),
+        shared_vocabulary_view(),
+        view_of([TextBlock(text="PASSPORT", zone=Zone.title)]),
+        view_of([TextBlock(text="Chapter four: the harvest was late.", zone=Zone.body)]),
+        view_of(
+            [
+                TextBlock(text="SOCIAL INSURANCE NUMBER", zone=Zone.title),
+                TextBlock(text="130-692-544", zone=Zone.body),
+            ]
+        ),
+        view_of([TextBlock(text="EMPLOYER IDENTIFICATION NUMBER", zone=Zone.title)]),
+    ]
+
+
+def test_an_accepted_classification_never_reports_a_negative_margin():
+    """The margin is one subtraction on one scale, so this is true by construction.
+
+    It was not true before. ``_accept_short_circuit`` computed ``margin = score - max(other
+    anchor scores)`` where ``score`` was the hard-coded constant 0.90 and the runner-up came
+    off the squashed anchor channel: two different scales, subtracted. Two corpus documents
+    were accepted reporting a negative margin, which says the winner lost.
+    """
+    for result in _every_verdict_in(registry(), sample_views()):
+        if result.abstained:
+            continue
+        assert result.margin >= 0.0, (
+            f"{result.doctype_id} was accepted while reporting margin {result.margin}"
+        )
+        assert result.margin >= SETTINGS.classify_min_margin
+
+
+def test_confidence_orders_acceptance_above_abstention():
+    """0.5 is the decision boundary, on both sides of it, for every document.
+
+    Accepts and abstentions used to overlap: an abstention at 0.494 outranked an acceptance at
+    0.409, because the short-circuit's confidence was a hard-coded constant on a different
+    scale from the accept rule's. A headline number that does not order the two outcomes it
+    exists to distinguish cannot be read by a reviewer or thresholded by a caller.
+    """
+    results = _every_verdict_in(registry(), sample_views())
+    accepted = [r.confidence for r in results if not r.abstained]
+    abstained = [r.confidence for r in results if r.abstained]
+
+    assert accepted and abstained, "the fixture must exercise both outcomes"
+    assert min(accepted) >= 0.5
+    assert max(abstained) < 0.5
+    assert min(accepted) > max(abstained)
+
+
+def test_every_accepted_answer_clears_every_configured_floor():
+    """No accept path may skip a gate. This is the whole of DEFECT S in one assertion.
+
+    Five corpus documents used to be accepted below ``classify_min_coverage`` because the
+    short-circuit returned before that floor was read.
+    """
+    for result in _every_verdict_in(registry(), sample_views()):
+        if result.abstained:
+            continue
+        assert result.margin >= SETTINGS.classify_min_margin
+        assert result.coverage >= SETTINGS.classify_min_coverage
+
+
+def test_support_floor_is_the_only_gate_that_can_refuse_thin_evidence():
+    """``classify_min_support`` is redundant on the corpus; here is what it is not redundant to.
+
+    A doctype that declares exactly ONE anchor has coverage 1.0 the moment that anchor matches
+    — coverage is a fraction of the doctype's declared anchors, so no coverage floor can ever
+    refuse a one-anchor doctype. And if nothing else in the registry scores, its lead over a
+    field of zeros clears any margin floor. Both of the other gates are structurally blind to
+    this, which is a registry-authoring accident rather than an exotic one.
+
+    The evidence here is a single low-specificity anchor found in page furniture: about a fifth
+    of a bit. The support floor is what refuses it, and it refuses it alone.
+    """
+    thin = DocTypeSpec(
+        doctype_id="footer_only",
+        label="Footer Only",
+        country="US",
+        anchors=[Anchor(text="NOTICE", zone=Zone.furniture)],
+        fields=[FieldSpec(name="a", labels={"en": ["A"]})],
+    )
+    unrelated = DocTypeSpec(
+        doctype_id="unrelated",
+        label="Unrelated",
+        country="US",
+        anchors=[Anchor(text="COMPLETELY DIFFERENT HEADER")],
+        fields=[FieldSpec(name="b", labels={"en": ["B"]})],
+    )
+    view = view_of(
+        [
+            TextBlock(text="Dear customer, your appointment has moved.", zone=Zone.body),
+            TextBlock(text="NOTICE", zone=Zone.furniture),
+        ]
+    )
+
+    without = classify(view, [thin, unrelated], settings=Settings(
+        _env_file=None, classify_min_support=0.0
+    ))
+    assert without.doctype_id == "footer_only", "the other two gates cannot see this"
+    assert without.coverage == 1.0
+    assert without.margin >= SETTINGS.classify_min_margin
+
+    withit = classify(view, [thin, unrelated], settings=SETTINGS)
+    assert withit.doctype_id == UNKNOWN
+    assert "support below floor" in withit.reason
+    assert "margin below floor" not in withit.reason
+    assert "coverage below floor" not in withit.reason
+
+
+def test_an_unlabelled_luhn_valid_number_is_not_strong_evidence():
+    """Ten per cent of nine-digit strings pass Luhn. That is a fact about numbers.
+
+    The anchor channel used to top out at 0.875 for a doctype on the strength of a bare
+    nine-digit Luhn-valid number with nothing around it — no label, and no anchor of that
+    doctype matched anywhere on the page. A page of unrelated prose that happens to carry an
+    invoice reference could therefore outrank the document's real class on L1.
+
+    A checksum is evidence about a *number*. It becomes evidence about a *document* when the
+    document says what the number is.
+    """
+    # Purpose-built so the two corroboration mechanisms are separable: the field's declared
+    # label ("Social Insurance Number") is NOT one of the doctype's anchors, so a document
+    # that labels the number without carrying the issuer's header exercises the label path
+    # alone, and vice versa.
+    spec = DocTypeSpec(
+        doctype_id="ca_sin_letter",
+        label="SIN Confirmation Letter",
+        country="CA",
+        category=Category.identity,
+        anchors=[Anchor(text="CONFIRMATION OF SOCIAL INSURANCE NUMBER", decisive=True)],
+        id_patterns=[r"\b\d{3}-\d{3}-\d{3}\b"],
+        fields=[
+            FieldSpec(
+                name="sin",
+                type="id",
+                validator="sin_luhn",
+                labels={"en": ["Social Insurance Number"]},
+            )
+        ],
+    )
+    bare = view_of(
+        [
+            TextBlock(text="Reference for your records: 130-692-544", zone=Zone.body),
+            TextBlock(text="Please quote it when you call.", zone=Zone.body),
+        ]
+    )
+    labelled = view_of(
+        [
+            TextBlock(text="Social Insurance Number: 130-692-544", zone=Zone.body),
+            TextBlock(text="Please quote it when you call.", zone=Zone.body),
+        ]
+    )
+    specs = [spec]
+
+    bare_out = anchor_scores(bare, specs, settings=SETTINGS)
+    labelled_out = anchor_scores(labelled, specs, settings=SETTINGS)
+
+    bare_hit = bare_out.checksums["ca_sin_letter"][0]
+    labelled_hit = labelled_out.checksums["ca_sin_letter"][0]
+    assert bare_hit.verified is True, "the check digit really does pass in both"
+    assert labelled_hit.verified is True
+    assert bare_hit.corroborated is False
+    assert labelled_hit.corroborated is True
+
+    assert bare_out.scores["ca_sin_letter"] < labelled_out.scores["ca_sin_letter"]
+    assert bare_out.scores["ca_sin_letter"] < 0.5, (
+        "an unlabelled identifier must not top out the anchor channel"
+    )
+    assert bare_out.verified_doctypes() == (), (
+        "and it must not be able to satisfy the conclusive-L1 identification route"
+    )
+    assert classify(bare, specs, settings=SETTINGS).doctype_id == UNKNOWN
+
+
+def test_an_anchor_match_corroborates_an_identifier_the_document_did_not_label():
+    """The other half of the rule, so it is not read as "labels or nothing".
+
+    OCR loses labels. A document that carries the issuer's own header has already said what it
+    is, and the identifier on it is then corroborated whether or not its label survived.
+    """
+    view = view_of(
+        [
+            TextBlock(text="SOCIAL INSURANCE NUMBER", zone=Zone.title),
+            TextBlock(text="Ligne francaise perdue par l'OCR", zone=Zone.body),
+            TextBlock(text="130-692-544", zone=Zone.body),
+        ]
+    )
+    outcome = anchor_scores(view, [ca_sin_spec()], settings=SETTINGS)
+
+    assert outcome.checksums["ca_sin"][0].corroborated is False, "no label on that line"
+    assert outcome.verified_doctypes() == ("ca_sin",), (
+        "but the doctype's own anchor matched, so the document identified itself"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (i) MONOTONICITY — the accept rule may not punish stronger evidence
+# ---------------------------------------------------------------------------
+# Round 3, regression 1. Measured, before the fix, on the reference corpus through the
+# container: the SAME 59 documents scored 36 correct with every block labelled `body` and 32
+# correct with inferred title/heading zones. Zone labels are strictly MORE information and
+# production always has them (Azure DI -> ROLE_ZONES in dce.adapters), so the configuration
+# production can never run was the better one and the 36 was a number production would never
+# see. All five documents it cost were refused by the margin gate with the winner's support at
+# 0.98 — the diagnosis in one number: the gate was a DIFFERENCE of two quantities bounded above
+# by 1 and clipped at 0.97, so pushing the winner and its rival up the saturating curve
+# together squeezed the measured separation toward zero. More evidence, less separation.
+#
+# The rule now compares in bits (evidence_bits / separation_of) and decides on the zone-free
+# reading, so both halves are structural. These tests pin both halves.
+
+
+def _promote(view: LayoutView, text: str, zone: Zone) -> LayoutView:
+    """The same payload with the block whose text is ``text`` relabelled ``zone``."""
+    promoted = view.model_copy(deep=True)
+    for block in promoted.blocks:
+        if block.text == text:
+            block.zone = zone
+    return promoted
+
+
+#: The masthead both sibling forms print, as one line — which is how a layout provider sees it
+#: and therefore how a single ``title`` role lands on it.
+MASTHEAD = "Department of the Treasury  Internal Revenue Service  OMB No. 1545-0074"
+
+
+def sibling_form_pair() -> list[DocTypeSpec]:
+    """Two form types that share their masthead, which is the shape the defect needed.
+
+    This is the ordinary case, not a contrived one: ``us_w2`` and ``us_1040`` share "Department
+    of the Treasury - Internal Revenue Service"; ``mx_cif`` and ``mx_rfc_csf`` share "Registro
+    Federal de Contribuyentes"; ``in_aoa`` and ``in_moa`` share the Companies Act header. A
+    document of type A therefore carries evidence for B, and promoting the shared masthead into
+    the title zone strengthens **both**.
+
+    That is what the previous accept rule could not survive. It tested ``S[1] - S[2] >= 0.04``
+    where ``S = 1 - (1 - anchor)(1 - explained)`` is bounded above by 1 — so once the
+    RUNNER-UP's support passes 0.96 the gate is unsatisfiable *at any level of evidence for the
+    winner*, because there is less than 0.04 of headroom left between ``S[2]`` and the bound.
+    The anchor tier clips at 0.97, i.e. 5.06 bits, and a title multiplies anchor bits by 2.0,
+    so a shared masthead in a title is exactly the thing that pushes a runner-up over that line.
+
+    Verified to be a real regression guard rather than a test that would have passed anyway:
+    replayed through the PREVIOUS accept rule (same tiers, same evidence, only the rule
+    differing) this fixture gives ``form_wages`` accepted at confidence 0.618 with every block
+    read as ``body``, and ``unknown`` — an abstention — with the masthead promoted to
+    ``heading`` (0.315) or to ``title`` (0.312). Strictly more information, no answer at all.
+    That is the corpus regression, 36 correct down to 32, in one fixture.
+    """
+    shared = [
+        Anchor(text="Department of the Treasury"),
+        Anchor(text="Internal Revenue Service"),
+        Anchor(text="OMB No. 1545-0074"),
+    ]
+    return [
+        DocTypeSpec(
+            doctype_id="form_wages",
+            label="Wage and Tax Statement",
+            country="US",
+            anchors=[
+                *shared,
+                Anchor(text="Wage and Tax Statement", decisive=True),
+                Anchor(text="Wages, tips, other compensation"),
+                Anchor(text="Social security wages"),
+            ],
+            fields=[FieldSpec(name="wages", labels={"en": ["Wages"]})],
+        ),
+        DocTypeSpec(
+            doctype_id="form_return",
+            label="Individual Income Tax Return",
+            country="US",
+            anchors=[
+                *shared,
+                Anchor(text="U.S. Individual Income Tax Return", decisive=True),
+                Anchor(text="Filing Status"),
+            ],
+            fields=[FieldSpec(name="agi", labels={"en": ["Adjusted gross income"]})],
+        ),
+    ]
+
+
+def _monotonicity_cases() -> list[tuple[str, LayoutView, str, str, list[DocTypeSpec]]]:
+    """``(name, all-body view, the document's own header line, expected doctype, registry)``.
+
+    Deliberately a spread rather than one specimen: a photo ID carried by a decisive anchor, a
+    letter carried by an anchor plus a checksum, a chatty document carried by the lexical tier,
+    and — the one that actually reproduces the defect — a form whose masthead it shares with a
+    sibling form, so promoting that masthead strengthens the runner-up too.
+    """
+    return [
+        (
+            "shared masthead, runner-up strengthened with the winner",
+            view_of(
+                [
+                    TextBlock(text=MASTHEAD, zone=Zone.body),
+                    TextBlock(text="Wage and Tax Statement", zone=Zone.body),
+                    TextBlock(text="Wages, tips, other compensation", zone=Zone.body),
+                    TextBlock(text="Social security wages", zone=Zone.body),
+                    TextBlock(text="Filing Status", zone=Zone.body),
+                ]
+            ),
+            MASTHEAD,
+            "form_wages",
+            sibling_form_pair(),
+        ),
+        (
+            "decisive-anchor identity document",
+            view_of(
+                [
+                    TextBlock(text="PASSPORT", zone=Zone.body),
+                    TextBlock(text="Type/Type   Code/Code", zone=Zone.body),
+                    TextBlock(text="Authority", zone=Zone.body),
+                    TextBlock(text=MRZ_LINE_1, zone=Zone.body),
+                    TextBlock(text=MRZ_LINE_2, zone=Zone.body),
+                ]
+            ),
+            "PASSPORT",
+            "passport",
+            registry(),
+        ),
+        (
+            "anchor plus corroborated checksum",
+            view_of(
+                [
+                    TextBlock(text="SOCIAL INSURANCE NUMBER", zone=Zone.body),
+                    TextBlock(text="Service Canada", zone=Zone.body),
+                    TextBlock(text="SIN: 130-692-544", zone=Zone.body),
+                ]
+            ),
+            "SOCIAL INSURANCE NUMBER",
+            "ca_sin",
+            registry(),
+        ),
+        (
+            "lexical-tier document",
+            view_of(
+                [
+                    TextBlock(text="STATEMENT OF ACCOUNT", zone=Zone.body),
+                    TextBlock(text="ACCOUNT SUMMARY", zone=Zone.body),
+                    TextBlock(text="Account Number: 0021 9948 7712", zone=Zone.body),
+                    TextBlock(text="Statement Date: 31 March 2026", zone=Zone.body),
+                    TextBlock(text="BEGINNING BALANCE 4,120.55", zone=Zone.body),
+                    TextBlock(text="CLOSING BALANCE 5,004.12", zone=Zone.body),
+                    TextBlock(text="IBAN GB29 NWBK 6016 1331 9268 19", zone=Zone.body),
+                ]
+            ),
+            "STATEMENT OF ACCOUNT",
+            "bank_statement",
+            registry(),
+        ),
+    ]
+
+
+def test_promoting_the_true_title_line_never_degrades_the_verdict():
+    """THE round-3 property. Stronger evidence for the true doctype may not cost an accept.
+
+    For each case the document's own title line is moved from ``body`` into ``title`` and then
+    into ``heading`` — strictly more evidence for the doctype that is already right, and
+    nothing else changed. Three things must hold, in order of how badly they fail if they do:
+
+    1. an accepted answer may not become an abstention;
+    2. an accepted answer may not become a *different* answer;
+    3. the reported confidence may not fall.
+
+    (3) is the one that would have caught the defect early. Before the fix, the confidence of
+    an accepted answer fell as its evidence grew, because the margin factor of the confidence
+    is ``lead / (lead + floor)`` and ``lead`` was a difference of saturating quantities.
+    """
+    for name, body_view, title_line, expected, specs in _monotonicity_cases():
+        base = classify(body_view, specs, settings=SETTINGS)
+        assert base.doctype_id == expected and not base.abstained, (
+            f"{name}: the fixture must accept before it can be tested for monotonicity"
+        )
+        for zone in (Zone.heading, Zone.title):
+            stronger = classify(
+                _promote(body_view, title_line, zone), specs, settings=SETTINGS
+            )
+            assert not stronger.abstained, (
+                f"{name}: promoting {title_line!r} to {zone.value} turned an accept into an "
+                f"abstention — {stronger.reason}"
+            )
+            assert stronger.doctype_id == expected, (
+                f"{name}: promoting {title_line!r} to {zone.value} changed the answer to "
+                f"{stronger.doctype_id!r}"
+            )
+            assert stronger.confidence >= base.confidence - 1e-9, (
+                f"{name}: promoting {title_line!r} to {zone.value} LOWERED confidence, "
+                f"{base.confidence} -> {stronger.confidence}"
+            )
+
+
+def test_the_separation_measure_is_strictly_increasing_in_the_evidence_lead():
+    """The algebra the property rests on, pinned directly rather than only through documents.
+
+    ``separation_of`` must be strictly increasing on a positive lead and must not saturate the
+    way ``S[1] - S[2]`` did. The second assertion is the specific failure: scale both
+    candidates' evidence by a common zone multiplier and the OLD quantity shrinks while the new
+    one grows.
+    """
+    from dce.classify.cascade import evidence_bits, separation_of
+
+    leads = [0.0, 0.05, 0.25, 1.0, 4.0, 12.0]
+    seps = [separation_of(x) for x in leads]
+    assert seps == sorted(seps)
+    assert all(b > a for a, b in pairwise(seps))
+    assert seps[0] >= 0.0 and seps[-1] < 1.0
+
+    # Winner at 3 bits, rival at 2. Apply the title zone's 2.0x anchor multiplier to both.
+    winner, rival = 3.0, 2.0
+    boost = 2.0
+    old_before = (1 - 2**-winner) - (1 - 2**-rival)
+    old_after = (1 - 2 ** -(winner * boost)) - (1 - 2 ** -(rival * boost))
+    assert old_after < old_before, "the OLD measure shrinks when both sides get stronger"
+    assert separation_of(winner * boost - rival * boost) > separation_of(winner - rival), (
+        "the new one must grow"
+    )
+
+    # And the noisy-OR really is additive in bits, which is what makes the above legitimate.
+    a_bits, explained = 2.5, 0.4
+    noisy_or = 1.0 - (1.0 - (1.0 - 2.0**-a_bits)) * (1.0 - explained)
+    assert abs(evidence_bits(a_bits, explained) - -math.log2(1.0 - noisy_or)) < 1e-9
+
+
+def test_one_mislabelled_line_cannot_change_the_verdict():
+    """Azure DI calls captions, watermarks and marketing copy ``title``. Routinely.
+
+    A title is worth 3.0x in the lexical tier, 2.0x in the anchor tier, and it is the only zone
+    in which 21 of the registry's decisive anchors are audible at all — so a single bad label
+    is worth up to four bits of evidence for a document type the page has nothing to do with.
+
+    Measured through the container on eight documents the service classified correctly, by
+    appending ONE line carrying another doctype's decisive anchor, once labelled ``title`` and
+    once labelled ``body`` — identical text, identical position, only the label differing:
+
+        previous accept rule    23 confident wrong answers (title) vs  3 (body)   7.67x
+        this accept rule         5 confident wrong answers (title) vs  5 (body)   1.00x
+
+    The label now buys nothing, which is the guarantee: the two comparisons the rule makes —
+    who leads, and by how much — are evaluated on the zone-free reading of the payload. What a
+    zone label can still do is *add* (a zone-restricted anchor can establish the conclusive-L1
+    route, and zone weighting still feeds ``support``), so labels can raise a verdict and
+    cannot lower one.
+    """
+    honest = view_of(
+        [
+            TextBlock(text="MONTHLY STATEMENT", zone=Zone.heading),
+            TextBlock(text="Account Number 0012 3456", zone=Zone.body),
+            TextBlock(text="Opening balance 1,204.55", zone=Zone.body),
+            TextBlock(text="Closing balance 998.10", zone=Zone.body),
+            TextBlock(text="Statement period 01 Mar to 31 Mar", zone=Zone.body),
+        ]
+    )
+    for lie in ("PASSPORT", "SOCIAL INSURANCE NUMBER", "EMPLOYER IDENTIFICATION NUMBER"):
+        as_body = classify(
+            view_of([*honest.blocks, TextBlock(text=lie, zone=Zone.body)]),
+            registry(),
+            settings=SETTINGS,
+        )
+        as_title = classify(
+            view_of([*honest.blocks, TextBlock(text=lie, zone=Zone.title)]),
+            registry(),
+            settings=SETTINGS,
+        )
+        assert as_title.doctype_id == as_body.doctype_id, (
+            f"the label alone changed the answer for {lie!r}: "
+            f"body -> {as_body.doctype_id}, title -> {as_title.doctype_id}"
+        )
+        assert as_title.abstained == as_body.abstained

@@ -246,22 +246,103 @@ usually changes nothing.
 
 ```
 score_c = log P(c | structure) + 3.0·anchor_c + 1.0·lexical_c + 0.8·bert_c
-p       = softmax(score / T)          # T = softmax_temperature, default 0.6
+p       = softmax(score / T)          # audit trail and runners-up ONLY — decides nothing
 
-accept  ⟺  p ≥ classify_accept_probability   (0.65)
-      AND  margin ≥ classify_min_margin      (0.25)
-      AND  coverage ≥ classify_min_coverage  (0.20)
+A_c = anchor_c                        # min(0.97, 1 − 0.5^raw), absolute, per (doc, spec)
+L_c = explained_c                     # share of class c's own idf-weighted profile mass
+                                      # that the document exhibited, BM25-saturated
+
+S_c = 1 − (1−A_c)(1−L_c)        d = argmax S
+
+accept d ⟺  argmax(A) = argmax(L) = d       (concurrence)              ┐ identification:
+        OR  d is the one doctype holding a decisive anchor or a        ┘ either one
+            corroborated checksum, and no confusable peer's decisive
+            claim was muted by a missing zone on this payload
+      AND  S[1] − S[2]                  ≥ classify_min_margin   (0.04)
+      AND  S_d                          ≥ classify_min_support  (0.30)
+      AND  max(profile cov, anchor cov) ≥ classify_min_coverage (0.20)
+
+confidence = min( S-lead/(S-lead+margin),
+                  S_d   /(S_d   +support),
+                  cov_d /(cov_d +coverage) )    if identified else 0.0
 ```
 
-All three conditions, because each catches a different way of being wrong:
+**There is one accept path, and the near-proof L1 evidence goes through it.** There used to be
+a checksum short-circuit and a decisive-anchor short-circuit that returned before this rule
+ran, each with its own hard-coded confidence; between them they produced 25 of 35 accepts on
+the reference corpus, so the documented rule governed a minority of the decisions. They
+reported margins computed across two different scales (three accepts shipped a *negative*
+margin), they could not be refused by `classify_min_support` or `classify_min_coverage`
+because those gates were evaluated after the early return, and their confidence did not order
+accepts above abstentions. All three are structural, not tuning, and all three are fixed by
+having one rule: 34/1/26 correct/wrong/abstained before, 36/1/24 after, precision 97.1% →
+97.3%, negative margins 3 → 0, sub-coverage accepts 5 → 0. With a title zone present (a
+font-size proxy for the Azure DI `title` role, which the shipped text-layer harness never
+emits): 31/2/28 at 93.9% before, 31/1/29 at 96.9% after.
 
-* **Probability** alone accepts a document that merely resembles a PAN card more than anything
-  else in the registry. With a 121-entry registry, "most likely" is a low bar.
-* **Margin** forces the winner to actually beat the runner-up. This is the condition that
-  catches near-identical form revisions, which is the registry's characteristic failure.
-* **Coverage** — the share of the class's term profile actually observed — catches winning by
+**Confidence is a distance to the binding constraint, not a posterior.** Each factor is
+exactly 0.5 at its own floor, so the `min` is ≥ 0.5 if and only if every gate passed: **0.5 is
+the decision boundary**, and the reported value names the control that came closest to
+blocking the accept. It is deliberately not dressed up as a probability — a calibrated
+posterior would need labelled production data this service does not have, and a number that
+merely looks like one is how the registry-normalised softmax got into the accept path.
+
+**`p` is no longer an accept condition, and could not be repaired into one.** Every doctype in
+the registry contributes a strictly positive term to that softmax denominator, related to the
+document or not, so `p` is a function of registry size as well as of the document: the same
+US W-9, on identical evidence, scored 0.900 against 25 doctypes and 0.411 against 121. Every
+country pack shipped degraded every doctype already installed. Lowering the floor would have
+relocated the defect, not removed it. `classify_accept_probability` has now been **removed**
+from `config.py` — it was kept there, deprecated, on the grounds that "the short-circuit still
+reports a confidence above it", and that short-circuit no longer exists. A setting that
+nothing reads still appears in the container environment and in a reviewer's model of what
+governs the decision, which makes it a control-review hazard rather than harmless history; the
+history is recorded in a comment where the field used to be.
+
+Four conditions, because each catches a different way of being wrong:
+
+* **Identification** requires the winner to be picked out by evidence rather than by being the
+  least-bad thing on the shelf. Concurrence — two independent tiers reaching the same class —
+  is what buys precision, and it is measurable: a rank-relative rule *without* it recovers more
+  documents and admits two new wrong answers, because the runner-up in a fused ranking is not
+  reliably the real competitor. The conclusive-L1 alternative exists because a photo ID carries
+  almost no text for the lexical tier to rank; deleting it costs 3 of 37 accepts on the corpus
+  and buys no precision. A channel on which nothing scored above zero is **silent**, not
+  agreeing: install a single doctype and its profile is empty, and a rule comparing argmaxes
+  alone would find the silent tier "concurring" about the only doctype on the shelf.
+* **Separation** forces the winner to actually beat the next candidate, on the combined
+  channel, so what counts as a real gap does not depend on how many doctypes exist. Being one
+  subtraction on one scale, it also cannot be negative on an accepted answer — which the old
+  short-circuit's constant-minus-anchor-score arithmetic could be, and was, twice.
+* **Support** is the absolute backstop. A lead says the winner beat its rivals; support says
+  the winner is actually supported, which is what stops "least-wrong of a tiny registry". It is
+  redundant on the reference corpus — it fires on 5 documents but is never the sole refusal —
+  and it is kept because it is the only gate that can see a doctype declaring one weak anchor,
+  which gets coverage 1.0 for free and an unopposed lead. That case is pinned by a test.
+* **Coverage** — the share of the class's vocabulary actually observed — catches winning by
   elimination. A blank page can score highest on some class simply because nothing contradicts
   it; coverage says *the document does not contain this document type's vocabulary*.
+
+Because the verdict reads five numbers — `S[1]`, `S[2]`, the winner's coverage, and the
+argmaxes of `A` and `L` — adding a doctype can change it only by entering the top two of a
+channel, which requires that doctype to carry real evidence *for this document*.
+`tests/test_registry_scale_invariance.py` pins the property. Re-measured after the accept-path
+rewrite, in the harder form (registry sizes 5/10/25/50/121 with the term profiles rebuilt at
+each size, so idf drift is included rather than held fixed): the `(doctype, abstained)` verdict
+is unchanged on **60 of 61** documents, with a maximum confidence swing of **0.038**. The one
+exception sits 0.002 above the accept boundary and the drift tips it across. That residual is
+the idf term inside `lexical.explained`, which appears in the numerator and denominator of that
+ratio and so very largely — but not exactly — cancels; it is not the removed defect, which was
+a systematic monotone collapse of size 0.49 on a single document.
+
+`confidence` changed meaning with the rule, for the second time, and dashboards histogramming
+`dce_classification_confidence` need re-baselining. It is now
+`min(separation, strength, breadth)` over the three floors above. **0.5 is the decision
+boundary in both directions**: every accepted answer is at or above it, every abstention
+strictly below it. The previous `separation × strength` form left accepts and abstentions
+overlapping (an abstention at 0.494 above an acceptance at 0.409) because the short-circuit
+supplied a constant on an unrelated scale; taking the `min` of gate-relative ratios makes the
+ordering a property of the arithmetic rather than of the calibration.
 
 Failing any of them abstains. The `reason` string names the condition that failed and the
 numbers, because "abstained" without a number is not actionable.

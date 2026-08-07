@@ -10,3 +10,7 @@ data/
 # The BERT checkpoint is mounted at runtime, never committed (~1.3 GB)
 models/*
 !models/.gitkeep
+
+# Scoring output — regenerate with tools/corpus_test.py
+reports/
+!reports/latest/

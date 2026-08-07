@@ -46,9 +46,52 @@ bert = [
     "transformers>=4.44",
     "torch>=2.3",
 ]
+# ---------------------------------------------------------------------------
+# INGESTION EXTRAS (dce.ingest) — accepting the formats a KYC pipeline actually receives.
+#
+# The base install already parses DOCX, XLSX, PPTX, ODT, RTF, TXT, CSV, HTML, EML and MSG
+# with the STANDARD LIBRARY ALONE: zipfile + xml.etree for the office formats, `email` for
+# messages, html.parser for markup, and a compound-file reader in dce/ingest/cfb.py for
+# Outlook .msg. None of the packages below are needed for any of those. What the extras buy
+# is the two things the standard library cannot do — read a PDF, and read pixels.
+# ---------------------------------------------------------------------------
+
+#: PDF text layers. Also what tools/corpus_test.py has always needed and never declared.
+pdf = [
+    "pymupdf>=1.24",
+]
+
+# ---- LOCAL OCR: OPTIONAL, OFF BY DEFAULT, AND NEVER A NETWORK CALL ---------
+# An image carries no text, so classifying one *requires* recognition — and the accurate
+# recognisers are cloud services, which is the exact egress this service exists to prevent.
+# The default answer is therefore an honest, structured `needs_ocr`, not a guess. A deployment
+# that has accepted the accuracy trade installs one of these engines and sets
+# DCE_INGEST_LOCAL_OCR_ENABLED=true; both run on this host and open no socket. An engine that
+# needs an endpoint does not belong here — it belongs after classification, with T2/T3/T4.
+
+#: RapidOCR under ONNX Runtime — genuinely in-process. The recommended engine.
+ocr-rapidocr = [
+    "rapidocr-onnxruntime>=1.3",
+    "onnxruntime>=1.17",
+    "numpy>=1.26",
+    "pillow>=10.3",
+]
+#: Tesseract via pytesseract. Zero-egress too, but it shells out to a LOCAL BINARY you must
+#: install separately (`brew install tesseract`, `apt install tesseract-ocr`) — a subprocess,
+#: not an in-process library. Offered for its language packs; see dce/ingest/ocr.py, which
+#: states the distinction rather than hiding it behind the word "local".
+ocr-tesseract = [
+    "pytesseract>=0.3.10",
+    "pillow>=10.3",
+]
+
 dev = [
     "pytest>=8.2",
     "ruff>=0.6",
+    # The ingestion suite builds its own DOCX/XLSX/PPTX/ODT/MSG/PNG/TIFF fixtures byte by
+    # byte (tests/ingest_fixtures.py) and needs no office library; it does need a PDF engine
+    # for the PDF cases, which is the `pdf` extra above.
+    "pymupdf>=1.24",
     # Test-only. fastapi.testclient is built on httpx, so it is here and NOT in the base deps:
     # the runtime image must not contain an HTTP client that the classification path could
     # reach for. tests/test_api.py asserts that no engine module imports one.

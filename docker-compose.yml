@@ -25,9 +25,19 @@ services:
 
       # Thresholds. Raising them raises the abstention rate (more human review, fewer silent
       # mistakes); lowering them does the opposite. Watch dce_classifications_total before
-      # touching either.
-      CLASSIFY_ACCEPT_PROBABILITY: "0.65"
-      CLASSIFY_MIN_MARGIN: "0.25"
+      # touching any of them.
+      #
+      # CLASSIFY_ACCEPT_PROBABILITY is deliberately NOT set here any more. It was an absolute
+      # floor on a probability normalised over the whole registry, which made it a function of
+      # how many doctypes were installed rather than of the document, and it has left the
+      # accept path entirely (see docs/DESIGN.md §5.2). Setting it here would look like it
+      # still did something.
+      #
+      # CLASSIFY_MIN_MARGIN is now the minimum lead on an absolute [0, 1] evidence channel,
+      # not a difference of two registry-normalised probabilities. Its scale changed with its
+      # meaning: the old 0.25 applied to this quantity abstains on essentially everything.
+      CLASSIFY_MIN_MARGIN: "0.04"
+      CLASSIFY_MIN_SUPPORT: "0.30"
       CLASSIFY_MIN_COVERAGE: "0.20"
 
       # ---- Optional local BERT tier (L3) -------------------------------------------------

@@ -83,6 +83,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from dce import SERVICE_NAME, __version__, adapters, observability
 from dce.config import Settings
+from dce.ingest import IngestError, IngestOptions
+from dce.ingest import ingest as ingest_bytes
 from dce.models import (
     UNKNOWN,
     Category,
@@ -1116,6 +1118,16 @@ class DocumentRequest(BaseModel):
     #: the paid tiers off should not send it at all: the smallest way to keep a document out of
     #: a network call is not to hand it over in the first place.
     content_base64: str | None = None
+    #: Set this to have ``content_base64`` **parsed in this process** into a layout, instead
+    #: of being carried untouched for the paid tiers. That is the whole difference, and it is
+    #: how a caller holding a ``.docx``, an ``.xlsx``, an ``.eml`` or a photograph — and no
+    #: OCR stack of their own — gets in at all. The format is decided from the bytes, never
+    #: from the filename (:mod:`dce.ingest.detect`); an image or a scanned PDF returns a
+    #: structured ``422`` naming ``needs_ocr`` rather than a guess, because recognising an
+    #: unclassified document on somebody else's servers is the disclosure this service exists
+    #: to prevent. Leave it unset and nothing changes: ``content_base64`` keeps exactly its
+    #: old meaning.
+    ingest: IngestOptions | None = None
 
 
 class ExtractRequest(DocumentRequest):
@@ -1333,12 +1345,50 @@ def _ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
 
 
+def _ingest_to_layout(req: DocumentRequest) -> LayoutView:
+    """Parse ``content_base64`` in-process. The one call site of :mod:`dce.ingest`.
+
+    Raises:
+        HTTPException: ``400`` when no bytes were sent or the upload could not be parsed;
+            ``422`` with a structured ``needs_ocr`` body when the file carries no text at
+            all; ``415``/``413``/``408``/``503`` for the corresponding ingest errors.
+    """
+    data = _document_bytes(req)
+    if data is None:
+        raise HTTPException(
+            status_code=400, detail="ingest was requested but content_base64 is empty"
+        )
+    options = req.ingest or IngestOptions()
+    try:
+        outcome = ingest_bytes(
+            data,
+            doc_id=req.doc_id,
+            filename=options.filename,
+            local_ocr=options.local_ocr,
+        )
+    except IngestError as exc:
+        raise HTTPException(
+            status_code=exc.http_status, detail={"error": exc.code, "detail": str(exc)}
+        ) from exc
+    if outcome.view is None:
+        # needs_ocr. Not a classification and not a failure: there was nothing to read. 422
+        # rather than 200-with-an-abstention, because an abstention is a decision the cascade
+        # made about text it saw, and reporting one here would be a lie about which stage
+        # gave up.
+        raise HTTPException(status_code=422, detail=outcome.as_detail())
+    return outcome.view
+
+
 def _to_layout(req: DocumentRequest) -> LayoutView:
     """Adapt a request payload into a :class:`LayoutView`.
 
     Raises:
         HTTPException: ``400`` when the request carried no document at all.
     """
+    if req.ingest is not None:
+        # Asking for ingestion is explicit, so it wins: a caller that sends both a layout and
+        # a file has told us which one they mean by setting this field.
+        return _ingest_to_layout(req)
     if req.layout is not None:
         view = req.layout
     elif req.azure_analyze_result is not None:
@@ -1350,7 +1400,10 @@ def _to_layout(req: DocumentRequest) -> LayoutView:
     else:
         raise HTTPException(
             status_code=400,
-            detail="supply one of: layout, azure_analyze_result, des_ocr, text",
+            detail=(
+                "supply one of: layout, azure_analyze_result, des_ocr, text, or "
+                "content_base64 together with ingest"
+            ),
         )
     if req.doc_id:
         view.doc_id = req.doc_id

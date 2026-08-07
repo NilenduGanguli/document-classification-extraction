@@ -32,10 +32,11 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from importlib import import_module
 
 from dce.models import Anchor, DocTypeSpec, FieldSpec
+from dce.normalize import fold, skeletonize, tokenize_unicode
 
 __all__ = [
     "ATTRIBUTE_KEYS",
@@ -45,8 +46,11 @@ __all__ = [
     "VALIDATOR_CONTRACT",
     "RegistryError",
     "all_specs",
+    "anchor_claim_key",
+    "anchor_claims",
     "by_country",
     "clear",
+    "contested_claims",
     "get",
     "register",
     "register_all",
@@ -311,6 +315,72 @@ def _anchor_key(anchor: Anchor) -> tuple[str, str | None]:
     """
     text = unicodedata.normalize("NFC", anchor.text).strip().casefold()
     return (text, anchor.zone.value if anchor.zone is not None else None)
+
+
+def anchor_claim_key(text: str) -> tuple[str, ...]:
+    """Identity of an anchor *string* as L1 will actually match it: skeleton tokens.
+
+    Three differences from :func:`_anchor_key`, each of which is a hole this function closes.
+
+    **Zone is dropped.** ``us_state_id`` gates ``IDENTIFICATION CARD`` to ``zone=title`` and
+    ``ca_provincial_photo_id`` leaves ``Identification Card`` ungated; the ungated anchor
+    matches in the title too, so the two claims meet on the page even though their
+    ``_anchor_key`` differs. Zone controls whether a claim is *audible*, never whether it is
+    the same claim — and the audibility question is the cascade's, which already has
+    :attr:`~dce.classify.anchors.AnchorOutcome.muted_decisive` for it.
+
+    **Case folding is replaced by the matcher's own normalisation.** L1 matches on
+    :func:`dce.normalize.skeletonize` — accents stripped, OCR confusions folded — so two
+    strings differing only by an accent or by ``O``/``0`` are one claim at runtime and must be
+    one claim here. Case folding alone would file ``RÉSIDENT`` and ``RESIDENT`` as unrelated.
+
+    **The result is a token tuple, not a string.** L1 matches contiguous token n-grams, so
+    punctuation and whitespace are not part of the claim.
+
+    Args:
+        text: The anchor as declared in a pack.
+
+    Returns:
+        The token tuple L1 would search for. Two anchors sharing this key are, for every
+        purpose this registry has, the same string.
+    """
+    return tuple(tokenize_unicode(skeletonize(fold(text))))
+
+
+def anchor_claims(specs: Iterable[DocTypeSpec]) -> dict[tuple[str, ...], frozenset[str]]:
+    """Every anchor string in ``specs``, mapped to the doctypes that print it.
+
+    Decisiveness is deliberately ignored. The question this answers is "who *claims* this
+    string appears on their document", and a pack that declared the anchor non-decisive has
+    made that claim just as loudly. Reading only the decisive declarations is exactly how the
+    ``PERMANENT RESIDENT CARD`` asymmetry survived review — see
+    :func:`_check_decisive_asymmetry` and ``tests/test_registry_jurisdiction.py``.
+
+    Args:
+        specs: The registry, or any subset.
+
+    Returns:
+        ``anchor_claim_key -> frozenset of doctype ids``.
+    """
+    claims: dict[tuple[str, ...], set[str]] = {}
+    for spec in specs:
+        for anchor in spec.anchors:
+            key = anchor_claim_key(anchor.text)
+            if key:
+                claims.setdefault(key, set()).add(spec.doctype_id)
+    return {key: frozenset(owners) for key, owners in claims.items()}
+
+
+def contested_claims(specs: Iterable[DocTypeSpec]) -> dict[tuple[str, ...], frozenset[str]]:
+    """The subset of :func:`anchor_claims` that more than one doctype claims.
+
+    The registry's own admission of where an anchor is *not* unique to a document type. A
+    decisive anchor in this set contradicts the definition of decisive
+    (:class:`dce.models.Anchor`: "near-proof of the doctype"), and the cascade must refuse to
+    short-circuit on it — being the only doctype *heard* saying a string that two doctypes
+    *print* is a fact about the payload's zones, not about the document.
+    """
+    return {key: owners for key, owners in anchor_claims(specs).items() if len(owners) > 1}
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +658,108 @@ def _check_decisive_collisions(errors: list[str]) -> None:
                 )
 
 
+def _check_decisive_asymmetry(errors: list[str]) -> None:
+    """A decisive anchor may not be a string another doctype also prints, undeclared.
+
+    :func:`_check_decisive_collisions` compares decisive anchors against **other decisive
+    anchors** only, and that is the hole this closes. The measured escape:
+
+        ``PERMANENT RESIDENT CARD`` is DECISIVE for ``us_green_card`` and NON-decisive for
+        ``ca_pr_card``. Two doctypes print the string; only one calls it decisive; the
+        collision check never looked at the non-decisive side, so the registry passed
+        validation. On a bilingual card whose French line the OCR dropped, exactly one
+        doctype held a decisive anchor and L1 short-circuited to the US doctype at 0.90.
+
+    Decisiveness is a claim about the *world* — :class:`dce.models.Anchor` defines a decisive
+    anchor as near-proof of the doctype — so it is contradicted by any other doctype declaring
+    the same string, whatever *that* doctype chose to call it. Asymmetry is in fact the more
+    dangerous shape of the two the collision check already catches: two decisive claims cancel
+    (``len(decisive_doctypes()) != 1`` and the short-circuit declines), whereas a
+    decisive/non-decisive pair leaves exactly one claimant standing and silently picks it.
+
+    **The remedy depends on whether the overlap crosses a jurisdiction, and the two cases are
+    not interchangeable.** This was measured rather than reasoned, and the measurement is the
+    reason the rule is shaped the way it is.
+
+    *Same country — declare it.* A masked and an unmasked Aadhaar genuinely share the UIDAI
+    header; ``in_certificate_incorporation`` and ``in_llp_incorporation`` genuinely share
+    ``MINISTRY OF CORPORATE AFFAIRS``. Declaring the overlap in ``confusable_with``, both ways,
+    naming the separating term, is the honest description of a one-issuer document family. At
+    classification time :func:`contested_claims` then stops the shared string from carrying the
+    conclusive-L1 identification route, and the two-channel rule arbitrates on the full
+    evidence — which is the correct outcome for a family, since the two really are ambiguous
+    until something else separates them.
+
+    *Different country — demote it.* Declaring is **not** sufficient here, and assuming it was
+    would have been a silent partial fix. ``us_green_card`` and ``ca_pr_card`` already declared
+    each other, in both directions, with the separating term spelled out — and the Canadian
+    card was still classified ``us_green_card``. Measured with the declaration in place and the
+    contested-claim rule active: ``corpus/ca/ca_pr_card.pdf`` still returned ``us_green_card``
+    at 0.545, because suppressing the conclusive-L1 route does not suppress the *concurrence*
+    route, and ``decisive=True`` is worth a 2.0 multiplier in the anchor score that concurrence
+    reads. The declaration closes one door; the multiplier walks through the other. Only
+    removing the false claim removes the failure.
+
+    That asymmetry is also the right policy independent of the mechanism. A within-family
+    confusion resolves to "which of this issuer's documents is this" and abstains safely; a
+    cross-jurisdiction confusion resolves to a confident identity determination in the wrong
+    country's legal regime, which is the worst error a KYC classifier can make.
+
+    How to tell which you have: a decisive anchor must be a string **one issuer controls** — a
+    form number, an OMB control number, a statute title, an MRZ document-code prefix, an
+    issuing-authority name that issues only this document. A *document-class* name
+    (``IDENTIFICATION CARD``, ``ACCOUNT STATEMENT``, ``ARTICLES OF INCORPORATION``,
+    ``PASAPORTE``, ``PERMANENT RESIDENT CARD``) is chosen independently by every issuer in the
+    world. An *issuer* name that heads several doctypes in this registry
+    (``INCOME TAX DEPARTMENT``) proves the issuer, not the document.
+
+    Same-doctype pairs are exempt throughout. A pack that declares a string decisive at
+    ``zone=title`` and non-decisive ungated is expressing "worth more in the title" about one
+    document, and a doctype cannot be confused with itself.
+    """
+    claims = anchor_claims(all_specs())
+    for spec in all_specs():
+        for anchor in spec.anchors:
+            if not anchor.decisive:
+                continue
+            key = anchor_claim_key(anchor.text)
+            others = sorted(claims.get(key, frozenset()) - {spec.doctype_id})
+            if not others:
+                continue
+
+            foreign = sorted(o for o in others if _REGISTRY[o].country != spec.country)
+            if foreign:
+                errors.append(
+                    f"{spec.doctype_id!r} ({spec.country}) declares {anchor.text!r} DECISIVE, "
+                    f"but {foreign} of other jurisdictions also declare that string as an "
+                    "anchor. A cross-jurisdiction decisive claim must be DEMOTED, not "
+                    "declared: confusable_with does not make it safe. us_green_card and "
+                    "ca_pr_card declared each other in both directions and a Canadian PR card "
+                    "was still classified us_green_card, because suppressing the conclusive-L1 "
+                    "route leaves the concurrence route, which reads the anchor score that "
+                    "decisive=True multiplies by 2.0. If no string on this document is printed "
+                    "by only this issuer, this doctype has no decisive anchor — say so"
+                )
+                continue
+
+            undeclared = sorted(
+                other
+                for other in others
+                if other not in spec.confusable_with
+                or spec.doctype_id not in (_REGISTRY[other].confusable_with or {})
+            )
+            if undeclared:
+                errors.append(
+                    f"{spec.doctype_id!r} declares {anchor.text!r} DECISIVE, but "
+                    f"{undeclared} also declare(s) that string as an anchor without a "
+                    "two-way confusable_with declaration. A decisive anchor asserts the "
+                    "string appears on one document type and nowhere else, and the registry "
+                    "here says otherwise — demote it if the string is a document-class or "
+                    "shared-issuer name, or, since these are doctypes of one jurisdiction, "
+                    "declare the overlap in both directions if they are one document family"
+                )
+
+
 def _check_confusable_targets(errors: list[str]) -> None:
     """``confusable_with`` keys must name real, registered doctypes."""
     for spec in all_specs():
@@ -596,6 +768,65 @@ def _check_confusable_targets(errors: list[str]) -> None:
                 errors.append(
                     f"{spec.doctype_id!r} lists confusable_with[{other!r}] but no such "
                     "doctype is registered"
+                )
+
+
+#: The one class of anchor a cross-country generic is allowed to share with a country pack:
+#: the noun that names the document class it is the fallback for. ``xx_passport_generic``
+#: has to be able to say "passport" or it cannot do its job, and every passport pack says it
+#: too. The exception is deliberately narrow — it covers *naming* nouns only, never field
+#: labels, never structure — and it is written out per doctype rather than inferred, so that
+#: adding one is a visible decision in review rather than a rule that quietly stopped biting.
+#: Everything else is governed by :func:`_check_generic_not_greedy`.
+_GENERIC_NAMING_ANCHORS: Mapping[str, frozenset[str]] = {
+    "xx_passport_generic": frozenset({"passport", "passeport", "pasaporte"}),
+    "xx_utility_bill": frozenset({"utility bill"}),
+}
+
+
+def _check_generic_not_greedy(errors: list[str]) -> None:
+    """A cross-country generic must not declare vocabulary a country pack also declares.
+
+    ``crosscountry`` doctypes exist to catch a document whose issuer is not modelled, and
+    the module promises that "a country-specific doctype always outranks the generic one
+    when both fire". Forbidding the decisive flag on ``XX`` anchors — which
+    :func:`_check_anchor` already does — is not enough to keep that promise, because a spec
+    can win on the *number* of anchors it matches rather than on their weight.
+
+    That is not hypothetical: ``xx_bank_statement`` declared ``Beginning Balance``,
+    ``Ending Balance``, ``Statement Period``, ``Account Summary`` and ``Routing Number`` —
+    five of ``us_bank_statement``'s seven anchors — plus fifteen more. On a US bank
+    statement the generic therefore matched more of its own declared vocabulary than the
+    specific doctype matched of its own, and "issuer not modelled" outranked "US bank
+    statement". Adding a US doctype had made the US doctype harder to reach.
+
+    The rule is the contrapositive of why a pack declares an anchor at all: if a string were
+    not evidence about the issuer, the pack would have no reason to claim it. So a claimed
+    string belongs to the pack, and the generic keeps only what no jurisdiction owns.
+    """
+    claimed: dict[str, list[str]] = {}
+    for spec in all_specs():
+        if spec.country == "XX":
+            continue
+        for anchor in spec.anchors:
+            claimed.setdefault(_anchor_key(anchor)[0], []).append(spec.doctype_id)
+
+    for spec in all_specs():
+        if spec.country != "XX":
+            continue
+        allowed = _GENERIC_NAMING_ANCHORS.get(spec.doctype_id, frozenset())
+        for anchor in spec.anchors:
+            text = _anchor_key(anchor)[0]
+            if text in allowed:
+                continue
+            owners = claimed.get(text)
+            if owners:
+                errors.append(
+                    f"cross-country doctype {spec.doctype_id!r} declares anchor "
+                    f"{anchor.text!r}, which country pack(s) {sorted(set(owners))} also "
+                    "declare; a generic that repeats a pack's vocabulary competes with the "
+                    "pack on documents the pack should win, so either drop it from the "
+                    "generic or stop claiming it in the pack"
                 )
 
 
@@ -670,7 +901,9 @@ def validate_registry() -> None:
     if not _REGISTRY:
         raise RegistryError("registry is empty; no doctype packs were imported")
     _check_decisive_collisions(errors)
+    _check_decisive_asymmetry(errors)
     _check_confusable_targets(errors)
+    _check_generic_not_greedy(errors)
     _check_validators(errors)
     if errors:
         joined = "\n  - ".join(errors)

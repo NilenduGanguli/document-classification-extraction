@@ -1,4 +1,4 @@
-"""Canada doctype pack — 25 :class:`~dce.models.DocTypeSpec` entries.
+"""Canada doctype pack — 37 :class:`~dce.models.DocTypeSpec` entries.
 
 Canadian federal documents are bilingual by law, and OCR sees both halves. Every federal
 doctype here therefore carries French anchors alongside the English ones, and the French
@@ -63,6 +63,27 @@ ATTRIBUTE_KEY_EXTENSIONS: dict[str, str] = {
     "doc.immigration_category": "Immigration category code printed on an immigration document",
     "entity.jurisdiction": "State / province / country of incorporation or organisation",
     "entity.status": "Registry status of the entity (good standing, active, dissolved)",
+    # The five keys below are shared with the US and Mexican packs, which reached them in
+    # the same round for the same reason. Their wording is copied verbatim from
+    # :mod:`dce.registry.usa` — the pack this one's conventions are documented against —
+    # because the loader merges the extension dicts with ``setdefault``, so a pack that
+    # phrases a shared key differently gets whichever wording happened to import first.
+    # ``tests/test_registry_na.py::test_pack_namespace_extensions_agree_with_each_other``
+    # is the check that keeps that from becoming an import-order-dependent ontology.
+    "entity.auditor": "Independent accounting firm that signed the audit report",
+    "entity.exchange": "Exchange on which a class of securities is registered",
+    "entity.security_class": "Title of the class of securities a filing concerns",
+    "entity.shares_outstanding": "Shares of a class outstanding as of a stated date",
+    "entity.ticker": "Trading symbol under which a class of securities trades",
+    "doc.period_covered": "Reporting period a periodic report covers",
+    # Shared with the Mexican pack only; its wording, for the same reason.
+    "entity.fiscal_year_end": "Financial year end the report or filing closes on",
+    # Canadian-only additions.
+    "property.name": "Named mineral or oil-and-gas property a technical report covers",
+    "ownership.securities_held": "Number of securities a reported holder owns, controls "
+    "or directs",
+    "ownership.signer_title": "Office an authorised signatory signed a filing in",
+    "doc.filing_date": "Date a document was filed with, or dated for, a regulator",
 }
 
 #: ``name -> what the validator must enforce``. ``sin_luhn`` is Canada's; the rest are the
@@ -315,6 +336,191 @@ def _entity_name_field(*, required: bool = True) -> FieldSpec:
     )
 
 
+# -- reporting-issuer builders ----------------------------------------------
+# The continuous-disclosure filings below are prose documents rather than forms with boxes,
+# so their fields are found by label far more often than by key/value pair. The locator order
+# reflects that; ``kv`` is kept last rather than dropped because SEDAR+ cover pages are
+# tabular and Azure does emit pairs for them.
+_PROSE_LOCATORS = ["label", "table", "kv"]
+
+
+def _issuer_name_field(*, required: bool = True) -> FieldSpec:
+    """Legal name of the reporting issuer a filing is made by or about.
+
+    Distinct from :func:`_entity_name_field` only in its labels: a continuous-disclosure
+    filing says "the Company" / "the Issuer", not "Name of Corporation".
+    """
+    return FieldSpec(
+        name="entity_legal_name",
+        attribute_key="entity.legal_name",
+        type="name",
+        required=required,
+        labels=_bilingual(
+            ["Name of Company", "Name of Issuer", "Name of the Company", "Reporting Issuer"],
+            ["Dénomination de la société", "Nom de l'émetteur", "Émetteur assujetti"],
+        ),
+        validator="name",
+        locators=_PROSE_LOCATORS,
+    )
+
+
+def _period_covered_field(*, required: bool = False) -> FieldSpec:
+    """The reporting period a periodic filing covers, as printed.
+
+    Captured as a string rather than a date because the printed form is a *range* on most of
+    these filings ("for the three and nine months ended September 30, 2025"); splitting it
+    into two dates here would invent a structure the document does not have.
+    """
+    return FieldSpec(
+        name="period_covered",
+        attribute_key="doc.period_covered",
+        type="string",
+        required=required,
+        labels=_bilingual(
+            [
+                "For the year ended",
+                "For the financial year ended",
+                "For the three months ended",
+                "Period covered",
+            ],
+            ["Pour l'exercice clos le", "Pour la période close le", "Période visée"],
+        ),
+        locators=_PROSE_LOCATORS,
+    )
+
+
+def _fiscal_year_end_field() -> FieldSpec:
+    """Financial year end of the issuer."""
+    return FieldSpec(
+        name="fiscal_year_end",
+        attribute_key="entity.fiscal_year_end",
+        type="date",
+        labels=_bilingual(
+            ["Financial year end", "Fiscal year end", "Year ended"],
+            ["Fin d'exercice", "Clôture de l'exercice", "Exercice clos le"],
+        ),
+        validator="generic_date",
+        locators=_PROSE_LOCATORS,
+    )
+
+
+def _filing_date_field(*, required: bool = False) -> FieldSpec:
+    """The date the filing bears — the date it was dated or filed, not the period it covers."""
+    return FieldSpec(
+        name="filing_date",
+        attribute_key="doc.filing_date",
+        type="date",
+        required=required,
+        labels=_bilingual(
+            ["Date of this report", "Date of report", "Dated", "Date filed"],
+            ["Date du présent rapport", "Fait le", "Date de dépôt"],
+        ),
+        validator="generic_date",
+        locators=_PROSE_LOCATORS,
+    )
+
+
+def _listing_fields() -> list[FieldSpec]:
+    """Trading symbol and the exchange it trades on.
+
+    Neither carries a pattern. A ticker is one to five letters with an optional class suffix,
+    which is also the shape of a great many ordinary words in a prose filing, so a regex here
+    would bind noise with more confidence than a missing value deserves — the label is the
+    only trustworthy locator for it.
+    """
+    return [
+        FieldSpec(
+            name="ticker",
+            attribute_key="entity.ticker",
+            type="string",
+            labels=_bilingual(
+                ["Trading symbol", "Ticker symbol", "Symbol"],
+                ["Symbole boursier", "Symbole"],
+            ),
+            locators=["label", "kv", "table"],
+        ),
+        FieldSpec(
+            name="exchange",
+            attribute_key="entity.exchange",
+            type="string",
+            labels=_bilingual(
+                ["Stock exchange", "Exchange", "Listed on", "Toronto Stock Exchange"],
+                ["Bourse", "Inscrite à la cote de"],
+            ),
+            locators=["label", "kv", "table"],
+        ),
+    ]
+
+
+def _jurisdiction_field() -> FieldSpec:
+    """Province, territory or country under whose law the issuer exists."""
+    return FieldSpec(
+        name="jurisdiction",
+        attribute_key="entity.jurisdiction",
+        type="string",
+        labels=_bilingual(
+            ["Jurisdiction of incorporation", "Incorporated under the laws of", "Jurisdiction"],
+            ["Territoire de constitution", "Constituée sous le régime des lois"],
+        ),
+        locators=_PROSE_LOCATORS,
+    )
+
+
+def _auditor_field() -> FieldSpec:
+    """The independent auditor named on an annual filing."""
+    return FieldSpec(
+        name="auditor",
+        attribute_key="entity.auditor",
+        type="name",
+        labels=_bilingual(
+            ["Auditor", "Independent Auditor", "Chartered Professional Accountants"],
+            ["Auditeur", "Auditeur indépendant", "Comptables professionnels agréés"],
+        ),
+        validator="name",
+        locators=_PROSE_LOCATORS,
+    )
+
+
+def _signatory_fields(*, name_labels_en: list[str] | None = None) -> list[FieldSpec]:
+    """The individual who signed a filing, and the office they signed in.
+
+    The name is ``pii=True``: a certifying officer on a 52-109 certificate or a qualified
+    person on a 43-101 report is a natural person, and the fact that the document is a
+    corporate filing does not make their name any less personal data.
+
+    Bare ``Name``, ``Nom`` and ``Per`` are deliberately absent from the defaults. A label is
+    not free: :func:`dce.classify.profiles.declarative_counts` folds every field label into
+    the doctype's term profile at ``field_label`` weight, so a label that appears on every
+    document in the world buys no extraction — it binds the first "Name:" on the page, which
+    on a multi-page filing is almost never the signatory — while spending profile mass on
+    vocabulary that cannot discriminate anything.
+    """
+    return [
+        FieldSpec(
+            name="signatory_name",
+            attribute_key="ownership.authorized_signer",
+            type="name",
+            pii=True,
+            labels=_bilingual(
+                name_labels_en or ["Signature", "Signed by", "Name and title"],
+                ["Signature", "Signé par", "Nom et titre"],
+            ),
+            validator="name",
+            locators=_PROSE_LOCATORS,
+        ),
+        FieldSpec(
+            name="signatory_title",
+            attribute_key="ownership.signer_title",
+            type="string",
+            labels=_bilingual(
+                ["Title", "Office", "Chief Executive Officer", "Chief Financial Officer"],
+                ["Titre", "Fonction", "Chef de la direction", "Chef des finances"],
+            ),
+            locators=_PROSE_LOCATORS,
+        ),
+    ]
+
+
 def _mrz_fields(td: str) -> list[FieldSpec]:
     """MRZ block plus the person fields it decodes. See :func:`dce.registry.usa._mrz_fields`."""
     src = ["mrz", "kv", "label"]
@@ -408,7 +614,10 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a("Government of Canada"),
             _fr("Gouvernement du Canada"),
             _fr("Autorité"),
-            _a("Place of birth"),
+            # "Place of birth" was removed: an ICAO 9303 visual-inspection-zone label
+            # printed on every state's passport, and on birth certificates and immigration
+            # forms besides, so it cannot say the book is Canadian. The MRZ prefix and the
+            # bilingual Government of Canada masthead do that.
         ],
         id_patterns=[MRZ_TD3_CAN],
         confusable_with={
@@ -453,8 +662,25 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Several provinces restrict retaining licence images and magnetic-stripe data. "
         "Keep the extracted fields, not the scan.",
         anchors=[
-            _a("DRIVER'S LICENCE", decisive=True),
-            _fr("PERMIS DE CONDUIRE", decisive=True),
+            # Pinned to the title zone, exactly as us_drivers_license pins its two spellings.
+            # Both of these are ordinary phrases as well as document titles: a form that
+            # lists acceptable identity documents prints "driver's licence" in prose, and so
+            # does a lease, a bank's account-opening pack and an insurance policy. Unpinned,
+            # they were near-proof of a Canadian licence merely because the words appeared —
+            # and they fired on a Virginia DMV publication, which spells the heading of one
+            # of its own pages "Standard Driver's Licence Card Under 21 - Encoding". A US
+            # specimen sheet was classified as a Canadian licence at confidence 0.90 on the
+            # strength of a single letter in a typo. Requiring the title zone is what makes
+            # the claim "this document is titled a driver's licence" instead of "this
+            # document mentions one", and it makes the two licence specs symmetric: whatever
+            # a caller's layout provider can prove for one, it can prove for the other.
+            #
+            # "PERMIS DE CONDUIRE" is pinned for the same reason and one more: it is the
+            # title of the French, Belgian and Swiss licences too, none of which this
+            # registry models, so as unpinned near-proof it was claiming three jurisdictions
+            # it knows nothing about.
+            _a("DRIVER'S LICENCE", decisive=True, zone=Zone.title),
+            _fr("PERMIS DE CONDUIRE", decisive=True, zone=Zone.title),
             _a("Class"),
             _fr("Classe"),
             _a("Restrictions"),
@@ -1133,8 +1359,18 @@ SPECS: tuple[DocTypeSpec, ...] = (
             "English-only",
             "ca_certificate_status": "a certificate of compliance attests current standing; "
             "the articles constitute the corporation",
+            "ca_isc_register": "both cite the CBCA — the articles constitute the "
+            "corporation, the s.21.1 register lists its individuals with significant control",
         },
-        negative_anchors=["CERTIFICATE OF COMPLIANCE", "Secretary of State"],
+        # ``CANADA BUSINESS CORPORATIONS ACT`` is decisive here, and it is printed on every
+        # CBCA document, not only on the articles — including a s.21.1 ISC register. The
+        # register's own statutory title is therefore a negative anchor, so that the decisive
+        # statute name cannot carry an ISC register to this doctype.
+        negative_anchors=[
+            "CERTIFICATE OF COMPLIANCE",
+            "Secretary of State",
+            "REGISTER OF INDIVIDUALS WITH SIGNIFICANT CONTROL",
+        ],
         fields=[
             _entity_name_field(),
             FieldSpec(
@@ -1474,6 +1710,861 @@ SPECS: tuple[DocTypeSpec, ...] = (
                 validator="generic_date",
             ),
         ],
+    ),
+    # ------------------------------------------- securities / reporting issuer
+    #
+    # Everything in this block is anchored on a Canadian Securities Administrators
+    # instrument or form number — ``Form 51-102F2``, ``NI 43-101``, ``Form 52-109F1``.
+    # That choice is the whole design of the block and it is worth stating once:
+    #
+    # A continuous-disclosure filing's *title* is a document-class name. "Annual
+    # Information Form", "Management's Discussion and Analysis", "Material Change Report",
+    # "Prospectus" and "Annual Report" are printed by issuers on four continents, in
+    # English, on documents governed by four different regulators. Declaring any of them
+    # decisive would produce a confident, wrong, cross-jurisdiction answer — which is the
+    # worst error this service can make. The CSA form number is the opposite: the CSA
+    # alone assigns it, no other regulator uses that numbering, and an issuer who prints
+    # ``Form 51-102F3`` on a document is telling us which document it is. So the form
+    # number and the CSA instrument number carry ``decisive=True``, the class name is a
+    # supporting anchor, and a filing that omits its form number scores on supporting
+    # evidence only and abstains — which routes to a human and is safe.
+    #
+    # Two consequences of that, both deliberate:
+    #
+    # *The shared boilerplate is declared uniformly.* ``National Instrument 51-102`` and
+    # ``Règlement 51-102`` appear on the AIF, the MD&A, the material change report, the
+    # business acquisition report and the information circular alike. All five declare it,
+    # so it contributes equally to all five and cancels out of the margin between them.
+    # Declaring it on only some of them would push a document that prints it toward
+    # whichever subset happened to claim it.
+    #
+    # *Form numbers are safe to keep one character apart* — ``51-102F1`` vs ``51-102F5`` —
+    # only because :func:`dce.classify.anchors._match_kind` refuses fuzzy matching to a
+    # decisive anchor. That refusal exists because ``Form W-2`` once fuzzy-matched
+    # ``Form W-9``. These anchors depend on it; do not relax it.
+    #
+    # Québec filings carry the AMF's French numbering (``Annexe 51-102A2`` for
+    # ``Form 51-102F2``), which is a different string, not a translation of one — so the
+    # French annex numbers are declared as decisive anchors in their own right.
+    DocTypeSpec(
+        doctype_id="ca_aif",
+        label="Annual Information Form (Form 51-102F2)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 (CSA)",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 51-102F2", decisive=True),
+            _fr("ANNEXE 51-102A2", decisive=True),
+            _a("ANNUAL INFORMATION FORM"),
+            _fr("NOTICE ANNUELLE"),
+            _a("National Instrument 51-102"),
+            _fr("Règlement 51-102"),
+            _a("General Development of the Business"),
+            _a("Description of Capital Structure"),
+        ],
+        confusable_with={
+            "ca_mda": "the AIF describes the business and its risks; the MD&A explains the "
+            "period's financial results, and is Form 51-102F1",
+            "ca_prospectus": "a prospectus carries the CSA receipt legend and offers "
+            "securities; the AIF offers nothing",
+            "ca_information_circular": "the circular solicits proxies for a meeting and is "
+            "Form 51-102F5",
+        },
+        negative_anchors=[
+            "FORM 10-K",
+            "FORM 20-F",
+            "SECURITIES AND EXCHANGE COMMISSION",
+        ],
+        fields=[
+            _issuer_name_field(),
+            _period_covered_field(),
+            _fiscal_year_end_field(),
+            _filing_date_field(),
+            _jurisdiction_field(),
+            _auditor_field(),
+            *_listing_fields(),
+            _address_field(
+                name="head_office",
+                key="entity.registered_office",
+                en=["Head office", "Registered office", "Principal office"],
+                fr=["Siège social", "Établissement principal"],
+            ),
+            FieldSpec(
+                name="shares_outstanding",
+                attribute_key="entity.shares_outstanding",
+                type="number",
+                labels=_bilingual(
+                    ["Shares outstanding", "Issued and outstanding", "Common shares outstanding"],
+                    ["Actions en circulation", "Émises et en circulation"],
+                ),
+                pattern=r"\b\d{1,3}(?:,\d{3})+\b|\b\d{4,}\b",
+                locators=["label", "table", "kv", "regex"],
+            ),
+            FieldSpec(
+                name="directors",
+                attribute_key="ownership.director",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_bilingual(
+                    ["Director", "Directors and Officers"],
+                    ["Administrateur", "Administrateurs et dirigeants"],
+                ),
+                validator="name",
+                locators=["table", "label", "kv"],
+            ),
+        ],
+        notes="An AIF that does not print its form number is common; the class name alone is "
+        "supporting evidence and the classifier will abstain rather than guess between the "
+        "AIF and the other 51-102 filings.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_mda",
+        label="Management's Discussion and Analysis (Form 51-102F1)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 (CSA)",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 51-102F1", decisive=True),
+            _fr("ANNEXE 51-102A1", decisive=True),
+            _a("MANAGEMENT'S DISCUSSION AND ANALYSIS"),
+            _fr("RAPPORT DE GESTION"),
+            _a("National Instrument 51-102"),
+            _fr("Règlement 51-102"),
+            _a("Selected Annual Information"),
+            _a("Summary of Quarterly Results"),
+        ],
+        confusable_with={
+            "ca_aif": "the MD&A explains the period's results and is Form 51-102F1; the AIF "
+            "describes the business and is Form 51-102F2",
+            "ca_ni_52_109_certification": "the certificate attests to the MD&A rather than "
+            "being it, and is a one-page Form 52-109F1/F2",
+        },
+        negative_anchors=["FORM 10-K", "FORM 10-Q", "SECURITIES AND EXCHANGE COMMISSION"],
+        fields=[
+            _issuer_name_field(),
+            _period_covered_field(required=True),
+            _fiscal_year_end_field(),
+            _filing_date_field(),
+            *_listing_fields(),
+            _auditor_field(),
+            *_signatory_fields(),
+        ],
+        notes="``MANAGEMENT'S DISCUSSION AND ANALYSIS`` is deliberately NOT decisive. The same "
+        "heading is Item 7 of a US Form 10-K and appears on annual reports worldwide; the "
+        "string that belongs to the CSA and to nobody else is ``Form 51-102F1``.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_material_change_report",
+        label="Material Change Report (Form 51-102F3)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 Part 7 (CSA)",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 51-102F3", decisive=True),
+            _fr("ANNEXE 51-102A3", decisive=True),
+            _a("FULL DESCRIPTION OF MATERIAL CHANGE", decisive=True),
+            _a("MATERIAL CHANGE REPORT"),
+            _fr("DÉCLARATION DE CHANGEMENT IMPORTANT"),
+            _a("Date of Material Change"),
+            _a("National Instrument 51-102"),
+            _fr("Règlement 51-102"),
+        ],
+        confusable_with={
+            "ca_business_acquisition_report": "a BAR reports a completed significant "
+            "acquisition and is Form 51-102F4; an MCR reports any material change",
+            "ca_early_warning_report": "the early warning report is filed by an acquiror of "
+            "securities, not by the issuer",
+        },
+        negative_anchors=["FORM 8-K", "SECURITIES AND EXCHANGE COMMISSION"],
+        fields=[
+            _issuer_name_field(),
+            _address_field(
+                name="head_office",
+                key="entity.registered_office",
+                en=["Head office", "Address of head office"],
+                fr=["Siège social"],
+            ),
+            FieldSpec(
+                name="material_change_date",
+                attribute_key="doc.period_covered",
+                type="string",
+                required=True,
+                labels=_bilingual(
+                    ["Date of Material Change", "Date of the material change"],
+                    ["Date du changement important"],
+                ),
+                locators=_PROSE_LOCATORS,
+            ),
+            _filing_date_field(required=True),
+            *_signatory_fields(),
+            FieldSpec(
+                name="news_release_date",
+                attribute_key="doc.issue_date",
+                type="date",
+                labels=_bilingual(
+                    ["News Release", "Date of news release", "Press release"],
+                    ["Communiqué de presse", "Date du communiqué"],
+                ),
+                validator="generic_date",
+                locators=_PROSE_LOCATORS,
+            ),
+        ],
+        notes="``FULL DESCRIPTION OF MATERIAL CHANGE`` is decisive because it is a CSA-prescribed "
+        "item heading of Form 51-102F3, printed verbatim — not because it names the document "
+        "class. ``MATERIAL CHANGE REPORT`` is the class name and stays supporting.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_business_acquisition_report",
+        label="Business Acquisition Report (Form 51-102F4)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 Part 8 (CSA)",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 51-102F4", decisive=True),
+            _fr("ANNEXE 51-102A4", decisive=True),
+            _a("BUSINESS ACQUISITION REPORT"),
+            _fr("DÉCLARATION D'ACQUISITION D'ENTREPRISE"),
+            _a("significant acquisition"),
+            _a("Details of Acquisition"),
+            _a("National Instrument 51-102"),
+            _fr("Règlement 51-102"),
+        ],
+        confusable_with={
+            "ca_material_change_report": "an MCR reports the change; the BAR carries the "
+            "acquired business's financial statements and is Form 51-102F4",
+            "ca_aif": "the BAR concerns one acquisition, the AIF the whole business",
+        },
+        negative_anchors=["FORM 8-K", "SECURITIES AND EXCHANGE COMMISSION"],
+        fields=[
+            _issuer_name_field(),
+            FieldSpec(
+                name="acquired_business_name",
+                attribute_key="entity.trade_name",
+                type="name",
+                labels=_bilingual(
+                    ["Name of the business acquired", "Acquired business", "Vendor"],
+                    ["Entreprise acquise", "Dénomination de l'entreprise acquise"],
+                ),
+                validator="name",
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="acquisition_date",
+                attribute_key="doc.issue_date",
+                type="date",
+                labels=_bilingual(
+                    ["Date of Acquisition", "Acquisition date", "Closing date"],
+                    ["Date de l'acquisition", "Date de clôture"],
+                ),
+                validator="generic_date",
+                locators=_PROSE_LOCATORS,
+            ),
+            _amount_field(
+                "consideration",
+                key="account.amount_due",
+                en=["Consideration", "Purchase price", "Total consideration"],
+                fr=["Contrepartie", "Prix d'achat"],
+            ),
+            _filing_date_field(),
+            _period_covered_field(),
+            *_signatory_fields(),
+        ],
+    ),
+    DocTypeSpec(
+        doctype_id="ca_information_circular",
+        label="Management Information Circular / Proxy Circular (Form 51-102F5)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 Part 9 (CSA)",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 51-102F5", decisive=True),
+            _fr("ANNEXE 51-102A5", decisive=True),
+            _a("MANAGEMENT INFORMATION CIRCULAR"),
+            _fr("CIRCULAIRE DE SOLLICITATION DE PROCURATIONS"),
+            _a("Statement of Executive Compensation"),
+            _a("Appointment of Proxyholder"),
+            _a("Notice of Annual Meeting of Shareholders"),
+            _a("National Instrument 51-102"),
+            _fr("Règlement 51-102"),
+        ],
+        confusable_with={
+            "ca_aif": "the circular solicits proxies for a meeting; the AIF is the annual "
+            "description of the business",
+            "ca_annual_return": "the annual return is a corporate-registry filing, not a "
+            "securities-law disclosure document",
+        },
+        negative_anchors=["SCHEDULE 14A", "SECURITIES AND EXCHANGE COMMISSION"],
+        fields=[
+            _issuer_name_field(),
+            FieldSpec(
+                name="meeting_date",
+                attribute_key="doc.issue_date",
+                type="date",
+                labels=_bilingual(
+                    ["Date of the meeting", "Meeting date", "to be held on"],
+                    ["Date de l'assemblée", "qui se tiendra le"],
+                ),
+                validator="generic_date",
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="record_date",
+                attribute_key="doc.due_date",
+                type="date",
+                labels=_bilingual(["Record date"], ["Date de clôture des registres"]),
+                validator="generic_date",
+                locators=_PROSE_LOCATORS,
+            ),
+            _filing_date_field(),
+            FieldSpec(
+                name="shares_outstanding",
+                attribute_key="entity.shares_outstanding",
+                type="number",
+                labels=_bilingual(
+                    ["Shares outstanding", "entitled to vote", "Issued and outstanding"],
+                    ["Actions en circulation", "habiles à voter"],
+                ),
+                pattern=r"\b\d{1,3}(?:,\d{3})+\b|\b\d{4,}\b",
+                locators=["label", "table", "kv", "regex"],
+            ),
+            FieldSpec(
+                name="directors",
+                attribute_key="ownership.director",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_bilingual(
+                    ["Nominee", "Director", "Nominees for election as directors"],
+                    ["Candidat", "Administrateur"],
+                ),
+                validator="name",
+                locators=["table", "label", "kv"],
+            ),
+            _auditor_field(),
+            *_signatory_fields(),
+        ],
+        notes="Form 51-102F6 Statement of Executive Compensation is normally bound into the "
+        "circular rather than filed alone, so it is a supporting anchor here rather than a "
+        "doctype of its own.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_ni_52_109_certification",
+        label="Certification of Annual / Interim Filings (Form 52-109F1 / F2)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Certifying officer of a reporting issuer, under NI 52-109 (CSA)",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 52-109F1", decisive=True),
+            _a("FORM 52-109F2", decisive=True),
+            _fr("ANNEXE 52-109A1", decisive=True),
+            _fr("ANNEXE 52-109A2", decisive=True),
+            _a("CERTIFICATION OF ANNUAL FILINGS"),
+            _a("CERTIFICATION OF INTERIM FILINGS"),
+            _fr("ATTESTATION DES DOCUMENTS ANNUELS"),
+            _a("National Instrument 52-109"),
+            _fr("Règlement 52-109"),
+            _a("internal control over financial reporting"),
+        ],
+        confusable_with={
+            "ca_mda": "the certificate attests to the annual filings including the MD&A; it "
+            "is one page and names a certifying officer",
+        },
+        negative_anchors=["SECURITIES AND EXCHANGE COMMISSION", "18 U.S.C. SECTION 1350"],
+        fields=[
+            _issuer_name_field(),
+            _period_covered_field(required=True),
+            _fiscal_year_end_field(),
+            _filing_date_field(required=True),
+            *_signatory_fields(
+                name_labels_en=[
+                    "Certifying officer",
+                    "Chief Executive Officer",
+                    "Chief Financial Officer",
+                ]
+            ),
+        ],
+        notes="One doctype covers the whole 52-109 certificate family — F1/F2 (full), the "
+        "F1R/F2R venture-issuer variants and the F1 — IPO/RTO variant. They differ in which "
+        "representations they carry and in the period certified, not in what a DD reviewer "
+        "needs off them, and each variant's number is a decisive anchor of the same document.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_ni_43_101_technical_report",
+        label="NI 43-101 Technical Report (Form 43-101F1)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Qualified person, filed by a reporting issuer under NI 43-101 (CSA)",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 43-101F1", decisive=True),
+            _a("NATIONAL INSTRUMENT 43-101", decisive=True),
+            _a("NI 43-101", decisive=True),
+            _fr("RÈGLEMENT 43-101", decisive=True),
+            _a("Standards of Disclosure for Mineral Projects"),
+            _a("qualified person"),
+            _fr("personne qualifiée"),
+            _a("CIM Definition Standards"),
+            _a("Mineral Resource Estimate"),
+        ],
+        confusable_with={
+            "ca_ni_51_101_oil_gas": "NI 43-101 governs mineral projects and expressly "
+            "excludes petroleum and natural gas, which are NI 51-101's",
+        },
+        fields=[
+            _issuer_name_field(),
+            FieldSpec(
+                name="property_name",
+                attribute_key="property.name",
+                type="string",
+                required=True,
+                labels=_bilingual(
+                    ["Property", "Project", "Name of the property", "Property name"],
+                    ["Propriété", "Projet", "Nom de la propriété"],
+                ),
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="qualified_person",
+                attribute_key="identity.full_name",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_bilingual(
+                    ["Qualified Person", "Prepared by", "P.Geo.", "P.Eng."],
+                    ["Personne qualifiée", "Préparé par"],
+                ),
+                validator="name",
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="effective_date",
+                attribute_key="doc.issue_date",
+                type="date",
+                required=True,
+                labels=_bilingual(
+                    ["Effective Date", "Effective date of the report"],
+                    ["Date de prise d'effet", "Date d'entrée en vigueur"],
+                ),
+                validator="generic_date",
+                locators=_PROSE_LOCATORS,
+            ),
+            _filing_date_field(),
+            _jurisdiction_field(),
+            *_listing_fields(),
+        ],
+        notes="``NI 43-101`` and ``NATIONAL INSTRUMENT 43-101`` are separate decisive anchors "
+        "rather than one, because they tokenise differently and a report that prints only the "
+        "abbreviation must still reach L1.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_ni_51_101_oil_gas",
+        label="NI 51-101 Oil and Gas Disclosure (Form 51-101F1 / F2 / F3)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Reporting issuer and its independent qualified reserves evaluator, "
+        "under NI 51-101 (CSA)",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 51-101F1", decisive=True),
+            _a("FORM 51-101F2", decisive=True),
+            _a("FORM 51-101F3", decisive=True),
+            _a("NATIONAL INSTRUMENT 51-101", decisive=True),
+            _fr("RÈGLEMENT 51-101", decisive=True),
+            _a("Statement of Reserves Data"),
+            _a("Independent Qualified Reserves Evaluator"),
+            _a("Standards of Disclosure for Oil and Gas Activities"),
+            _a("future net revenue"),
+            _a("COGE Handbook"),
+        ],
+        confusable_with={
+            "ca_ni_43_101_technical_report": "NI 51-101 covers oil and gas; NI 43-101 covers "
+            "mineral projects and excludes petroleum",
+        },
+        fields=[
+            _issuer_name_field(),
+            _fiscal_year_end_field(),
+            _period_covered_field(),
+            FieldSpec(
+                name="reserves_evaluator",
+                attribute_key="entity.auditor",
+                type="name",
+                labels=_bilingual(
+                    [
+                        "Independent Qualified Reserves Evaluator",
+                        "Reserves Evaluator",
+                        "Reserves Auditor",
+                    ],
+                    ["Évaluateur de réserves indépendant", "Évaluateur de réserves"],
+                ),
+                validator="name",
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="effective_date",
+                attribute_key="doc.issue_date",
+                type="date",
+                labels=_bilingual(
+                    ["Effective Date", "as at"], ["Date de prise d'effet", "au"]
+                ),
+                validator="generic_date",
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="property_name",
+                attribute_key="property.name",
+                type="string",
+                labels=_bilingual(["Property", "Field", "Area"], ["Propriété", "Champ"]),
+                locators=_PROSE_LOCATORS,
+            ),
+            _filing_date_field(),
+            *_signatory_fields(),
+        ],
+        notes="The three forms are filed together as one annual package (F1 the reserves data, "
+        "F2 the evaluator's report on it, F3 management's and the directors' report), so they "
+        "are one doctype with three decisive form numbers rather than three doctypes that "
+        "would compete on every page of the same PDF.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_early_warning_report",
+        label="Early Warning Report (Form 62-103F1)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Acquiror of securities, filed on SEDAR+ under NI 62-103 (CSA)",
+        applies_to="both",
+        anchors=[
+            _a("FORM 62-103F1", decisive=True),
+            _a("NATIONAL INSTRUMENT 62-103", decisive=True),
+            _fr("ANNEXE 62-103A1", decisive=True),
+            _fr("RÈGLEMENT 62-103", decisive=True),
+            _a("EARLY WARNING REPORT"),
+            _a("early warning requirements"),
+            _fr("système d'alerte"),
+            _a("the acquiror"),
+        ],
+        confusable_with={
+            "ca_sedi_insider_report": "an insider report is filed by an insider through SEDI "
+            "on Form 55-102F2; an early warning report is filed by any acquiror crossing 10%",
+            "ca_material_change_report": "the MCR is the issuer's filing; the early warning "
+            "report is the acquiror's",
+        },
+        negative_anchors=["SCHEDULE 13D", "SCHEDULE 13G", "SECURITIES AND EXCHANGE COMMISSION"],
+        fields=[
+            FieldSpec(
+                name="acquiror_name",
+                attribute_key="ownership.beneficial_owner",
+                type="name",
+                required=True,
+                pii=True,
+                labels=_bilingual(
+                    ["Name of the acquiror", "Acquiror", "Name and address of the acquiror"],
+                    ["Nom de l'acquéreur", "Acquéreur"],
+                ),
+                validator="name",
+                locators=_PROSE_LOCATORS,
+                notes="An acquiror may be a corporation or a natural person; the field is "
+                "marked pii because it is often the latter.",
+            ),
+            _issuer_name_field(),
+            FieldSpec(
+                name="security_class",
+                attribute_key="entity.security_class",
+                type="string",
+                labels=_bilingual(
+                    ["Designation of the class", "Class of securities", "Designation"],
+                    ["Désignation de la catégorie", "Catégorie de titres"],
+                ),
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="securities_held",
+                attribute_key="ownership.securities_held",
+                type="number",
+                labels=_bilingual(
+                    ["Number of securities", "Number or principal amount", "securities held"],
+                    ["Nombre de titres", "Nombre ou valeur nominale"],
+                ),
+                pattern=r"\b\d{1,3}(?:,\d{3})+\b|\b\d{3,}\b",
+                locators=["label", "table", "kv", "regex"],
+            ),
+            FieldSpec(
+                name="percentage_of_class",
+                attribute_key="ownership.share",
+                type="string",
+                labels=_bilingual(
+                    ["Percentage of outstanding", "Percentage of the class"],
+                    ["Pourcentage des titres en circulation", "Pourcentage de la catégorie"],
+                ),
+                pattern=r"\d{1,3}(?:\.\d{1,4})?\s?%",
+                locators=["label", "table", "kv", "regex"],
+            ),
+            FieldSpec(
+                name="transaction_date",
+                attribute_key="doc.issue_date",
+                type="date",
+                labels=_bilingual(
+                    ["Date of the transaction", "Date of transaction"],
+                    ["Date de l'opération"],
+                ),
+                validator="generic_date",
+                locators=_PROSE_LOCATORS,
+            ),
+            _filing_date_field(),
+        ],
+    ),
+    DocTypeSpec(
+        doctype_id="ca_sedi_insider_report",
+        label="SEDI Insider Report (Form 55-102F2)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Insider of a reporting issuer, filed through SEDI under NI 55-102 (CSA)",
+        applies_to="individual",
+        anchors=[
+            _a("FORM 55-102F2", decisive=True),
+            _a("SYSTEM FOR ELECTRONIC DISCLOSURE BY INSIDERS", decisive=True),
+            _a("NATIONAL INSTRUMENT 55-102", decisive=True),
+            _fr("SYSTÈME ÉLECTRONIQUE DE DÉCLARATION DES INITIÉS", decisive=True),
+            _a("Insider Report"),
+            _fr("Déclaration d'initié"),
+            _a("Nature of transaction"),
+            _a("Ownership type"),
+            _a("Insider's relationship to issuer"),
+        ],
+        confusable_with={
+            "ca_early_warning_report": "an early warning report is filed by any acquiror "
+            "crossing the 10% threshold, on Form 62-103F1",
+        },
+        negative_anchors=["FORM 4", "SECURITIES AND EXCHANGE COMMISSION"],
+        fields=[
+            _name_field(
+                name="insider_name",
+                key="identity.full_name",
+                en=["Insider name", "Name of insider", "Insider"],
+                fr=["Nom de l'initié", "Initié"],
+            ),
+            _issuer_name_field(),
+            FieldSpec(
+                name="relationship_to_issuer",
+                attribute_key="ownership.signer_title",
+                type="string",
+                labels=_bilingual(
+                    ["Insider's relationship to issuer", "Relationship to issuer"],
+                    ["Lien de l'initié avec l'émetteur"],
+                ),
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="security_class",
+                attribute_key="entity.security_class",
+                type="string",
+                labels=_bilingual(
+                    ["Security designation", "Class of securities"],
+                    ["Désignation du titre", "Catégorie de titres"],
+                ),
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="securities_held",
+                attribute_key="ownership.securities_held",
+                type="number",
+                labels=_bilingual(
+                    ["Balance of securities held", "Number of securities held"],
+                    ["Solde des titres détenus", "Nombre de titres détenus"],
+                ),
+                pattern=r"\b\d{1,3}(?:,\d{3})+\b|\b\d+\b",
+                locators=["table", "label", "kv", "regex"],
+            ),
+            FieldSpec(
+                name="transaction_date",
+                attribute_key="doc.issue_date",
+                type="date",
+                labels=_bilingual(
+                    ["Date of transaction", "Transaction date"], ["Date de l'opération"]
+                ),
+                validator="generic_date",
+                locators=["table", "label", "kv"],
+            ),
+            _filing_date_field(),
+        ],
+        handling="An insider report names a natural person and discloses their personal "
+        "securityholdings. It is public on SEDI, which does not make it non-personal — the "
+        "person fields stay pii-flagged downstream.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_prospectus",
+        label="Prospectus (long form / short form)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="Reporting issuer, receipted by a Canadian securities regulatory "
+        "authority under NI 41-101 / NI 44-101",
+        applies_to="corporate",
+        anchors=[
+            _a("FORM 41-101F1", decisive=True),
+            _a("FORM 44-101F1", decisive=True),
+            _a("NATIONAL INSTRUMENT 41-101", decisive=True),
+            _a("NATIONAL INSTRUMENT 44-101", decisive=True),
+            _a(
+                "No securities regulatory authority has expressed an opinion about these "
+                "securities and it is an offence to claim otherwise",
+                decisive=True,
+            ),
+            _a("PRELIMINARY PROSPECTUS"),
+            _a("SHORT FORM PROSPECTUS"),
+            _fr("PROSPECTUS SIMPLIFIÉ"),
+            _fr("Aucune autorité en valeurs mobilières ne s'est prononcée sur la qualité"),
+            _a("a receipt for the prospectus"),
+        ],
+        confusable_with={
+            "ca_aif": "a short form prospectus incorporates the AIF by reference; only the "
+            "prospectus carries the regulator's no-opinion legend and a receipt",
+            "ca_information_circular": "a circular solicits proxies; a prospectus qualifies a "
+            "distribution of securities",
+        },
+        negative_anchors=[
+            "SECURITIES AND EXCHANGE COMMISSION",
+            "Securities Act of 1933",
+            "RULE 424",
+        ],
+        fields=[
+            _issuer_name_field(),
+            _filing_date_field(),
+            _jurisdiction_field(),
+            *_listing_fields(),
+            FieldSpec(
+                name="prospectus_type",
+                attribute_key="doc.reference_number",
+                type="string",
+                labels=_bilingual(
+                    ["Preliminary Prospectus", "Short Form Prospectus", "Final Prospectus"],
+                    ["Prospectus provisoire", "Prospectus simplifié", "Prospectus définitif"],
+                ),
+                locators=_PROSE_LOCATORS,
+            ),
+            FieldSpec(
+                name="security_class",
+                attribute_key="entity.security_class",
+                type="string",
+                labels=_bilingual(
+                    ["Class of securities", "Securities offered", "Offering"],
+                    ["Catégorie de titres", "Titres offerts"],
+                ),
+                locators=_PROSE_LOCATORS,
+            ),
+            _amount_field(
+                "offering_amount",
+                key="account.amount_due",
+                en=["Offering", "Aggregate offering", "Price to the public"],
+                fr=["Montant de l'offre", "Prix au public"],
+            ),
+            _auditor_field(),
+            _address_field(
+                name="head_office",
+                key="entity.registered_office",
+                en=["Head office", "Registered office"],
+                fr=["Siège social"],
+            ),
+        ],
+        notes="The no-opinion legend is decisive because NI 41-101 prescribes its wording and "
+        "requires it on the cover page of every Canadian prospectus — it is a regulator's "
+        "string, not the issuer's. The word ``PROSPECTUS`` alone is not claimed at all: every "
+        "securities regulator in the world uses it.",
+    ),
+    DocTypeSpec(
+        doctype_id="ca_isc_register",
+        label="Register of Individuals with Significant Control (CBCA s.21.1)",
+        country="CA",
+        category=Category.corporate,
+        issuing_authority="The corporation itself — a CBCA s.21.1 / provincial-equivalent "
+        "transparency register",
+        applies_to="corporate",
+        anchors=[
+            _a("REGISTER OF INDIVIDUALS WITH SIGNIFICANT CONTROL", decisive=True),
+            _fr("REGISTRE DES PARTICULIERS AYANT UN CONTRÔLE IMPORTANT", decisive=True),
+            _a("individual with significant control"),
+            _fr("particulier ayant un contrôle important"),
+            _a("significant number of shares"),
+            _a("25% or more of the voting rights"),
+            _a("control in fact"),
+            _a("reasonable steps"),
+        ],
+        confusable_with={
+            "ca_articles_incorporation_federal": "both cite the CBCA; only the ISC register "
+            "lists individuals with significant control and their step-in dates",
+            "ca_annual_return": "ISC information is delivered with the annual return but the "
+            "register itself is a corporate record, not a registry filing",
+        },
+        negative_anchors=[
+            "PERSONS WITH SIGNIFICANT CONTROL",
+            "CERTIFICATE OF INCORPORATION",
+            "ARTICLES OF INCORPORATION",
+        ],
+        fields=[
+            _entity_name_field(),
+            FieldSpec(
+                name="corporation_number",
+                attribute_key="doc.registration_number",
+                type="id",
+                labels=_bilingual(["Corporation number"], ["Numéro de la société"]),
+                notes="Federal and provincial registries number corporations differently; no "
+                "single format applies.",
+            ),
+            FieldSpec(
+                name="individuals_with_significant_control",
+                attribute_key="ownership.beneficial_owner",
+                type="name",
+                required=True,
+                multi=True,
+                pii=True,
+                labels=_bilingual(
+                    ["Name of individual", "Individual with significant control"],
+                    ["Nom du particulier", "Particulier ayant un contrôle important"],
+                ),
+                validator="name",
+                locators=["table", "label", "kv"],
+            ),
+            _dob_field(required=False),
+            _address_field(
+                name="isc_address",
+                key="address.residential",
+                en=["Residential address", "Last known address"],
+                fr=["Adresse résidentielle", "Dernière adresse connue"],
+            ),
+            FieldSpec(
+                name="nature_of_control",
+                attribute_key="ownership.share",
+                type="string",
+                multi=True,
+                labels=_bilingual(
+                    ["Description of the significant control", "Nature of control"],
+                    ["Description du contrôle important", "Nature du contrôle"],
+                ),
+                locators=["table", "label", "kv"],
+            ),
+            FieldSpec(
+                name="date_control_began",
+                attribute_key="doc.issue_date",
+                type="date",
+                multi=True,
+                labels=_bilingual(
+                    ["Date on which the individual became", "Date became an ISC"],
+                    ["Date à laquelle le particulier est devenu"],
+                ),
+                validator="generic_date",
+                locators=["table", "label", "kv"],
+            ),
+        ],
+        handling="An ISC register is a list of natural persons with their residential "
+        "addresses and dates of birth. Every person field here is pii and the whole document "
+        "should be treated as a personal-data record despite being a corporate one.",
+        notes="``REGISTER OF INDIVIDUALS WITH SIGNIFICANT CONTROL`` is the statutory title in "
+        "CBCA s.21.1 and its provincial equivalents. The UK's register uses PERSONS, not "
+        "INDIVIDUALS, which is why that string is a negative anchor rather than a synonym.",
     ),
     # ------------------------------------------------------ financial / address
     DocTypeSpec(

@@ -54,12 +54,12 @@ def test_validate_registry_passes() -> None:
 
 
 def test_pack_sizes() -> None:
-    """36 Indian doctypes and 5 cross-country ones, with no id collisions."""
-    assert len(INDIA_SPECS) == 36
-    assert len(XX_SPECS) == 5
+    """52 Indian doctypes and 15 cross-country ones, with no id collisions."""
+    assert len(INDIA_SPECS) == 52
+    assert len(XX_SPECS) == 15
     grouped = by_country()
-    assert len(grouped["IN"]) == 36
-    assert len(grouped["XX"]) == 5
+    assert len(grouped["IN"]) == 52
+    assert len(grouped["XX"]) == 15
     ids = [s.doctype_id for s in all_specs()]
     assert len(ids) == len(set(ids))
 
@@ -70,7 +70,12 @@ def test_every_spec_is_reachable_by_id() -> None:
 
 
 def test_required_india_doctypes_are_all_present() -> None:
-    """The 36 ids the pack is contracted to provide."""
+    """The 52 ids the pack is contracted to provide.
+
+    The 16 added in the listed-issuer / due-diligence round are grouped at the end: seven MCA
+    e-forms, four SEBI listed-entity filings, two professional audit reports, an RBI FEMA
+    return and two Government of India business registrations.
+    """
     expected = {
         "in_aadhaar",
         "in_aadhaar_masked",
@@ -108,17 +113,51 @@ def test_required_india_doctypes_are_all_present() -> None:
         "in_marriage_certificate",
         "in_birth_certificate",
         "in_caste_certificate",
+        # MCA e-forms
+        "in_mca_mgt7_annual_return",
+        "in_mca_aoc4_financial_statements",
+        "in_mca_dir12",
+        "in_mca_pas3",
+        "in_mca_sh7",
+        "in_mca_chg1",
+        "in_mca_inc20a",
+        # SEBI listed-entity filings
+        "in_shareholding_pattern",
+        "in_corporate_governance_report",
+        "in_brsr",
+        "in_offer_document",
+        # Professional opinions annexed to the annual report
+        "in_statutory_auditor_report",
+        "in_secretarial_audit_mr3",
+        # RBI / FEMA and Government of India business registrations
+        "in_fema_fcgpr",
+        "in_iec_certificate",
+        "in_udyam_certificate",
     }
     assert {s.doctype_id for s in INDIA_SPECS} == expected
 
 
 def test_required_crosscountry_doctypes_are_all_present() -> None:
     assert {s.doctype_id for s in XX_SPECS} == {
+        # Shape fallbacks — "we recognised the shape and not the issuer".
         "xx_utility_bill",
         "xx_bank_statement",
         "xx_passport_generic",
         "xx_photo_id_generic",
         "xx_unknown_form",
+        # Globally-issued instruments — one global body issues or publishes each of
+        # these, so no country pack can own them. Not fallbacks; see the crosscountry
+        # module docstring for why the two kinds share a file.
+        "xx_lei_certificate",
+        "xx_fatca_crs_self_certification",
+        "xx_wolfsberg_questionnaire",
+        "xx_isda_master_agreement",
+        "xx_sanctions_screening_report",
+        "xx_ubo_declaration",
+        "xx_audited_financial_statements",
+        "xx_certificate_of_insurance",
+        "xx_iso_certificate",
+        "xx_duns_record",
     }
 
 
@@ -398,8 +437,18 @@ def test_pan_and_aadhaar_are_separable_by_decisive_anchors() -> None:
 
     assert "unique identification authority of india" in aadhaar_decisive
     assert "भारतीय विशिष्ट पहचान प्राधिकरण".casefold() in aadhaar_decisive
-    assert "income tax department" in pan_decisive
-    assert "आयकर विभाग".casefold() in pan_decisive
+    # PAN is separated by the name of the *document*, never by the name of its issuer. This
+    # used to assert "income tax department" / "आयकर विभाग" were decisive for in_pan, and they
+    # were — wrongly. The Income Tax Department issues four doctypes in this registry (in_pan,
+    # in_form16, in_form60, in_itr_acknowledgement) and heads all four with its own name, so
+    # the string proves the issuer and says nothing about which of its documents this is.
+    # in_form16 already declared "आयकर विभाग" as a non-decisive anchor, which is exactly the
+    # decisive/non-decisive asymmetry ``loader._check_decisive_asymmetry`` now refuses at
+    # import time.
+    assert "permanent account number card" in pan_decisive
+    assert "स्थायी लेखा संख्या कार्ड".casefold() in pan_decisive
+    assert "income tax department" not in pan_decisive
+    assert "आयकर विभाग".casefold() not in pan_decisive
 
 
 def test_shared_government_furniture_is_never_decisive() -> None:
@@ -420,8 +469,13 @@ def test_decisive_anchor_collisions_are_all_declared() -> None:
         for text in _decisive(spec):
             owners.setdefault(text, []).append(spec.doctype_id)
     collisions = {t: sorted(ids) for t, ids in owners.items() if len(ids) > 1}
+    # "certificate of incorporation" was in this set and is no longer decisive for either
+    # doctype: it is the title a company registrar in Delaware, Ontario and England each chose
+    # independently, and both us_articles_incorporation and
+    # ca_articles_incorporation_provincial declare it here. What remains is the pair of
+    # strings the Indian Ministry of Corporate Affairs actually controls, shared between two
+    # of its own filings — the legitimate, declared, same-issuer case this test exists to pin.
     assert collisions == {
-        "certificate of incorporation": ["in_certificate_incorporation", "in_llp_incorporation"],
         "ministry of corporate affairs": ["in_certificate_incorporation", "in_llp_incorporation"],
         "कॉर्पोरेट कार्य मंत्रालय".casefold(): [
             "in_certificate_incorporation",
@@ -876,17 +930,23 @@ def test_synthetic_document_ranks_its_own_doctype_first(doctype_id: str) -> None
 
 
 def test_masked_aadhaar_narrows_to_the_aadhaar_pair_and_never_guesses() -> None:
-    """KNOWN LIMITATION, asserted rather than hidden.
+    """The masked/full Aadhaar pair, now separated — tightened exactly as this test asked.
 
-    A masked e-Aadhaar cannot currently be separated from a full one: the two doctypes are
-    the same document with one field redacted, and the only real discriminator — a
-    Verhoeff-valid 12-digit number being present or absent — is neutralised because
-    ``dce.classify.anchors`` saturates both at its confidence ceiling before fusion.
+    It used to read: *"a masked e-Aadhaar cannot currently be separated from a full one … the
+    only real discriminator — a Verhoeff-valid 12-digit number being present or absent — is
+    neutralised because ``dce.classify.anchors`` saturates both at its confidence ceiling
+    before fusion … If the ceiling stops saturating, this test should be tightened to assert
+    ``in_aadhaar_masked`` outright."*
 
-    What the pack *can* guarantee, and what this test pins, is that the ambiguity is
-    contained: the top two candidates are exactly the Aadhaar pair, and the cascade
-    abstains to the human queue rather than picking one. If the ceiling stops saturating,
-    this test should be tightened to assert ``in_aadhaar_masked`` outright.
+    The ceiling has stopped **deciding**, which is the same condition. The accept rule now
+    compares candidates in evidence bits (:func:`dce.classify.cascade.evidence_bits`) — the
+    unclipped quantity the 0.97 score is a squash of — so two doctypes that both saturate the
+    score are no longer equal to the rule. The ceiling itself is unchanged and still caps what
+    L1 may claim on its own; what changed is that a *comparison* is no longer taken on it.
+
+    So: the document says "Masked Aadhaar" and prints a redacted number, and the service now
+    says so instead of sending a legible document to a human because of a clipping artefact.
+    The pair is still asserted to be the top two, which is the part that was always the point.
     """
     from dce.classify import classify
 
@@ -905,9 +965,9 @@ def test_masked_aadhaar_narrows_to_the_aadhaar_pair_and_never_guesses() -> None:
             ]
         )
     )
-    assert result.abstained is True
-    assert result.doctype_id == UNKNOWN
-    top_two = {doctype_id for doctype_id, _ in result.runners_up[:2]}
+    assert result.abstained is False
+    assert result.doctype_id == "in_aadhaar_masked"
+    top_two = {result.doctype_id, *(d for d, _ in result.runners_up[:1])}
     assert top_two == {"in_aadhaar", "in_aadhaar_masked"}
 
 

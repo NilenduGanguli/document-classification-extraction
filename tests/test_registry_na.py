@@ -193,11 +193,24 @@ MATRICULA CONSULAR DE ALTA SEGURIDAD"""
 # Structure
 # ---------------------------------------------------------------------------
 def test_pack_sizes() -> None:
-    """The packs ship the agreed coverage: 35 US, 25 Canadian, 20 Mexican doctypes."""
-    assert len(usa.SPECS) == 35
-    assert len(canada.SPECS) == 25
-    assert len(mexico.SPECS) == 20
-    assert len(BY_ID) == 80, "doctype ids must be unique across the three packs"
+    """The packs keep at least their agreed baseline coverage, and their ids stay unique.
+
+    The baselines (35 US, 25 Canadian, 20 Mexican) are floors rather than equalities. An
+    equality here asserts that the registry never grows, which is not a property anyone
+    wants: it turns "we added a doctype" into a test failure that says nothing about
+    correctness, and it fails identically whether the addition was good or bad.
+
+    The property that *is* worth asserting is the one the last line makes: no id collides
+    across the three packs. That one is real — ``BY_ID`` is built by merging the packs, so a
+    duplicate id would silently shadow a doctype rather than raise, and the count identity
+    is the only thing that notices.
+    """
+    assert len(usa.SPECS) >= 35
+    assert len(canada.SPECS) >= 25
+    assert len(mexico.SPECS) >= 20
+    assert len(BY_ID) == len(usa.SPECS) + len(canada.SPECS) + len(mexico.SPECS), (
+        "doctype ids must be unique across the three packs"
+    )
 
 
 def test_country_code_matches_the_id_prefix() -> None:
@@ -341,7 +354,6 @@ def test_mexican_fallback_has_no_decisive_anchor() -> None:
     [
         ("us_w9", W9_TEXT, "us_w8ben", W8BEN_TEXT),
         ("us_w8ben", W8BEN_TEXT, "us_w8bene", W8BENE_TEXT),
-        ("us_state_id", STATE_ID_TEXT, "us_drivers_license", DRIVERS_LICENSE_TEXT),
         ("ca_pr_card", PR_CARD_TEXT, "ca_citizenship_certificate", CITIZENSHIP_CERT_TEXT),
         ("mx_ine", INE_TEXT, "mx_matricula_consular", MATRICULA_CONSULAR_TEXT),
     ],
@@ -349,7 +361,14 @@ def test_mexican_fallback_has_no_decisive_anchor() -> None:
 def test_confusable_pairs_are_separable_by_decisive_anchors(
     left: str, left_text: str, right: str, right_text: str
 ) -> None:
-    """Each side fires its own decisive anchors and none of its neighbour's."""
+    """Each side fires its own decisive anchors and none of its neighbour's.
+
+    ``us_state_id`` / ``us_drivers_license`` used to be in this list and is not any more.
+    See :func:`test_a_document_class_name_is_not_a_decisive_anchor` for why: the string that
+    put it here was ``IDENTIFICATION CARD``, which Alberta and Manitoba print too. The pair is
+    still separable — see :func:`test_state_id_and_drivers_license_separate_without_decisive`,
+    which pins the property that actually holds.
+    """
     left_spec, right_spec = BY_ID[left], BY_ID[right]
 
     assert anchor_hits(left_spec, left_text, decisive_only=True), left
@@ -359,6 +378,35 @@ def test_confusable_pairs_are_separable_by_decisive_anchors(
     )
     assert not anchor_hits(left_spec, right_text, decisive_only=True), (
         f"{left} decisive anchors fire on a {right} document"
+    )
+
+
+def test_state_id_and_drivers_license_separate_without_decisive_anchors() -> None:
+    """A pair can be separable without either side owning an exclusive string.
+
+    ``us_state_id`` has no decisive anchor, on purpose. Its only candidate was
+    ``IDENTIFICATION CARD``, and Alberta and Manitoba title their non-driver cards with the
+    identical words — ``ca_provincial_photo_id`` declares the string here. There is no string
+    on a California ID that no other jurisdiction's ID card prints, so what identifies it is
+    the *combination*, which is the lexical tier's job rather than L1's.
+
+    That is not a weakening. A decisive anchor buys one thing — the conclusive-L1
+    identification route — and a doctype that reaches that route on a string its neighbour
+    also prints reaches it wrongly. What must hold is that each side's anchors fire on its own
+    specimen and not on its neighbour's, and that is asserted here directly.
+    """
+    state_id, licence = BY_ID["us_state_id"], BY_ID["us_drivers_license"]
+
+    assert not [a for a in state_id.anchors if a.decisive], (
+        "us_state_id must not reclaim a document-class name as decisive"
+    )
+    own = set(anchor_hits(state_id, STATE_ID_TEXT))
+    assert {"IDENTIFICATION CARD", "NOT FOR DRIVING"} <= own
+
+    # Neither side's anchors are satisfied by the other's document.
+    assert "NOT FOR DRIVING" not in anchor_hits(state_id, DRIVERS_LICENSE_TEXT)
+    assert not anchor_hits(licence, STATE_ID_TEXT, decisive_only=True), (
+        "a driver-licence decisive anchor fires on a non-driver ID"
     )
 
 
@@ -394,25 +442,50 @@ def test_w8bene_form_number_is_not_decisive() -> None:
     assert not anchor_hits(w8bene, W8BEN_TEXT, decisive_only=True)
 
 
-def test_negative_anchors_catch_the_cross_country_lookalikes() -> None:
-    """Where two countries print the same title, the negative anchors are the separator.
+def test_negative_anchors_are_a_secondary_control_not_the_separator() -> None:
+    """Negative anchors help, and they are not what makes a shared title safe.
 
-    A Canadian PR card is titled PERMANENT RESIDENT CARD in English — exactly the US
-    green card's decisive anchor — so ``us_green_card`` must carry negative anchors that
-    fire on the Canadian card. The same holds for a state ID against a DoD card and against
-    a Canadian provincial photo card, which both contain the words "IDENTIFICATION CARD".
+    This test used to assert the opposite, and its own docstring stated the defect as the
+    design: "A Canadian PR card is titled PERMANENT RESIDENT CARD in English — exactly the US
+    green card's decisive anchor — so ``us_green_card`` must carry negative anchors that fire
+    on the Canadian card." It even asserted, as a *precondition*, that the shared English title
+    fires as a decisive hit for the US doctype on a Canadian document.
+
+    That mitigation cannot work, and the reason is the same OCR loss on both sides. The US
+    doctype's negative anchors are ``CARTE DE RÉSIDENT PERMANENT``, ``IRCC`` and
+    ``EMPLOYMENT AUTHORIZATION``; the Canadian doctype's decisive anchors are
+    ``CARTE DE RÉSIDENT PERMANENT`` and ``RÉSIDENT PERMANENT``. The French line carries both.
+    Drop it — routine on a bilingual card — and the negative anchor is as silent as the
+    decisive one, leaving the US doctype the sole decisive claimant of a string Canada prints
+    in the same words. Measured: ``PERMANENT RESIDENT CARD / CANADA / P<CANSMITH<<JANE<<<<``
+    classified ``us_green_card``, ``country="US"``, confidence 0.900, ``abstained=False``.
+    A negative anchor is a score adjustment; it was never a veto, and a control that is
+    defeated by the same input damage as the thing it protects is not a control.
+
+    What actually makes the shared title safe is that no doctype claims it as decisive, so
+    neither can reach the conclusive-L1 route on it alone. The negative anchors stay — they
+    are useful and they cost nothing — but they are pinned here as secondary.
     """
     green_card = BY_ID["us_green_card"]
-    assert anchor_hits(green_card, PR_CARD_TEXT, decisive_only=True), (
-        "precondition: the shared English title really does fire"
+    assert not anchor_hits(green_card, PR_CARD_TEXT, decisive_only=True), (
+        "us_green_card must not hold a decisive claim on a Canadian PR card's text"
+    )
+    assert "PERMANENT RESIDENT CARD" in anchor_hits(green_card, PR_CARD_TEXT), (
+        "the shared title is still evidence — it is just not proof"
     )
     assert negative_hits(green_card, PR_CARD_TEXT), (
-        "us_green_card needs a negative anchor that fires on a Canadian PR card"
+        "the secondary control is still wired up"
     )
-    assert anchor_hits(BY_ID["ca_pr_card"], PR_CARD_TEXT, decisive_only=True)
+    assert anchor_hits(BY_ID["ca_pr_card"], PR_CARD_TEXT, decisive_only=True), (
+        "the Canadian doctype still owns exclusive French decisive anchors"
+    )
 
+    # us_state_id no longer holds a decisive anchor at all (see
+    # test_state_id_and_drivers_license_separate_without_decisive_anchors), so the DoD card is
+    # separated the same way: the military doctype owns an exclusive string, the state ID does
+    # not claim one, and the negative anchor remains as the secondary control.
     state_id = BY_ID["us_state_id"]
-    assert anchor_hits(state_id, MILITARY_ID_TEXT, decisive_only=True)
+    assert not anchor_hits(state_id, MILITARY_ID_TEXT, decisive_only=True)
     assert negative_hits(state_id, MILITARY_ID_TEXT)
     assert anchor_hits(BY_ID["us_military_id"], MILITARY_ID_TEXT, decisive_only=True)
 

@@ -600,8 +600,14 @@ _SPECS.extend(
             anchors=[
                 Anchor(text="PERMANENT ACCOUNT NUMBER CARD", decisive=True),
                 Anchor(text="स्थायी लेखा संख्या कार्ड", lang="hi", decisive=True),
-                Anchor(text="INCOME TAX DEPARTMENT", decisive=True, zone=Zone.title),
-                Anchor(text="आयकर विभाग", lang="hi", decisive=True, zone=Zone.title),
+                # Both spellings of the issuer's name were decisive here, gated to the title
+                # zone. The Income Tax Department issues four doctypes in this registry —
+                # in_pan, in_form16, in_form60 and in_itr_acknowledgement — and prints its
+                # name at the head of all of them, so the string proves the *issuer*, never
+                # the document. in_form16 already claimed "आयकर विभाग" non-decisively, which
+                # is what made the asymmetry visible. Demoted to the plain non-decisive
+                # entries below; "PERMANENT ACCOUNT NUMBER CARD" is the string only a PAN card
+                # bears, and it stays decisive.
                 Anchor(text="INCOME TAX DEPARTMENT"),
                 Anchor(text="आयकर विभाग", lang="hi"),
                 Anchor(text="PERMANENT ACCOUNT NUMBER"),
@@ -701,13 +707,19 @@ _SPECS.extend(
                 Anchor(text="PASSPORT"),
                 Anchor(text="पासपोर्ट", lang="hi"),
                 Anchor(text="Ministry of External Affairs"),
-                Anchor(text="Type"),
+                # "Type", "Surname", "Nationality" and "Place of Birth" were removed. They
+                # are ICAO 9303 visual-inspection-zone labels, printed identically on every
+                # state's passport, so they cannot contribute evidence that *this* passport
+                # is Indian — which is the only question this spec exists to answer. What
+                # they did contribute was score on documents that merely discuss identity
+                # documents: this spec ranked first on a birth-registration worksheet and on
+                # a Canadian social-insurance-number application form, neither of which is a
+                # passport, purely on "type", "place of birth" and "nationality". "Type" is
+                # additionally a four-letter ordinary English word, the token class this
+                # registry has been burned by before.
                 Anchor(text="Country Code"),
                 Anchor(text="Passport No"),
                 Anchor(text="Given Name"),
-                Anchor(text="Surname"),
-                Anchor(text="Nationality"),
-                Anchor(text="Place of Birth"),
                 Anchor(text="Place of Issue"),
                 Anchor(text="जन्म स्थान", lang="hi"),
                 Anchor(text="जारी करने का स्थान", lang="hi"),
@@ -1585,8 +1597,20 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="STATEMENT OF ACCOUNT", decisive=True, zone=Zone.title),
-                Anchor(text="ACCOUNT STATEMENT", decisive=True, zone=Zone.title),
+                # The two English titles were decisive at zone=title. Both are document-class
+                # names that every English-speaking bank chooses independently — the registry
+                # itself has ca_bank_statement and mx_estado_cuenta claiming
+                # "Account Statement" — so neither was ever near-proof of an *Indian* bank
+                # statement. Demoted to the plain entries below.
+                #
+                # The Hindi title stays decisive, and the difference is not arbitrary: the
+                # English string identifies a document class, the Hindi string identifies a
+                # document class *and* the jurisdiction that prints in that script, which is
+                # what a decisive anchor is allowed to assert. This is the same reasoning
+                # ca_pr_card uses for its French anchors. What made that fragile was never the
+                # language — it was that losing the French line let another jurisdiction's
+                # generic English claim win by default, and the loader check plus the
+                # cascade's contested-claim rule are what close that.
                 Anchor(text="खाता विवरण", lang="hi", decisive=True, zone=Zone.title),
                 Anchor(text="STATEMENT OF ACCOUNT"),
                 Anchor(text="ACCOUNT STATEMENT"),
@@ -3160,7 +3184,7 @@ _SPECS.extend(
         ),
         DocTypeSpec(
             doctype_id="in_salary_slip",
-            label="Salary Slip / Pay Slip",
+            label="Salary Slip / Pay Slip / Wage Slip",
             country="IN",
             category=Category.financial,
             issuing_authority="Employer payroll",
@@ -3172,6 +3196,27 @@ _SPECS.extend(
                 Anchor(text="PAYSLIP", decisive=True, zone=Zone.title),
                 Anchor(text="वेतन पर्ची", lang="hi", decisive=True),
                 Anchor(text="SALARY STATEMENT", decisive=True),
+                # The statutory variant. India's *prescribed* wage document is not called a
+                # salary slip: rule 78(1)(b) of the Contract Labour (Regulation and
+                # Abolition) Central Rules, 1971 requires a "Wage Slip" in Form XIX, and the
+                # state rule sets reproduce it verbatim — Form XIX in Andhra Pradesh /
+                # Telangana, Karnataka, Maharashtra and Gujarat, Form 15 under Haryana's
+                # rule 77(1)(b). The *form number* varies by state; the *title* "Wage Slip"
+                # does not, which is why the title is the anchor and the number is not.
+                # Rule 26(2) of the Minimum Wages (Central) Rules, 1950 prescribes the same
+                # title for its Form XI. Without this, every contract-labour and
+                # daily-wage pay document in India is invisible to this doctype.
+                Anchor(text="WAGE SLIP", decisive=True),
+                # Form XIX's column headings, which the prescribed form prints whether or
+                # not it has been filled in. They are wage-period vocabulary that no other
+                # registered doctype uses: a corporate payslip says "Basic"/"HRA", a Form
+                # XIX says "gross wages payable" and "net amount of wages paid".
+                Anchor(text="Gross wages payable"),
+                Anchor(text="Net amount of wages paid"),
+                Anchor(text="Rate of daily wages"),
+                Anchor(text="Amount of overtime wages"),
+                Anchor(text="piece rate"),
+                Anchor(text="Wage Period"),
                 Anchor(text="Earnings"),
                 Anchor(text="Deductions"),
                 Anchor(text="Basic"),
@@ -3326,7 +3371,13 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="CERTIFICATE OF INCORPORATION", decisive=True),
+                # "CERTIFICATE OF INCORPORATION" was decisive. It is the title a company
+                # registrar in India, England, Delaware and Ontario each chose independently,
+                # and both us_articles_incorporation and ca_articles_incorporation_provincial
+                # claim the string here. Demoted. "MINISTRY OF CORPORATE AFFAIRS" is the
+                # actual Indian signature and stays decisive; it is shared only with
+                # in_llp_incorporation, which is a declared, mutual, same-issuer overlap.
+                Anchor(text="CERTIFICATE OF INCORPORATION"),
                 Anchor(text="MINISTRY OF CORPORATE AFFAIRS", decisive=True),
                 Anchor(text="कॉर्पोरेट कार्य मंत्रालय", lang="hi", decisive=True),
                 Anchor(text="Corporate Identity Number", decisive=True),
@@ -3363,6 +3414,15 @@ _SPECS.extend(
                 "LLPIN",
                 "MEMORANDUM OF ASSOCIATION",
                 "ARTICLES OF ASSOCIATION",
+                # Added with the MCA e-form doctypes (MGT-7, AOC-4, DIR-12, PAS-3, SH-7,
+                # CHG-1, INC-20A). Those forms all print "Corporate identity number (CIN) of
+                # company", inside which this doctype's decisive anchor "Corporate Identity
+                # Number" matches as a token n-gram — so without these, every MCA e-form
+                # carries a decisive claim for a certificate of incorporation. Both strings
+                # are MCA e-form furniture and appear on no certificate, so this is evidence
+                # added, never evidence removed.
+                "Refer the instruction kit for filing the form",
+                "Global location number",
             ],
             handling=(
                 "Establishes the legal existence of the entity, not the identity of anyone "
@@ -3443,7 +3503,12 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="CERTIFICATE OF INCORPORATION", decisive=True),
+                # Demoted for the same reason as in_certificate_incorporation: a company
+                # registrar's title, not one jurisdiction's string. The LLP-specific decisive
+                # anchors below ("Limited Liability Partnership Act, 2008", "LLP
+                # Identification Number") are what separate this from a company certificate,
+                # and they are unaffected.
+                Anchor(text="CERTIFICATE OF INCORPORATION"),
                 Anchor(text="MINISTRY OF CORPORATE AFFAIRS", decisive=True),
                 Anchor(text="कॉर्पोरेट कार्य मंत्रालय", lang="hi", decisive=True),
                 Anchor(text="Limited Liability Partnership Act, 2008", decisive=True),
@@ -4353,6 +4418,2459 @@ _SPECS.extend(
                         ],
                         "hi": ["तहसीलदार"],
                     },
+                ),
+            ],
+        ),
+    ]
+)
+# ===========================================================================
+# Listed-issuer compliance and the corporate due-diligence pack
+#
+# Everything below this line is a document a company files *about itself* with a regulator —
+# the MCA, SEBI, the RBI, the DGFT — or a report a professional signs *about* the company.
+# They are the substance of an Indian corporate due-diligence pack, and they are the part of
+# this registry where the "decisive anchor" rule bites hardest, because their titles are
+# ordinary English nouns.
+#
+# **The rule that shaped every spec here.** ``ANNUAL REPORT``, ``PROSPECTUS``, ``BALANCE
+# SHEET``, ``CORPORATE GOVERNANCE REPORT``, ``SECRETARIAL AUDIT REPORT``, ``INDEPENDENT
+# AUDITOR'S REPORT`` are names every issuer in every jurisdiction picks independently. Not one
+# of them is decisive below. What *is* decisive is the string the regulator wrote and the
+# filer may not change:
+#
+#   * an MCA e-form number and the rule that mandates it — ``FORM NO. AOC-4``,
+#     ``[Pursuant to section 137 of the Companies Act, 2013 and sub-rule (1) of Rule 12 of
+#     Companies (Accounts) Rules, 2014]``;
+#   * a SEBI-prescribed format title carrying its own regulation number — ``Shareholding
+#     Pattern under Regulation 31 of SEBI (Listing Obligations and Disclosure Requirements)
+#     Regulations, 2015``;
+#   * an ICDR-mandated cover-page sentence — ``Please read Section 32 of the Companies Act,
+#     2013``;
+#   * a scheme identifier one Indian ministry coined — ``Udyam Registration Number``,
+#     ``Importer-Exporter Code``, ``Form FC-GPR``.
+#
+# Each of those was read off a real filing, not recalled: AOC-4 and CHG-1 from the MCA e-form
+# PDFs, MGT-7 from a filed annual return, the shareholding pattern from CDSL's own Reg-31
+# filing, the corporate-governance format from Bharat Dynamics' quarterly report, MR-3 from
+# IDBI Bank's FY2020-21 secretarial audit, the DRHP cover text from three unrelated issuers'
+# draft red herring prospectuses. Where the reading contradicted the plan, the plan lost — see
+# the note on ``in_sebi_registration_certificate`` that is *not* in this file.
+#
+# **Two anchors that look decisive and are not.** ``SECURITIES AND EXCHANGE BOARD OF INDIA``
+# heads six doctypes below: it proves the regulator, not the document, exactly like
+# ``INCOME TAX DEPARTMENT`` upstream. And ``Issue of Capital and Disclosure Requirements`` was
+# the obvious decisive anchor for an offer document until the IDBI MR-3 was read — a
+# secretarial audit report enumerates *every* SEBI regulation the company is subject to, ICDR
+# among them. Both are present below, on several specs, decisive on none.
+#
+# **Attribute keys this section wanted and did not have.** ``loader.ATTRIBUTE_KEYS`` is shared
+# and is not edited from here. Six fields therefore carry an empty ``attribute_key`` and stay
+# doc-local: reporting period / financial year, ticker-and-exchange (scrip code), auditor firm
+# name, DIN, ISIN and shares outstanding. Each says so in its ``notes``. They are reported as a
+# loader change request rather than smuggled into a near-miss key — filing a fiscal year under
+# ``doc.assessment_year`` would put a company's reporting period in the same bucket as an
+# income-tax assessment year, and the merge view would silently conflate them.
+# ===========================================================================
+_L_LISTED_ENTITY = {
+    "en": [
+        "Name of Listed Entity",
+        "Name of the Listed Entity",
+        "Name of the Company",
+        "Name of Company",
+        "Name of the Issuer",
+    ],
+    "hi": ["सूचीबद्ध कंपनी का नाम"],
+}
+_L_FINANCIAL_YEAR = {
+    "en": [
+        "Financial Year",
+        "Financial year to which financial statements relates",
+        "For the financial year ended",
+        "FOR THE FINANCIAL YEAR ENDED",
+        "Year ended",
+        "Period",
+    ],
+    "hi": ["वित्तीय वर्ष"],
+}
+_L_SRN = {
+    "en": ["SRN", "Service Request Number", "SRN of Form", "Challan Number"],
+}
+_L_DIN = {
+    "en": ["DIN", "DIN/PAN", "Director Identification Number", "DIN of the director"],
+}
+_L_SCRIP = {
+    "en": ["Scrip Code", "Scrip Code/Name of Scrip/Class of Security", "Symbol", "Stock Code"],
+}
+
+
+def _company_name_field(*, required: bool = True) -> FieldSpec:
+    """The filer's legal name. Every document in this section names one company."""
+    return _f("company_name", "entity.legal_name", required=required, labels=_L_ENTITY)
+
+
+def _cin_field(*, required: bool = False) -> FieldSpec:
+    """The CIN, as printed on an MCA e-form or a SEBI filing.
+
+    Deliberately a copy of the shape used by :data:`in_certificate_incorporation` rather than a
+    reference to it: the same identifier, the same 21-character structure, the same absence of
+    a check digit. The listing status is the first character — ``L`` for a listed company,
+    ``U`` for an unlisted one — which is the single most useful bit on a due-diligence pack and
+    is why the pattern keeps the character class explicit instead of collapsing it to ``[A-Z]``.
+    """
+    return _f(
+        "cin",
+        "id.cin",
+        kind="id",
+        required=required,
+        labels={
+            "en": [
+                "Corporate Identity Number",
+                "CIN",
+                "Corporate identity number (CIN) of company",
+                "CIN of the company",
+            ],
+            "hi": ["कॉर्पोरेट पहचान संख्या"],
+        },
+        pattern=r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b",
+        locators=("regex", "label", "kv"),
+        notes="21 characters: listing status (L listed / U unlisted), 5-digit industry code, "
+        "2-letter state, 4-digit year, 3-letter ownership code, 6-digit registration "
+        "number. Structure only; no check digit exists.",
+    )
+
+
+def _srn_field() -> FieldSpec:
+    """MCA Service Request Number — the receipt for a filing, and the thing a reviewer
+    re-queries the portal with."""
+    return _f(
+        "srn",
+        "doc.reference_number",
+        kind="id",
+        labels=_L_SRN,
+        locators=("label", "kv"),
+        notes="MCA allots SRNs from several series (letter plus digits, length varies by "
+        "vintage and by portal generation). No pattern is enforced: a regex tight enough "
+        "to be useful would reject the older series outright.",
+    )
+
+
+def _financial_year_field(*, required: bool = False) -> FieldSpec:
+    """The reporting period. Doc-local — see the section note on attribute keys."""
+    return _f(
+        "financial_year",
+        "",
+        required=required,
+        labels=_L_FINANCIAL_YEAR,
+        notes="The Indian financial year runs 1 April to 31 March and is printed as "
+        "'2023-24', as '31st March 2024', or as a From/To date pair. Left doc-local: "
+        "loader.ATTRIBUTE_KEYS has no reporting-period key, and doc.assessment_year is an "
+        "income-tax concept, not a company's fiscal year.",
+    )
+
+
+def _din_field(name: str = "director_din", *, multi: bool = False) -> FieldSpec:
+    """Director Identification Number. Personal, so it is flagged pii."""
+    return _f(
+        name,
+        "",
+        kind="id",
+        multi=multi,
+        pii=True,
+        labels=_L_DIN,
+        pattern=r"\b\d{8}\b",
+        locators=("table", "label", "kv"),
+        notes="8 digits, allotted to a natural person by the MCA and reused across every "
+        "company they sit on — which is what makes it a directorship-graph key and also "
+        "why it is personal data. No published check digit. Doc-local: ATTRIBUTE_KEYS has "
+        "ownership.director for the name but no key for the DIN itself.",
+    )
+
+
+#: Furniture printed on every MCA e-form. Never decisive — an e-form header is shared by all
+#: fifty-odd forms in the MCA catalogue — but strong evidence that the page is an MCA filing
+#: rather than a certificate or a board minute, which is precisely the confusion these seven
+#: doctypes have to survive.
+_MCA_EFORM_FURNITURE = (
+    Anchor(text="Refer the instruction kit for filing the form"),
+    Anchor(text="Global location number (GLN) of company"),
+    Anchor(text="Registrar of Companies"),
+    Anchor(text="Companies Act, 2013"),
+    Anchor(text="All fields marked in * are to be mandatorily filled"),
+    Anchor(text="Pre-Fill"),
+    Anchor(text="Digital Signature Certificate"),
+)
+
+#: What separates one MCA e-form from another is its form number, so every one of these seven
+#: specs declares the other six's numbers as evidence *against* itself. Two forms are never
+#: the same page, and a filing bundle that concatenates them is a page-type problem, not a
+#: doctype problem.
+_MCA_EFORM_NUMBERS = (
+    "FORM NO. MGT-7",
+    "FORM NO. AOC-4",
+    "FORM NO. DIR-12",
+    "FORM NO. PAS-3",
+    "FORM NO. SH-7",
+    "FORM NO. CHG-1",
+    "FORM NO. INC-20A",
+)
+
+
+def _other_eform_numbers(mine: str) -> list[str]:
+    """The six MCA form numbers that are not ``mine``, for ``negative_anchors``."""
+    return [n for n in _MCA_EFORM_NUMBERS if n != mine]
+
+
+_SPECS.extend(
+    [
+        DocTypeSpec(
+            doctype_id="in_mca_mgt7_annual_return",
+            label="MCA Form MGT-7 / MGT-7A Annual Return",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed by the company with the Registrar of Companies, Ministry "
+            "of Corporate Affairs",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # The form number is the whole case for decisiveness. MCA prints it three
+                # ways depending on portal generation ("FORM NO. MGT-7", "Form MGT-7",
+                # "eForm MGT-7") and token n-gram matching treats those as different
+                # strings, so all three are declared. MGT-7A is the abridged return for
+                # OPCs and small companies — the same document under a different threshold,
+                # so it lives here rather than in a doctype of its own.
+                Anchor(text="FORM NO. MGT-7", decisive=True),
+                Anchor(text="Form MGT-7", decisive=True),
+                Anchor(text="FORM NO. MGT-7A", decisive=True),
+                Anchor(text="Form MGT-7A", decisive=True),
+                Anchor(text="eForm MGT-7"),
+                Anchor(text="Companies (Management and Administration) Rules, 2014", decisive=True),
+                Anchor(text="sub-Section(1) of section 92 of the Companies Act"),
+                # The bare string "Annual Return" is printed on MGT-7, directly under the
+                # form number, and this spec would ordinarily claim it. It is deliberately
+                # NOT declared, because ``ca_annual_return`` currently declares the same
+                # string DECISIVE and the registry's cross-jurisdiction rule then refuses the
+                # whole build. Declaring a true claim here would be correct and would take
+                # every other pack down with it; the actual defect is on the Canadian side —
+                # "ANNUAL RETURN" is a document-class name that a registrar in Ottawa, Delhi
+                # and Companies House each chose independently, which is precisely the
+                # decisive-anchor rule this registry enforces everywhere else. Reported
+                # rather than worked around in the other pack's file. The Hindi title below
+                # is uncontested and carries the same evidence for an Indian filing.
+                Anchor(text="वार्षिक विवरणी", lang="hi"),
+                Anchor(text="REGISTRATION AND OTHER DETAILS"),
+                Anchor(text="PRINCIPAL BUSINESS ACTIVITIES OF THE COMPANY"),
+                Anchor(text="SHARE CAPITAL, DEBENTURES AND OTHER SECURITIES OF THE COMPANY"),
+                Anchor(text="Whether shares listed on recognized Stock Exchange(s)"),
+                Anchor(text="Turnover and net worth of the company"),
+                Anchor(text="MEETINGS OF MEMBERS"),
+                Anchor(text="Number of promoters, members, debenture holders"),
+                Anchor(text="Registrar and Transfer Agents"),
+                *_MCA_EFORM_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_mca_aoc4_financial_statements": (
+                    "both are the company's annual MCA filings for the same financial year; "
+                    "MGT-7 is the annual return under section 92 and carries the member and "
+                    "shareholding registers, AOC-4 is the financial statements under section "
+                    "137 and carries the balance sheet and profit-and-loss segments"
+                ),
+                "in_certificate_incorporation": (
+                    "the annual return recites the CIN and company name that the certificate "
+                    "conferred; the certificate is the registrar's one-off attestation and "
+                    "carries no financial year"
+                ),
+            },
+            negative_anchors=[
+                *_other_eform_numbers("FORM NO. MGT-7"),
+                "CERTIFICATE OF INCORPORATION",
+                "INDEPENDENT AUDITOR'S REPORT",
+            ],
+            handling=(
+                "The single most useful document in an Indian corporate DD pack: it is the "
+                "company's own signed statement of who its members, promoters, directors and "
+                "KMP were on the last day of the financial year. It is a snapshot as at the "
+                "financial-year end, never as at today — a director who resigned in April will "
+                "still be listed in the return filed that November. Treat every officer named "
+                "here as a lead to verify against DIR-12, not as current fact."
+            ),
+            fields=[
+                _cin_field(required=True),
+                _company_name_field(),
+                _financial_year_field(required=True),
+                _f(
+                    "registered_office",
+                    "entity.registered_office",
+                    kind="address",
+                    labels=_L_REG_OFFICE,
+                    locators=("kv", "label", "regex"),
+                ),
+                _pincode_field(),
+                _f(
+                    "listed_status",
+                    "",
+                    kind="bool",
+                    labels={
+                        "en": [
+                            "Whether shares listed on recognized Stock Exchange(s)",
+                            "Whether listed company",
+                        ]
+                    },
+                    notes="Yes/No on the face of the form, and corroborated by the CIN's first "
+                    "character (L = listed). Prefer the printed answer; report the "
+                    "disagreement rather than silently picking one.",
+                ),
+                _f(
+                    "authorised_capital",
+                    "entity.authorised_capital",
+                    kind="number",
+                    labels={"en": ["Authorised capital", "Authorised Capital (in Rs.)"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                ),
+                _f(
+                    "paid_up_capital",
+                    "entity.paid_up_capital",
+                    kind="number",
+                    labels={"en": ["Paid up capital", "Subscribed capital", "Paid-up Capital"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                ),
+                _f(
+                    "directors",
+                    "ownership.director",
+                    kind="name",
+                    multi=True,
+                    pii=True,
+                    labels={
+                        "en": [
+                            "Name of the director",
+                            "Directors",
+                            "Director",
+                            "Key managerial personnel",
+                        ]
+                    },
+                    locators=("table", "label", "kv"),
+                ),
+                _din_field(multi=True),
+                _f(
+                    "promoters",
+                    "ownership.beneficial_owner",
+                    kind="name",
+                    multi=True,
+                    pii=True,
+                    labels={"en": ["Promoters", "Name of the promoter", "Promoter"]},
+                    locators=("table", "label"),
+                    notes="MGT-7's promoter list is the closest thing an Indian filing gives to "
+                    "a declared beneficial-ownership statement, but it is not one: control "
+                    "through a chain of bodies corporate does not appear here. Corroborate "
+                    "against the significant-beneficial-owner register before relying on it.",
+                ),
+                _f(
+                    "registrar_transfer_agent",
+                    "",
+                    labels={
+                        "en": [
+                            "Registrar and Transfer Agents",
+                            "Name of RTA",
+                            "Registrar and Share Transfer Agent",
+                        ]
+                    },
+                    notes="Doc-local. Useful for tracing the share register, which is held by "
+                    "the RTA rather than by the company.",
+                ),
+                _f(
+                    "agm_date",
+                    "",
+                    kind="date",
+                    labels={"en": ["Date of AGM", "date of annual general meeting", "AGM held on"]},
+                    validator="generic_date",
+                    notes="Doc-local: this is the date of a corporate event, not the date the "
+                    "document was issued, and conflating the two in doc.issue_date would "
+                    "make an annual return look like it was issued at its AGM.",
+                ),
+                _srn_field(),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_mca_aoc4_financial_statements",
+            label="MCA Form AOC-4 (financial statements filed with the Registrar)",
+            country="IN",
+            category=Category.financial,
+            issuing_authority="Filed by the company with the Registrar of Companies, Ministry "
+            "of Corporate Affairs",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # Read verbatim off the MCA e-form: "FORM NO. AOC-4 / Form for filing
+                # financial statement and other documents with the Registrar / [Pursuant to
+                # section 137 of the Companies Act, 2013 and sub-rule (1) of Rule 12 of
+                # Companies (Accounts) Rules, 2014]". The long title line is decisive too:
+                # it is MCA's sentence, not the filer's, and it survives an OCR read that
+                # loses the small-print form number in the corner.
+                Anchor(text="FORM NO. AOC-4", decisive=True),
+                Anchor(text="Form AOC-4", decisive=True),
+                Anchor(
+                    text="Form for filing financial statement and other documents with the "
+                    "Registrar",
+                    decisive=True,
+                ),
+                Anchor(text="Companies (Accounts) Rules, 2014", decisive=True),
+                Anchor(text="AOC-4 XBRL"),
+                Anchor(text="AOC-4 CFS"),
+                Anchor(text="section 137 of the Companies Act"),
+                Anchor(text="SEGMENT- I: INFORMATION AND PARTICULARS IN RESPECT OF BALANCE SHEET"),
+                Anchor(text="INFORMATION AND PARTICULARS IN RESPECT OF PROFIT AND LOSS ACCOUNT"),
+                Anchor(text="Whether annual general meeting (AGM) held"),
+                Anchor(text="Date of Board of Directors' meeting in which financial statements "
+                       "are approved"),
+                Anchor(text="Date of signing of reports on the financial statements by the "
+                       "auditors"),
+                Anchor(text="Figures appearing in the e-Form should be entered in Absolute "
+                       "Rupees only"),
+                Anchor(text="Whether consolidated financial statements required"),
+                *_MCA_EFORM_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_mca_mgt7_annual_return": (
+                    "both are the company's annual MCA filings for the same financial year; "
+                    "AOC-4 is the financial statements under section 137 and carries the "
+                    "balance sheet and profit-and-loss segments, MGT-7 is the annual return "
+                    "under section 92 and carries the member and shareholding registers"
+                ),
+                "in_statutory_auditor_report": (
+                    "the auditor's report is an attachment to AOC-4 and is signed by the "
+                    "auditor; AOC-4 itself is the company's e-form, signed by a director, and "
+                    "prints the MCA form header"
+                ),
+            },
+            negative_anchors=[
+                *_other_eform_numbers("FORM NO. AOC-4"),
+                "CERTIFICATE OF INCORPORATION",
+            ],
+            handling=(
+                "Carries the filed financial statements, so the numbers here are the ones the "
+                "company stood behind at the Registrar — stronger than a management account "
+                "and weaker than an audited signed set, because AOC-4 is a transcription of "
+                "the statements into MCA's fields. Where the e-form and the attached audited "
+                "statements disagree, the attachment governs; surface both."
+            ),
+            fields=[
+                _cin_field(required=True),
+                _company_name_field(),
+                _financial_year_field(required=True),
+                _f(
+                    "registered_office",
+                    "entity.registered_office",
+                    kind="address",
+                    labels=_L_REG_OFFICE,
+                    locators=("kv", "label", "regex"),
+                ),
+                _f(
+                    "board_approval_date",
+                    "",
+                    kind="date",
+                    labels={
+                        "en": [
+                            "Date of Board of Directors' meeting in which financial statements "
+                            "are approved",
+                            "Date of board meeting",
+                        ]
+                    },
+                    validator="generic_date",
+                    notes="Doc-local corporate-event date; see the note on MGT-7's agm_date.",
+                ),
+                _f(
+                    "auditor_signing_date",
+                    "",
+                    kind="date",
+                    labels={
+                        "en": [
+                            "Date of signing of reports on the financial statements by the "
+                            "auditors",
+                            "Date of auditor's report",
+                        ]
+                    },
+                    validator="generic_date",
+                    notes="Doc-local. The gap between this and the board approval date is a "
+                    "standard DD red flag when it is negative.",
+                ),
+                _f(
+                    "agm_date",
+                    "",
+                    kind="date",
+                    labels={"en": ["date of AGM", "Whether annual general meeting (AGM) held"]},
+                    validator="generic_date",
+                    notes="Doc-local corporate-event date.",
+                ),
+                _f(
+                    "auditor_name",
+                    "",
+                    kind="name",
+                    pii=True,
+                    labels={
+                        "en": [
+                            "Name of the auditor",
+                            "Statutory Auditor",
+                            "Auditors",
+                            "Name of the audit firm",
+                        ]
+                    },
+                    notes="Doc-local: ATTRIBUTE_KEYS has no auditor key. Flagged pii because a "
+                    "sole practitioner's name is an individual's name; a firm name is not, "
+                    "and the field cannot tell them apart before extraction.",
+                ),
+                _f(
+                    "authorised_capital",
+                    "entity.authorised_capital",
+                    kind="number",
+                    labels={
+                        "en": [
+                            "Authorised capital of the company as on the date of filing",
+                            "Authorised capital",
+                        ]
+                    },
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                ),
+                _f(
+                    "paid_up_capital",
+                    "entity.paid_up_capital",
+                    kind="number",
+                    labels={"en": ["Paid up capital", "Subscribed capital"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                ),
+                _f(
+                    "turnover",
+                    "",
+                    kind="number",
+                    labels={"en": ["Turnover", "Revenue from operations", "Total revenue"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local: income.amount is a natural person's income key and would "
+                    "put a company's revenue in a KYC income bucket.",
+                ),
+                _srn_field(),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_mca_dir12",
+            label="MCA Form DIR-12 (appointment or cessation of directors and KMP)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed by the company with the Registrar of Companies, Ministry "
+            "of Corporate Affairs",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                Anchor(text="FORM NO. DIR-12", decisive=True),
+                Anchor(text="Form DIR-12", decisive=True),
+                Anchor(
+                    text="Particulars of appointment of directors and the key managerial "
+                    "personnel and the changes among them",
+                    decisive=True,
+                ),
+                Anchor(
+                    text="Companies (Appointment and Qualification of Directors) Rules, 2014",
+                    decisive=True,
+                ),
+                Anchor(text="section 170(2) of the Companies Act"),
+                Anchor(text="Number of directors or key managerial personnel"),
+                Anchor(text="Designation at the time of appointment"),
+                Anchor(text="Date of appointment"),
+                Anchor(text="Date of cessation"),
+                Anchor(text="Reason for cessation"),
+                Anchor(text="Category of the director"),
+                Anchor(text="Director Identification Number"),
+                Anchor(text="Managing Director"),
+                Anchor(text="Whole-time director"),
+                Anchor(text="Company Secretary"),
+                Anchor(text="Chief Financial Officer"),
+                *_MCA_EFORM_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_board_resolution": (
+                    "the board resolution is the internal decision to appoint; DIR-12 is the "
+                    "statutory intimation of that decision to the Registrar and prints an MCA "
+                    "form header"
+                ),
+                "in_mca_mgt7_annual_return": (
+                    "the annual return lists the board as at the financial-year end; DIR-12 "
+                    "records one dated change to it and names a reason for cessation"
+                ),
+            },
+            negative_anchors=[
+                *_other_eform_numbers("FORM NO. DIR-12"),
+                "CERTIFIED TRUE COPY OF THE RESOLUTION",
+            ],
+            handling=(
+                "The authoritative record of who joined or left the board and when — the "
+                "document that resolves a stale MGT-7. Every person named is an individual: "
+                "names, DINs, designations and dates of cessation are personal data, and a "
+                "cessation reason ('disqualification', 'removal') is adverse personal data. "
+                "Mask on export unless the reviewer's purpose covers officer screening."
+            ),
+            fields=[
+                _cin_field(required=True),
+                _company_name_field(),
+                _f(
+                    "officer_names",
+                    "ownership.director",
+                    kind="name",
+                    multi=True,
+                    required=True,
+                    pii=True,
+                    labels={
+                        "en": [
+                            "Name of the director",
+                            "Name",
+                            "Name of the key managerial personnel",
+                        ]
+                    },
+                    locators=("table", "label", "kv"),
+                ),
+                _din_field("officer_din", multi=True),
+                _f(
+                    "designation",
+                    "",
+                    multi=True,
+                    labels={
+                        "en": [
+                            "Designation",
+                            "Designation at the time of appointment",
+                            "Category of the director",
+                        ]
+                    },
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local. Managing Director / Whole-time director / Independent / "
+                    "Nominee / Company Secretary / CFO — the distinction that decides whether "
+                    "a signature binds the company.",
+                ),
+                _f(
+                    "appointment_date",
+                    "",
+                    kind="date",
+                    multi=True,
+                    labels={"en": ["Date of appointment", "Date of appointment or change"]},
+                    validator="generic_date",
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local corporate-event date.",
+                ),
+                _f(
+                    "cessation_date",
+                    "",
+                    kind="date",
+                    multi=True,
+                    labels={"en": ["Date of cessation", "Date of change"]},
+                    validator="generic_date",
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local corporate-event date.",
+                ),
+                _f(
+                    "cessation_reason",
+                    "",
+                    multi=True,
+                    pii=True,
+                    labels={"en": ["Reason for cessation", "Reason for change"]},
+                    locators=("table", "label"),
+                    notes="Adverse personal data when it reads 'disqualification' or "
+                    "'removal'. pii=True is not optional here.",
+                ),
+                _f(
+                    "officer_pan",
+                    "id.pan",
+                    kind="id",
+                    multi=True,
+                    pii=True,
+                    labels=_L_PAN,
+                    pattern=r"\b[A-Z]{5}\d{4}[A-Z]\b",
+                    validator="pan",
+                    locators=("table", "label", "regex"),
+                ),
+                _srn_field(),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_mca_pas3",
+            label="MCA Form PAS-3 (return of allotment of securities)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed by the company with the Registrar of Companies, Ministry "
+            "of Corporate Affairs",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # "Return of Allotment" is the form's title and is NOT decisive: allotment is
+                # shared UK-descended company-law vocabulary and a registrar in any
+                # Commonwealth jurisdiction could print it. The form number and the Indian
+                # rule citation are what one issuer controls.
+                Anchor(text="FORM NO. PAS-3", decisive=True),
+                Anchor(text="Form PAS-3", decisive=True),
+                Anchor(
+                    text="Companies (Prospectus and Allotment of Securities) Rules, 2014",
+                    decisive=True,
+                ),
+                Anchor(text="Return of Allotment"),
+                Anchor(text="section 39(4) and 42(9) of the Companies Act"),
+                Anchor(text="Allotment of securities"),
+                Anchor(text="Date of allotment"),
+                Anchor(text="Number of securities allotted"),
+                Anchor(text="Nominal amount per security"),
+                Anchor(text="Premium amount per security"),
+                Anchor(text="Whether securities were allotted for consideration other than cash"),
+                Anchor(text="Preferential allotment"),
+                Anchor(text="Private placement"),
+                Anchor(text="Rights issue"),
+                Anchor(text="Bonus issue"),
+                Anchor(text="List of allottees"),
+                *_MCA_EFORM_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_mca_sh7": (
+                    "SH-7 alters the authorised capital ceiling; PAS-3 issues shares within it "
+                    "and names the allottees"
+                ),
+                "in_fema_fcgpr": (
+                    "PAS-3 reports the allotment to the Registrar under the Companies Act; "
+                    "FC-GPR reports the same allotment to the RBI under FEMA when the allottee "
+                    "is resident outside India"
+                ),
+            },
+            negative_anchors=[
+                *_other_eform_numbers("FORM NO. PAS-3"),
+                "Notice to Registrar of any alteration of share capital",
+            ],
+            handling=(
+                "The cap-table event record. The allottee list is the reason the document "
+                "exists in a DD pack and it names natural persons as often as bodies "
+                "corporate — treat every allottee name as pii until the reviewer has "
+                "classified it. Reconcile against SH-7 (was there headroom?) and against "
+                "FC-GPR (was any allottee non-resident?)."
+            ),
+            fields=[
+                _cin_field(required=True),
+                _company_name_field(),
+                _f(
+                    "allotment_date",
+                    "doc.issue_date",
+                    kind="date",
+                    required=True,
+                    labels={"en": ["Date of allotment", "Date of the allotment"]},
+                    validator="generic_date",
+                ),
+                _f(
+                    "securities_allotted",
+                    "",
+                    kind="number",
+                    labels={
+                        "en": [
+                            "Number of securities allotted",
+                            "Number of shares allotted",
+                            "No. of securities",
+                        ]
+                    },
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local: ATTRIBUTE_KEYS has no shares-outstanding key. This is a "
+                    "delta, not a total — never merge it with a share count from another "
+                    "document.",
+                ),
+                _f(
+                    "nominal_value",
+                    "",
+                    kind="number",
+                    labels={"en": ["Nominal amount per security", "Face value", "Nominal value"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local.",
+                ),
+                _f(
+                    "premium",
+                    "",
+                    kind="number",
+                    labels={"en": ["Premium amount per security", "Securities premium"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local.",
+                ),
+                _f(
+                    "allottees",
+                    "ownership.beneficial_owner",
+                    kind="name",
+                    multi=True,
+                    pii=True,
+                    labels={"en": ["List of allottees", "Name of the allottee", "Allottee"]},
+                    locators=("table", "label"),
+                ),
+                _f(
+                    "allotment_type",
+                    "",
+                    labels={
+                        "en": [
+                            "Preferential allotment",
+                            "Private placement",
+                            "Rights issue",
+                            "Bonus issue",
+                            "Type of allotment",
+                        ]
+                    },
+                    locators=("mark", "label", "kv"),
+                    notes="Doc-local, and usually a tick box rather than a value — hence the "
+                    "mark locator first.",
+                ),
+                _f(
+                    "paid_up_capital",
+                    "entity.paid_up_capital",
+                    kind="number",
+                    labels={"en": ["Paid up capital", "Paid-up capital after allotment"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                ),
+                _srn_field(),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_mca_sh7",
+            label="MCA Form SH-7 (notice of alteration of share capital)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed by the company with the Registrar of Companies, Ministry "
+            "of Corporate Affairs",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                Anchor(text="FORM NO. SH-7", decisive=True),
+                Anchor(text="Form SH-7", decisive=True),
+                Anchor(
+                    text="Notice to Registrar of any alteration of share capital", decisive=True
+                ),
+                Anchor(
+                    text="Companies (Share Capital and Debentures) Rules, 2014", decisive=True
+                ),
+                Anchor(text="section 64(1) of the Companies Act"),
+                Anchor(text="Increase in authorised capital"),
+                Anchor(text="Consolidation or division of shares"),
+                Anchor(text="Redemption of redeemable preference shares"),
+                Anchor(text="Particulars of alteration"),
+                Anchor(text="Original authorised capital"),
+                Anchor(text="Revised authorised capital"),
+                Anchor(text="Stamp duty paid"),
+                Anchor(text="Date of the resolution"),
+                *_MCA_EFORM_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_mca_pas3": (
+                    "SH-7 raises the authorised capital ceiling and names no shareholder; "
+                    "PAS-3 issues shares within that ceiling and lists the allottees"
+                ),
+                "in_moa": (
+                    "the capital clause SH-7 alters lives in the memorandum; the memorandum is "
+                    "the constitutional document, SH-7 is one dated notice of a change to it"
+                ),
+            },
+            negative_anchors=[
+                *_other_eform_numbers("FORM NO. SH-7"),
+                "Return of Allotment",
+                "List of allottees",
+            ],
+            handling=(
+                "Names no individual — an alteration of the authorised capital is a company "
+                "fact, not a person fact — so this is one of the few documents in the DD pack "
+                "with no pii at all. The value it carries is the authorised-capital ceiling as "
+                "at a date, which is what makes a later allotment lawful or not."
+            ),
+            fields=[
+                _cin_field(required=True),
+                _company_name_field(),
+                _f(
+                    "resolution_date",
+                    "doc.issue_date",
+                    kind="date",
+                    labels={"en": ["Date of the resolution", "Date of resolution", "Dated"]},
+                    validator="generic_date",
+                ),
+                _f(
+                    "alteration_type",
+                    "",
+                    labels={
+                        "en": [
+                            "Particulars of alteration",
+                            "Increase in authorised capital",
+                            "Consolidation or division of shares",
+                            "Type of alteration",
+                        ]
+                    },
+                    locators=("mark", "label", "kv"),
+                    notes="Doc-local; usually a tick box.",
+                ),
+                _f(
+                    "authorised_capital_before",
+                    "",
+                    kind="number",
+                    labels={"en": ["Original authorised capital", "Existing authorised capital"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local: entity.authorised_capital is reserved for the value that "
+                    "should merge into the entity view, which is the revised figure.",
+                ),
+                _f(
+                    "authorised_capital_after",
+                    "entity.authorised_capital",
+                    kind="number",
+                    labels={"en": ["Revised authorised capital", "Authorised capital after"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                ),
+                _f(
+                    "stamp_duty",
+                    "",
+                    kind="number",
+                    labels={"en": ["Stamp duty paid", "Stamp duty"]},
+                    validator="amount",
+                    locators=("label", "kv"),
+                    notes="Doc-local.",
+                ),
+                _srn_field(),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_mca_chg1",
+            label="MCA Form CHG-1 (registration of creation or modification of charge)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed with the Registrar of Companies, Ministry of Corporate "
+            "Affairs, by the company or the charge holder",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # Header read verbatim off the MCA e-form, including the SARFAESI clause that
+                # MCA folded into the title in the 2015 revision.
+                Anchor(text="FORM NO. CHG-1", decisive=True),
+                Anchor(text="Form CHG-1", decisive=True),
+                Anchor(
+                    text="Application for registration of creation, modification of charge",
+                    decisive=True,
+                ),
+                # MCA's own e-form prints "Rules 2014" without the comma while every
+                # secondary source prints "Rules, 2014". Anchor matching is on tokens, so one
+                # declaration covers both spellings — declaring the second would be a
+                # duplicate claim, not extra coverage.
+                Anchor(text="Companies (Registration of Charges) Rules 2014", decisive=True),
+                Anchor(text="other than those related to debentures"),
+                Anchor(text="Securitization and Reconstruction of Financial Assets and "
+                       "Enforcement of Securities Interest Act, 2002"),
+                Anchor(text="SARFAESI"),
+                Anchor(text="Asset Reconstruction Company"),
+                Anchor(text="Creation of charge"),
+                Anchor(text="Modification of charge"),
+                Anchor(text="Date of the instrument creating or modifying the charge"),
+                Anchor(text="Amount secured by the charge"),
+                Anchor(text="Particulars of the property or asset(s) charged"),
+                Anchor(text="Charge holder"),
+                Anchor(text="Rate of interest"),
+                *_MCA_EFORM_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_mca_pas3": (
+                    "CHG-1 registers security over the company's assets in favour of a lender; "
+                    "PAS-3 issues securities in the company to an investor"
+                ),
+            },
+            negative_anchors=[
+                *_other_eform_numbers("FORM NO. CHG-1"),
+                "Return of Allotment",
+            ],
+            handling=(
+                "The encumbrance record — in a lending or acquisition DD this is the document "
+                "the whole exercise turns on. A CHG-1 on file does NOT mean the charge is "
+                "still live: satisfaction is filed separately on CHG-4, and an unsatisfied "
+                "CHG-1 from 2011 is routine. Never report a charge as subsisting from CHG-1 "
+                "alone; the index of charges is the authority."
+            ),
+            fields=[
+                _cin_field(required=True),
+                _company_name_field(),
+                _f(
+                    "charge_holder",
+                    "",
+                    kind="name",
+                    labels={
+                        "en": ["Charge holder", "Name of the charge holder", "Name of the bank"]
+                    },
+                    notes="Doc-local. Usually a bank or an ARC; occasionally a natural person, "
+                    "which is why the generic name validator applies.",
+                ),
+                _f(
+                    "instrument_date",
+                    "doc.issue_date",
+                    kind="date",
+                    required=True,
+                    labels={
+                        "en": [
+                            "Date of the instrument creating or modifying the charge",
+                            "Date of instrument",
+                        ]
+                    },
+                    validator="generic_date",
+                ),
+                _f(
+                    "amount_secured",
+                    "",
+                    kind="number",
+                    required=True,
+                    labels={"en": ["Amount secured by the charge", "Amount secured"]},
+                    validator="amount",
+                    locators=("label", "kv", "table"),
+                    notes="Doc-local.",
+                ),
+                _f(
+                    "charge_type",
+                    "",
+                    labels={
+                        "en": [
+                            "Creation of charge",
+                            "Modification of charge",
+                            "This form is for registration of",
+                        ]
+                    },
+                    locators=("mark", "label", "kv"),
+                    notes="Doc-local; a tick box on the face of the form.",
+                ),
+                _f(
+                    "property_charged",
+                    "",
+                    labels={
+                        "en": [
+                            "Particulars of the property or asset(s) charged",
+                            "Short particulars of the property",
+                        ]
+                    },
+                    locators=("label", "kv", "table"),
+                    notes="Doc-local free prose. Captured verbatim for the reviewer; not parsed "
+                    "into an asset schedule.",
+                ),
+                _f(
+                    "rate_of_interest",
+                    "",
+                    labels={"en": ["Rate of interest", "Interest rate"]},
+                    notes="Doc-local.",
+                ),
+                _srn_field(),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_mca_inc20a",
+            label="MCA Form INC-20A (declaration for commencement of business)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed by a director with the Registrar of Companies, Ministry "
+            "of Corporate Affairs",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                Anchor(text="FORM NO. INC-20A", decisive=True),
+                Anchor(text="Form INC-20A", decisive=True),
+                Anchor(text="Declaration for commencement of business", decisive=True),
+                Anchor(text="Rule 23A of the Companies (Incorporation) Rules, 2014", decisive=True),
+                Anchor(text="section 10A(1)(a) of the Companies Act"),
+                Anchor(text="section 10A of the Companies Act"),
+                Anchor(text="every subscriber to the memorandum has paid the value of the shares"),
+                Anchor(text="Date of incorporation"),
+                Anchor(text="Amount of paid-up share capital"),
+                Anchor(text="Whether company is required to obtain registration or approval "
+                       "from any sectoral regulator"),
+                *_MCA_EFORM_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_certificate_incorporation": (
+                    "the certificate is the registrar's attestation that the company exists; "
+                    "INC-20A is the director's later declaration that subscription money was "
+                    "actually received, without which the company may not trade"
+                ),
+            },
+            negative_anchors=[
+                *_other_eform_numbers("FORM NO. INC-20A"),
+                "CERTIFICATE OF INCORPORATION",
+            ],
+            handling=(
+                "Small and often overlooked, and it answers a question a certificate of "
+                "incorporation cannot: whether the company is permitted to trade at all. A "
+                "company incorporated with share capital that never filed INC-20A within 180 "
+                "days cannot lawfully borrow or commence business — that is an onboarding "
+                "blocker, not a paperwork gap."
+            ),
+            fields=[
+                _cin_field(required=True),
+                _company_name_field(),
+                _f(
+                    "incorporation_date",
+                    "entity.incorporation_date",
+                    kind="date",
+                    labels={"en": ["Date of incorporation", "Date of Incorporation"]},
+                    validator="generic_date",
+                ),
+                _f(
+                    "declaration_date",
+                    "doc.issue_date",
+                    kind="date",
+                    labels={"en": ["Date of declaration", "Dated", "Date"]},
+                    validator="generic_date",
+                ),
+                _f(
+                    "paid_up_capital",
+                    "entity.paid_up_capital",
+                    kind="number",
+                    labels={
+                        "en": [
+                            "Amount of paid-up share capital",
+                            "Paid up capital",
+                            "Subscription money received",
+                        ]
+                    },
+                    validator="amount",
+                    locators=("label", "kv", "table"),
+                ),
+                _f(
+                    "registered_office",
+                    "entity.registered_office",
+                    kind="address",
+                    labels=_L_REG_OFFICE,
+                    locators=("kv", "label", "regex"),
+                ),
+                _f(
+                    "declaring_director",
+                    "ownership.director",
+                    kind="name",
+                    pii=True,
+                    labels={"en": ["Name of the director", "Declared by", "Director"]},
+                ),
+                _din_field("declaring_director_din"),
+                _srn_field(),
+            ],
+        ),
+    ]
+)
+#: The SEBI regulator header and the LODR citation, on every listed-entity filing below.
+#:
+#: Decisive on none of them, and that is the point. ``SECURITIES AND EXCHANGE BOARD OF INDIA``
+#: is an *issuer* name that heads six doctypes in this file — it proves the regulator, exactly
+#: as ``INCOME TAX DEPARTMENT`` proves the department and not the form. ``Listing Obligations
+#: and Disclosure Requirements`` is worse: a secretarial audit report enumerates every SEBI
+#: regulation the company is subject to, so LODR, ICDR, SAST and PIT all appear on a document
+#: that is none of them. What separates these filings is the *regulation number* SEBI printed
+#: in the format's own title line, and that is what each spec declares decisive.
+_SEBI_FURNITURE = (
+    Anchor(text="SECURITIES AND EXCHANGE BOARD OF INDIA"),
+    Anchor(text="भारतीय प्रतिभूति और विनिमय बोर्ड", lang="hi"),
+    Anchor(text="Listing Obligations and Disclosure Requirements"),
+    Anchor(text="Listing Regulations"),
+    Anchor(text="BSE Limited"),
+    Anchor(text="National Stock Exchange of India Limited"),
+)
+
+
+def _listed_entity_name_field() -> FieldSpec:
+    return _f(
+        "listed_entity_name", "entity.legal_name", required=True, labels=_L_LISTED_ENTITY
+    )
+
+
+def _scrip_code_field() -> FieldSpec:
+    return _f(
+        "scrip_code",
+        "",
+        kind="id",
+        labels=_L_SCRIP,
+        locators=("label", "kv", "table"),
+        notes="BSE prints a numeric scrip code, NSE a symbol, and a filing addressed to both "
+        "prints both — so no pattern is enforced and the field is multi-valued in "
+        "practice even though the format gives it one box. Doc-local: ATTRIBUTE_KEYS has "
+        "no ticker/exchange key.",
+    )
+
+
+def _quarter_field() -> FieldSpec:
+    return _f(
+        "period_end",
+        "",
+        kind="date",
+        labels={
+            "en": [
+                "Quarter ending",
+                "Quarter ended",
+                "as on",
+                "For the quarter ended",
+                "report for Quarter ending",
+            ]
+        },
+        validator="generic_date",
+        notes="Doc-local reporting period; see the section note on attribute keys.",
+    )
+
+
+_SPECS.extend(
+    [
+        DocTypeSpec(
+            doctype_id="in_shareholding_pattern",
+            label="Shareholding Pattern (SEBI LODR Regulation 31)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed by the listed entity with the stock exchanges under SEBI "
+            "(LODR) Regulations, 2015",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # Read verbatim off CDSL's own Reg-31 filing. Every one of the decisive
+                # strings below is SEBI's prescribed format text, not the filer's prose: the
+                # title line carries its own regulation number, the table titles are fixed by
+                # the circular, and "calculated as per SCRR, 1957" cites the Securities
+                # Contracts (Regulation) Rules — an Indian instrument no other regulator
+                # names. Five unrelated issuers' filings carry the title line character for
+                # character, which is what a prescribed format looks like from outside.
+                Anchor(text="Shareholding Pattern under Regulation 31 of SEBI", decisive=True),
+                Anchor(
+                    text="Summary Statement holding of specified securities", decisive=True
+                ),
+                Anchor(
+                    text="Share Holding Pattern Filed under: Reg. 31(1)(a)/Reg. 31(1)(b)/"
+                    "Reg.31(1)(c)",
+                    decisive=True,
+                ),
+                Anchor(text="calculated as per SCRR, 1957"),
+                Anchor(text="format of holding of specified securities"),
+                Anchor(text="Statement showing shareholding pattern of the Promoter and "
+                       "Promoter Group"),
+                Anchor(text="Statement showing shareholding pattern of the Public shareholder"),
+                Anchor(text="Non Promoter - Non Public"),
+                Anchor(text="Shares Underlying DRs"),
+                Anchor(text="Shares Held By Employee Trust"),
+                Anchor(text="Promoter & Promoter Group"),
+                Anchor(text="Category of shareholder"),
+                Anchor(text="No. of fully paid up equity shares held"),
+                Anchor(text="Number of Shares pledged or otherwise encumbered"),
+                Anchor(text="Number of Locked in shares"),
+                Anchor(text="Number of equity shares held in dematerialised form"),
+                Anchor(text="Whether the Listed Entity has issued any partly paid up shares"),
+                Anchor(text="Name of Listed Entity"),
+                *_SEBI_FURNITURE,
+            ],
+            id_patterns=[r"\bINE[A-Z0-9]{9}\b"],
+            confusable_with={
+                "in_mca_mgt7_annual_return": (
+                    "both tabulate who holds the shares; the shareholding pattern is SEBI's "
+                    "quarterly format for a listed entity and categorises holders as promoter "
+                    "or public, the annual return is MCA's yearly form and lists members"
+                ),
+            },
+            negative_anchors=[
+                "FORM NO. MGT-7",
+                "COMPLIANCE REPORT ON CORPORATE GOVERNANCE",
+                "BUSINESS RESPONSIBILITY AND SUSTAINABILITY REPORT",
+            ],
+            handling=(
+                "The promoter/public split and the pledge column are the two things this "
+                "document exists to disclose, and both are material to a credit or "
+                "acquisition view. Shareholder *names* appear only above the 1% disclosure "
+                "threshold, so absence of a name is not absence of a holder. Individual "
+                "shareholders are named alongside their PANs in the promoter table — that "
+                "combination is personal data at its most identifying, and the PAN column is "
+                "flagged pii accordingly."
+            ),
+            fields=[
+                _listed_entity_name_field(),
+                _scrip_code_field(),
+                _quarter_field(),
+                _f(
+                    "isin",
+                    "",
+                    kind="id",
+                    labels={"en": ["ISIN", "Class of Security", "ISIN Number"]},
+                    pattern=r"\bINE[A-Z0-9]{9}\b",
+                    locators=("regex", "label", "kv"),
+                    notes="Indian ISINs begin INE (companies) or IN9/INF (other issuers). The "
+                    "ISO 6166 check digit is a Luhn over the alphanumeric expansion and is "
+                    "NOT enforced here: no validator for it is declared in "
+                    "loader.VALIDATOR_CONTRACT, and inventing one in a pack would put an "
+                    "unverified value behind a 'checksum_verified' label. Structure only. "
+                    "Doc-local: ATTRIBUTE_KEYS has no securities-identifier key.",
+                ),
+                _f(
+                    "promoter_holding_pct",
+                    "ownership.share",
+                    kind="number",
+                    labels={
+                        "en": [
+                            "Promoter & Promoter Group",
+                            "Total Shareholding Of Promoter And Promoter Group",
+                            "Shareholding as a % of total no. of shares",
+                        ]
+                    },
+                    locators=("table", "label", "kv"),
+                    notes="Read from row (A) of Table I. The percentage is 'as per SCRR, 1957', "
+                    "which excludes shares underlying depository receipts — do not compare "
+                    "it against a percentage computed from a raw share count.",
+                ),
+                _f(
+                    "public_holding_pct",
+                    "",
+                    kind="number",
+                    labels={"en": ["Public", "Public shareholder"]},
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local; row (B) of Table I.",
+                ),
+                _f(
+                    "total_shares",
+                    "",
+                    kind="number",
+                    labels={
+                        "en": ["Total nos. shares held", "No. of fully paid up equity shares held"]
+                    },
+                    locators=("table", "label"),
+                    notes="Doc-local: ATTRIBUTE_KEYS has no shares-outstanding key.",
+                ),
+                _f(
+                    "shares_pledged",
+                    "",
+                    kind="number",
+                    labels={
+                        "en": [
+                            "Number of Shares pledged or otherwise encumbered",
+                            "No. of Shares pledged",
+                        ]
+                    },
+                    locators=("table", "label"),
+                    notes="Doc-local, and the single most load-bearing number on the page for "
+                    "a credit view: promoter pledging is the standard early signal of "
+                    "distress at the holding-company level.",
+                ),
+                _f(
+                    "promoter_names",
+                    "ownership.beneficial_owner",
+                    kind="name",
+                    multi=True,
+                    pii=True,
+                    labels={"en": ["Name of the Shareholders", "Promoter", "Name"]},
+                    locators=("table", "label"),
+                ),
+                _f(
+                    "shareholder_pan",
+                    "id.pan",
+                    kind="id",
+                    multi=True,
+                    pii=True,
+                    labels=_L_PAN,
+                    pattern=r"\b[A-Z]{5}\d{4}[A-Z]\b",
+                    validator="pan",
+                    locators=("table", "regex", "label"),
+                    notes="The format prints the PAN of every named shareholder. A name and a "
+                    "PAN together identify a natural person exactly; mask at every boundary.",
+                ),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_corporate_governance_report",
+            label="Compliance Report on Corporate Governance (SEBI LODR Regulation 27(2))",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed quarterly by the listed entity with the stock exchanges "
+            "under SEBI (LODR) Regulations, 2015",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # "COMPLIANCE REPORT ON CORPORATE GOVERNANCE" is printed at the head of the
+                # SEBI format and is NOT decisive: a compliance report on corporate governance
+                # is a title a listed-company regulator in Singapore, Johannesburg or Kuala
+                # Lumpur could and does use. The line underneath it — SEBI's own regulation
+                # number — is what one regulator controls, and that is the decisive claim.
+                # Observed verbatim on Bharat Dynamics' Q2 FY22 filing:
+                # "Regulation 27(2) of Securities and Exchange Board of India (Listing
+                # Obligations and Disclosure Requirements) Regulations, 2015".
+                Anchor(
+                    text="Regulation 27(2) of Securities and Exchange Board of India",
+                    decisive=True,
+                ),
+                Anchor(text="Regulation 27(2) of SEBI", decisive=True),
+                Anchor(text="COMPLIANCE REPORT ON CORPORATE GOVERNANCE"),
+                Anchor(text="Composition of Board of Directors"),
+                Anchor(text="Composition of Committees"),
+                Anchor(text="Stakeholders Relationship Committee"),
+                Anchor(text="Nomination and Remuneration Committee"),
+                Anchor(text="Risk Management Committee"),
+                Anchor(text="Meeting of Board of Directors"),
+                Anchor(text="Whether requirement of Quorum met"),
+                Anchor(text="Maximum gap between any two consecutive"),
+                Anchor(text="Whether regular chairperson appointed"),
+                Anchor(text="Whether Permanent chairperson appointed"),
+                Anchor(text="Whether Chairperson is related to managing director or CEO"),
+                Anchor(text="Number of Independent Directors present"),
+                Anchor(text="Category of directorship"),
+                Anchor(text="Name of Listed Entity"),
+                Anchor(text="Quarter ending"),
+                Anchor(text="Affirmations"),
+                *_SEBI_FURNITURE,
+            ],
+            id_patterns=[],
+            confusable_with={
+                "in_secretarial_audit_mr3": (
+                    "both report on governance compliance; the CG report is the company's own "
+                    "quarterly return in SEBI's Regulation 27(2) format, MR-3 is an annual "
+                    "opinion signed by a practising company secretary under MCA's form number"
+                ),
+            },
+            negative_anchors=[
+                "FORM NO. MR-3",
+                "Shareholding Pattern under Regulation 31 of SEBI",
+                "BUSINESS RESPONSIBILITY AND SUSTAINABILITY REPORT",
+            ],
+            handling=(
+                "The board composition table is the fastest route to a current, dated officer "
+                "list for a listed entity, and every row of it is personal data: name, DIN, "
+                "date of birth, date of appointment and date of cessation. Note the report is "
+                "as at a quarter end, and that a 'No' in the chairperson or quorum columns is "
+                "a declared non-compliance the reviewer should read rather than aggregate."
+            ),
+            fields=[
+                _listed_entity_name_field(),
+                _scrip_code_field(),
+                _quarter_field(),
+                _f(
+                    "director_names",
+                    "ownership.director",
+                    kind="name",
+                    multi=True,
+                    required=True,
+                    pii=True,
+                    labels={
+                        "en": ["Name of the Director", "Name of Director", "Title", "Name"]
+                    },
+                    locators=("table", "label", "kv"),
+                ),
+                _din_field(multi=True),
+                _f(
+                    "director_category",
+                    "",
+                    multi=True,
+                    labels={
+                        "en": [
+                            "Category",
+                            "Category of directorship",
+                            "Chairperson/Executive/Non-Executive/Independent/Nominee",
+                        ]
+                    },
+                    locators=("table", "label"),
+                    notes="Doc-local. Whether a board has the independent directors the "
+                    "regulation requires is answered here and nowhere else in the pack.",
+                ),
+                _f(
+                    "director_date_of_birth",
+                    "identity.date_of_birth",
+                    kind="date",
+                    multi=True,
+                    pii=True,
+                    labels={"en": ["Date of Birth", "Date of birth"]},
+                    validator="generic_date",
+                    locators=("table", "label"),
+                ),
+                _f(
+                    "board_meeting_dates",
+                    "",
+                    kind="date",
+                    multi=True,
+                    labels={
+                        "en": [
+                            "Date(s) of Meeting",
+                            "Date(s) of Meeting (if any) in the relevant quarter",
+                        ]
+                    },
+                    validator="generic_date",
+                    locators=("table", "label"),
+                    notes="Doc-local corporate-event dates.",
+                ),
+                _f(
+                    "chairperson_appointed",
+                    "",
+                    kind="bool",
+                    labels={
+                        "en": [
+                            "Whether regular chairperson appointed",
+                            "Whether Permanent chairperson appointed",
+                        ]
+                    },
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local. A declared 'No' is a compliance exception, not missing "
+                    "data — surface it rather than treating it as an empty field.",
+                ),
+                _f(
+                    "compliance_officer",
+                    "ownership.authorized_signer",
+                    kind="name",
+                    pii=True,
+                    labels={
+                        "en": ["Compliance Officer", "Company Secretary", "Name of signatory"]
+                    },
+                ),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_brsr",
+            label="Business Responsibility and Sustainability Report (SEBI BRSR)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Prepared by the listed entity in SEBI's prescribed BRSR format "
+            "under LODR Regulation 34(2)(f)",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # BRSR is a name SEBI coined in circular SEBI/HO/CFD/CMD-2/P/CIR/2021/562. It
+                # is not the generic "sustainability report" — no other regulator prescribes a
+                # format under that name, and the nine principles it reports against are the
+                # MCA's National Guidelines on Responsible Business Conduct, an Indian
+                # instrument. Both are therefore decisive. The generic ESG vocabulary below
+                # (GRI, TCFD, Scope 1 and 2 emissions) is not: it belongs to every
+                # sustainability report in the world.
+                Anchor(
+                    text="BUSINESS RESPONSIBILITY AND SUSTAINABILITY REPORT", decisive=True
+                ),
+                Anchor(
+                    text="National Guidelines on Responsible Business Conduct", decisive=True
+                ),
+                Anchor(text="BRSR Core"),
+                Anchor(text="NGRBC"),
+                Anchor(text="SECTION A: GENERAL DISCLOSURES"),
+                Anchor(text="SECTION B: MANAGEMENT AND PROCESS DISCLOSURES"),
+                Anchor(text="SECTION C: PRINCIPLE WISE PERFORMANCE DISCLOSURE"),
+                Anchor(text="Details of the listed entity"),
+                Anchor(text="Paid-up Capital"),
+                Anchor(text="Turnover (in Rs.)"),
+                Anchor(text="Name of the National Industrial Classification"),
+                Anchor(text="Principle 1"),
+                Anchor(text="Businesses should conduct and govern themselves with integrity"),
+                Anchor(text="Reasonable Assurance"),
+                Anchor(text="Global Reporting Initiative"),
+                Anchor(text="Task Force on Climate-related Financial Disclosures"),
+                *_SEBI_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={},
+            negative_anchors=[
+                "COMPLIANCE REPORT ON CORPORATE GOVERNANCE",
+                "Shareholding Pattern under Regulation 31 of SEBI",
+                "FORM NO. MR-3",
+            ],
+            handling=(
+                "Almost always an annexure inside an annual report rather than a standalone "
+                "PDF, so expect it as a page-type on a merged document. It carries employee "
+                "headcount broken down by gender and disability, complaint counts under the "
+                "POSH Act, and grievance data — aggregate figures, but figures about people, "
+                "and small denominators in a single-location entity can re-identify. Do not "
+                "treat BRSR numbers as audited: only the BRSR Core subset carries assurance, "
+                "and the assurance provider is named separately."
+            ),
+            fields=[
+                _company_name_field(),
+                _cin_field(),
+                _financial_year_field(),
+                _f(
+                    "registered_office",
+                    "entity.registered_office",
+                    kind="address",
+                    labels=_L_REG_OFFICE,
+                    locators=("kv", "label", "regex"),
+                ),
+                _scrip_code_field(),
+                _f(
+                    "turnover",
+                    "",
+                    kind="number",
+                    labels={"en": ["Turnover (in Rs.)", "Turnover", "Revenue"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local; see the note on AOC-4's turnover field.",
+                ),
+                _f(
+                    "paid_up_capital",
+                    "entity.paid_up_capital",
+                    kind="number",
+                    labels={"en": ["Paid-up Capital", "Paid up capital"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                ),
+                _f(
+                    "assurance_provider",
+                    "",
+                    kind="name",
+                    labels={
+                        "en": [
+                            "Name of the assurance provider",
+                            "Assurance provider",
+                            "Type of assurance obtained",
+                        ]
+                    },
+                    notes="Doc-local. Present only for BRSR Core; its absence is meaningful "
+                    "and should be reported as 'not assured', never as 'not found'.",
+                ),
+                _f(
+                    "contact_email",
+                    "identity.email",
+                    labels={"en": ["E-mail", "Email", "Contact details"]},
+                    pattern=r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}",
+                    locators=("label", "kv", "regex"),
+                    notes="A named officer's work address as often as a functional mailbox; "
+                    "the field cannot tell them apart, so it inherits identity.email.",
+                ),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_offer_document",
+            label="Offer Document — DRHP / RHP / Prospectus (SEBI ICDR)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed by the issuer and the book running lead managers with "
+            "SEBI, the stock exchanges and the Registrar of Companies",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # ONE doctype for all three stages, deliberately. A DRHP becomes an RHP
+                # becomes a Prospectus by amendment: the same document, the same
+                # thousand-page structure, differing in the word "DRAFT" and in whether the
+                # price band has been filled in. Modelling them as three doctypes would put
+                # three decisive claimants on one cover page — "RED HERRING PROSPECTUS" is a
+                # token subsequence of "DRAFT RED HERRING PROSPECTUS" and would match inside
+                # it — and the cascade would correctly refuse to conclude anything. The stage
+                # is extracted as a field instead, which is where a three-way distinction
+                # belongs.
+                #
+                # The decisive strings are SEBI ICDR Schedule VI cover-page text, verified on
+                # three unrelated issuers' filings. "PROSPECTUS" and "RED HERRING PROSPECTUS"
+                # are not among them: those are document-class names used from Mumbai to New
+                # York, and a US registration statement claiming the same string would make
+                # this doctype a cross-jurisdiction hazard.
+                Anchor(text="Please read Section 32 of the Companies Act, 2013", decisive=True),
+                Anchor(
+                    text="Please read Section 26 and 32 of the Companies Act, 2013",
+                    decisive=True,
+                ),
+                Anchor(
+                    text="This Draft Red Herring Prospectus will be updated upon filing with "
+                    "the RoC",
+                    decisive=True,
+                ),
+                Anchor(text="DRAFT RED HERRING PROSPECTUS"),
+                Anchor(text="RED HERRING PROSPECTUS"),
+                Anchor(text="BOOK RUNNING LEAD MANAGER"),
+                Anchor(text="REGISTRAR TO THE OFFER"),
+                Anchor(text="REGISTRAR TO THE ISSUE"),
+                Anchor(text="RISKS IN RELATION TO THE FIRST ISSUE"),
+                Anchor(text="RISKS IN RELATION TO THE FIRST OFFER"),
+                Anchor(text="100% Book Built Offer"),
+                Anchor(text="Book Built Issue"),
+                Anchor(text="Price Band"),
+                Anchor(text="Issue of Capital and Disclosure Requirements"),
+                Anchor(text="GENERAL RISKS"),
+                Anchor(text="OFFER FOR SALE"),
+                Anchor(text="Anchor Investor"),
+                Anchor(text="Qualified Institutional Buyers"),
+                Anchor(text="Basis of Allotment"),
+                Anchor(text="Objects of the Offer"),
+                Anchor(text="Promoters of our Company"),
+                *_SEBI_FURNITURE,
+            ],
+            id_patterns=[
+                r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b",
+                r"\bINE[A-Z0-9]{9}\b",
+            ],
+            confusable_with={},
+            negative_anchors=[
+                "FORM NO. MGT-7",
+                "COMPLIANCE REPORT ON CORPORATE GOVERNANCE",
+                "Summary Statement holding of specified securities",
+            ],
+            handling=(
+                "The most information-dense document in the pack and the one most likely to "
+                "arrive as several hundred pages. Two cautions for anything downstream. "
+                "First, a DRHP is a DRAFT: nothing in it — price, size, dates, even the "
+                "decision to proceed — is binding, and the promoter and litigation "
+                "disclosures are as at the draft date. Second, the document reproduces "
+                "directors' and promoters' addresses, dates of birth, PANs, passport numbers "
+                "and DINs in the capital-structure and management sections, so extraction "
+                "over an offer document touches more personal data than any identity document "
+                "in this registry. Extract the stage first and let the reviewer decide."
+            ),
+            fields=[
+                _company_name_field(),
+                _cin_field(),
+                _f(
+                    "offer_document_stage",
+                    "",
+                    labels={
+                        "en": [
+                            "DRAFT RED HERRING PROSPECTUS",
+                            "RED HERRING PROSPECTUS",
+                            "PROSPECTUS",
+                        ]
+                    },
+                    locators=("label", "kv"),
+                    notes="Doc-local, and the field the whole doctype turns on: draft / red "
+                    "herring / final. Read from the cover title, which is the only place "
+                    "the stage is stated unambiguously — the presence of a price band is "
+                    "corroboration, not proof.",
+                ),
+                _f(
+                    "document_date",
+                    "doc.issue_date",
+                    kind="date",
+                    labels={"en": ["Dated", "Date", "Dated:"]},
+                    validator="generic_date",
+                ),
+                _f(
+                    "registered_office",
+                    "entity.registered_office",
+                    kind="address",
+                    labels=_L_REG_OFFICE,
+                    locators=("kv", "label", "regex"),
+                ),
+                _f(
+                    "book_running_lead_managers",
+                    "",
+                    multi=True,
+                    labels={
+                        "en": [
+                            "BOOK RUNNING LEAD MANAGER",
+                            "BOOK RUNNING LEAD MANAGERS",
+                            "Lead Manager",
+                        ]
+                    },
+                    locators=("label", "table", "kv"),
+                    notes="Doc-local. Institutions, not individuals.",
+                ),
+                _f(
+                    "registrar_to_offer",
+                    "",
+                    labels={
+                        "en": ["REGISTRAR TO THE OFFER", "REGISTRAR TO THE ISSUE", "Registrar"]
+                    },
+                    locators=("label", "kv"),
+                    notes="Doc-local.",
+                ),
+                _f(
+                    "promoters",
+                    "ownership.beneficial_owner",
+                    kind="name",
+                    multi=True,
+                    pii=True,
+                    labels={
+                        "en": ["Promoters of our Company", "Our Promoters", "Promoter"]
+                    },
+                    locators=("label", "table", "kv"),
+                ),
+                _f(
+                    "isin",
+                    "",
+                    kind="id",
+                    labels={"en": ["ISIN", "ISIN Number"]},
+                    pattern=r"\bINE[A-Z0-9]{9}\b",
+                    locators=("regex", "label", "kv"),
+                    notes="Doc-local; see the ISIN note on in_shareholding_pattern. Present "
+                    "only once the securities have been admitted, so absent from most DRHPs.",
+                ),
+                _f(
+                    "face_value",
+                    "",
+                    kind="number",
+                    labels={"en": ["The face value of the Equity Shares is", "Face Value"]},
+                    validator="amount",
+                    locators=("label", "kv"),
+                    notes="Doc-local.",
+                ),
+                _f(
+                    "price_band",
+                    "",
+                    labels={"en": ["Price Band", "Offer Price", "Issue Price"]},
+                    locators=("label", "kv"),
+                    notes="Doc-local. Blank or '[•]' on a DRHP by construction — an empty "
+                    "value here is evidence about the stage, not a extraction failure.",
+                ),
+            ],
+        ),
+    ]
+)
+_SPECS.extend(
+    [
+        DocTypeSpec(
+            doctype_id="in_statutory_auditor_report",
+            label="Statutory Auditor's Report (including the CARO annexure)",
+            country="IN",
+            category=Category.financial,
+            issuing_authority="Signed by the company's statutory auditor, a firm of Chartered "
+            "Accountants registered with the ICAI",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # "INDEPENDENT AUDITOR'S REPORT", "Basis for Opinion" and "Key Audit Matters"
+                # are ISA/IAASB headings printed on an audit report in every country that
+                # adopted the international standards. Not decisive, any of them. What is
+                # Indian and issuer-controlled is the Order and the Rules the report is
+                # required to cite: CARO is an MCA order made under section 143(11), and
+                # Rule 11 of the Companies (Audit and Auditors) Rules is the source of the
+                # "Other Legal and Regulatory Requirements" paragraph.
+                Anchor(text="Companies (Auditor's Report) Order, 2020", decisive=True),
+                Anchor(text="Companies (Auditor's Report) Order, 2016", decisive=True),
+                Anchor(text="Companies (Audit and Auditors) Rules, 2014", decisive=True),
+                Anchor(text="INDEPENDENT AUDITOR'S REPORT"),
+                Anchor(text="Report on the Audit of the Standalone Financial Statements"),
+                Anchor(text="Report on the Audit of the Consolidated Financial Statements"),
+                Anchor(text="Report on Other Legal and Regulatory Requirements"),
+                Anchor(text="Basis for Opinion"),
+                Anchor(text="Key Audit Matters"),
+                Anchor(text="Standards on Auditing specified under section 143(10)"),
+                Anchor(text="Institute of Chartered Accountants of India"),
+                Anchor(text="Chartered Accountants"),
+                Anchor(text="Firm Registration No"),
+                Anchor(text="UDIN"),
+                Anchor(text="Membership No"),
+                Anchor(
+                    text="internal financial controls with reference to financial statements"
+                ),
+                Anchor(text="Annexure A to the Independent Auditor's Report"),
+                Anchor(text="Property, Plant and Equipment"),
+                Anchor(text="in our opinion and to the best of our information"),
+                Anchor(text="true and fair view"),
+                *_GOI_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_mca_aoc4_financial_statements": (
+                    "the auditor's report is signed by the auditor and cites CARO; AOC-4 is "
+                    "the company's own MCA e-form and prints the MCA form header"
+                ),
+                "in_secretarial_audit_mr3": (
+                    "both are professional opinions annexed to the same annual report; the "
+                    "auditor's report is signed by Chartered Accountants on the financial "
+                    "statements, MR-3 is signed by a Company Secretary on statutory compliance"
+                ),
+            },
+            negative_anchors=[
+                "FORM NO. MR-3",
+                "SECRETARIAL AUDIT REPORT",
+                "FORM NO. AOC-4",
+            ],
+            handling=(
+                "The CARO annexure is deliberately part of this doctype rather than a doctype "
+                "of its own: it is an annexure to the report, printed immediately after it, "
+                "under a heading that refers back to it. Splitting them would guarantee two "
+                "doctypes competing on one continuous document. The report's value in DD is "
+                "in its exceptions — a modified opinion, an emphasis of matter, a CARO clause "
+                "answered adversely — so a reviewer needs the opinion paragraph verbatim, not "
+                "a boolean. Extract, do not summarise."
+            ),
+            fields=[
+                _company_name_field(),
+                _cin_field(),
+                _financial_year_field(),
+                _f(
+                    "auditor_firm",
+                    "",
+                    labels={
+                        "en": [
+                            "Chartered Accountants",
+                            "For and on behalf of",
+                            "Name of the audit firm",
+                        ]
+                    },
+                    notes="Doc-local: ATTRIBUTE_KEYS has no auditor key. The firm, not the "
+                    "signing partner — the partner is captured separately below.",
+                ),
+                _f(
+                    "firm_registration_number",
+                    "doc.registration_number",
+                    kind="id",
+                    labels={
+                        "en": ["Firm Registration No", "FRN", "Firm's Registration Number"]
+                    },
+                    locators=("label", "kv"),
+                    notes="ICAI firm registration number, printed as digits plus a regional "
+                    "suffix letter (e.g. 301003E). Structure varies; no pattern enforced.",
+                ),
+                _f(
+                    "signing_partner",
+                    "ownership.authorized_signer",
+                    kind="name",
+                    pii=True,
+                    labels={"en": ["Partner", "Membership No", "Signed by"]},
+                    notes="A natural person, personally liable for the opinion. pii.",
+                ),
+                _f(
+                    "udin",
+                    "",
+                    kind="id",
+                    labels={"en": ["UDIN", "Unique Document Identification Number"]},
+                    pattern=r"\b\d{18}\b",
+                    locators=("label", "regex", "kv"),
+                    notes="18 digits: 6-digit ICAI membership number, 2-digit year, 2-digit "
+                    "month, 8-digit serial. Verifiable only against the ICAI portal, which "
+                    "this service must not call — the egress invariant applies to "
+                    "verification as much as to classification. Structure only. Doc-local.",
+                ),
+                _f(
+                    "opinion_type",
+                    "",
+                    labels={
+                        "en": [
+                            "Opinion",
+                            "Qualified Opinion",
+                            "Adverse Opinion",
+                            "Disclaimer of Opinion",
+                            "Basis for Opinion",
+                        ]
+                    },
+                    locators=("label", "kv"),
+                    notes="Doc-local, and the field a reviewer reads first. An unmodified "
+                    "opinion prints the bare heading 'Opinion'; anything else prints its "
+                    "own qualifier, so the presence of a qualifier IS the finding.",
+                ),
+                _f(
+                    "report_date",
+                    "doc.issue_date",
+                    kind="date",
+                    labels={"en": ["Date", "Dated", "Place and Date"]},
+                    validator="generic_date",
+                ),
+                _f(
+                    "place_of_signature",
+                    "doc.place_of_issue",
+                    labels={"en": ["Place", "Place of signature"]},
+                ),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_secretarial_audit_mr3",
+            label="Secretarial Audit Report (Form MR-3)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Signed by a Company Secretary in practice, in MCA's Form MR-3 "
+            "under section 204(1) of the Companies Act, 2013",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # Header verified verbatim on IDBI Bank's FY2020-21 report: "FORM NO. MR-3 /
+                # SECRETARIAL AUDIT REPORT / FOR THE FINANCIAL YEAR ENDED 31ST MARCH 2021 /
+                # [Pursuant to Section 204(1) of the Companies Act, 2013 and Rule No. 9 of the
+                # Companies (Appointment and Remuneration of Managerial Personnel) Rules,
+                # 2014]". "SECRETARIAL AUDIT REPORT" is left non-decisive even though
+                # secretarial audit is an Indian institution with no direct analogue: the form
+                # number and the rule citation already carry the doctype, and a title made of
+                # three ordinary English words does not need to be the thing that proves it.
+                Anchor(text="FORM NO. MR-3", decisive=True),
+                Anchor(text="Form MR-3", decisive=True),
+                Anchor(
+                    text="Companies (Appointment and Remuneration of Managerial Personnel) "
+                    "Rules, 2014",
+                    decisive=True,
+                ),
+                Anchor(text="SECRETARIAL AUDIT REPORT"),
+                Anchor(text="Section 204(1) of the Companies Act"),
+                Anchor(text="Company Secretary in Practice"),
+                Anchor(text="Institute of Company Secretaries of India"),
+                Anchor(text="Certificate of Practice"),
+                Anchor(text="CP No"),
+                Anchor(text="We have conducted the Secretarial Audit of the compliance of "
+                       "applicable statutory provisions"),
+                Anchor(text="adherence to good corporate practices"),
+                Anchor(text="books, papers, minute books, forms and returns filed"),
+                Anchor(text="The Depositories Act, 1996"),
+                Anchor(text="Secretarial Standards"),
+                Anchor(text="Substantial Acquisition of Shares and Takeovers"),
+                Anchor(text="Prohibition of Insider Trading"),
+                Anchor(text="Issue of Capital and Disclosure Requirements"),
+                Anchor(text="Listing Obligations and Disclosure Requirements"),
+                Anchor(text="UDIN"),
+                *_GOI_FURNITURE,
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_statutory_auditor_report": (
+                    "both are professional opinions annexed to the same annual report; MR-3 is "
+                    "signed by a Company Secretary on statutory compliance and prints an MCA "
+                    "form number, the auditor's report is signed by Chartered Accountants on "
+                    "the financial statements and cites CARO"
+                ),
+                "in_corporate_governance_report": (
+                    "MR-3 is an annual opinion by an outside professional under MCA's form "
+                    "number; the CG report is the company's own quarterly return in SEBI's "
+                    "Regulation 27(2) format"
+                ),
+            },
+            negative_anchors=[
+                "Companies (Auditor's Report) Order, 2020",
+                "INDEPENDENT AUDITOR'S REPORT",
+                "COMPLIANCE REPORT ON CORPORATE GOVERNANCE",
+            ],
+            handling=(
+                "MR-3 recites, by name, every SEBI regulation and every other statute the "
+                "company is subject to. That recital is why this doctype exists and also why "
+                "the SEBI regulation names are non-decisive throughout this section: a "
+                "document that lists ICDR, LODR, SAST and PIT is not an ICDR, LODR, SAST or "
+                "PIT filing. As with the auditor's report, the value is in the qualifications "
+                "— an MR-3 with observations is a finding, and the observation text must reach "
+                "the reviewer intact."
+            ),
+            fields=[
+                _company_name_field(),
+                _cin_field(),
+                _financial_year_field(required=True),
+                _f(
+                    "secretarial_auditor",
+                    "",
+                    kind="name",
+                    pii=True,
+                    labels={
+                        "en": [
+                            "Company Secretary in Practice",
+                            "Practising Company Secretary",
+                            "Name of the Company Secretary",
+                        ]
+                    },
+                    notes="Doc-local. A practising company secretary signs in their own name, "
+                    "so this is a natural person even when a firm name also appears.",
+                ),
+                _f(
+                    "membership_number",
+                    "doc.registration_number",
+                    kind="id",
+                    labels={"en": ["FCS No", "ACS No", "Membership No", "CP No"]},
+                    locators=("label", "kv"),
+                    notes="ICSI membership (FCS/ACS) and certificate-of-practice numbers. "
+                    "Digits, length varies by vintage; no pattern enforced.",
+                ),
+                _f(
+                    "udin",
+                    "",
+                    kind="id",
+                    labels={"en": ["UDIN", "Unique Document Identification Number"]},
+                    locators=("label", "kv"),
+                    notes="ICSI's UDIN uses a different scheme from ICAI's 18-digit number, so "
+                    "no pattern is shared with in_statutory_auditor_report. Doc-local.",
+                ),
+                _f(
+                    "observations",
+                    "",
+                    labels={
+                        "en": [
+                            "Observations",
+                            "Qualification",
+                            "We further report that",
+                            "subject to the following",
+                        ]
+                    },
+                    locators=("label", "kv"),
+                    notes="Doc-local free prose, captured verbatim. Not parsed into findings — "
+                    "a summarised compliance qualification is a compliance qualification "
+                    "that got lost.",
+                ),
+                _f(
+                    "report_date",
+                    "doc.issue_date",
+                    kind="date",
+                    labels={"en": ["Date", "Dated", "Place and Date"]},
+                    validator="generic_date",
+                ),
+                _f(
+                    "place_of_signature",
+                    "doc.place_of_issue",
+                    labels={"en": ["Place", "Place of signature"]},
+                ),
+            ],
+        ),
+    ]
+)
+_SPECS.extend(
+    [
+        DocTypeSpec(
+            doctype_id="in_fema_fcgpr",
+            label="RBI Form FC-GPR (reporting of foreign investment in an Indian company)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Filed by the Indian company with the Reserve Bank of India "
+            "through its AD Category-I bank on the FIRMS portal",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # "FC-GPR" is an RBI-coined form code and expands to a phrase — "Foreign
+                # Currency-Gross Provisional Return" — that exists nowhere else. Both are
+                # decisive. The FEMA instruments are supporting rather than decisive because
+                # a secretarial audit report and a statutory auditor's report both recite
+                # FEMA by name.
+                Anchor(text="Form FC-GPR", decisive=True),
+                # RBI prints the expansion with a hyphen, secondary sources with a space.
+                # Anchor matching splits on both, so one declaration covers the pair.
+                Anchor(text="Foreign Currency-Gross Provisional Return", decisive=True),
+                Anchor(text="Foreign Exchange Management Act, 1999"),
+                Anchor(text="Foreign Exchange Management (Non-debt Instruments) Rules"),
+                Anchor(text="FIRMS"),
+                Anchor(text="Reserve Bank of India"),
+                Anchor(text="भारतीय रिज़र्व बैंक", lang="hi"),
+                Anchor(text="Authorised Dealer Category-I bank"),
+                Anchor(text="AD Reference Number"),
+                Anchor(text="Unique Identification Number"),
+                Anchor(text="Capital instruments"),
+                Anchor(text="Date of issue of capital instruments"),
+                Anchor(text="Total amount of inflow"),
+                Anchor(text="Foreign Inward Remittance Certificate"),
+                Anchor(text="Fair value of the capital instruments"),
+                Anchor(text="Pricing guidelines"),
+                Anchor(text="Nature of the investing entity"),
+            ],
+            id_patterns=[r"\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b"],
+            confusable_with={
+                "in_mca_pas3": (
+                    "FC-GPR reports the allotment to the RBI under FEMA because the allottee "
+                    "is resident outside India; PAS-3 reports the same allotment to the "
+                    "Registrar under the Companies Act and prints an MCA form header"
+                ),
+            },
+            negative_anchors=[
+                "FORM NO. PAS-3",
+                "Return of Allotment",
+                "Registrar of Companies",
+            ],
+            handling=(
+                "The document that answers 'is this company foreign-owned, by whom, and was "
+                "it reported on time'. The 30-day filing deadline has no extension mechanism, "
+                "so a late FC-GPR is a FEMA contravention requiring compounding — a date "
+                "discrepancy between the allotment date and the filing date is a finding, not "
+                "a data-quality issue. Names the foreign investor and, where that investor is "
+                "a natural person, their country of residence: personal data."
+            ),
+            fields=[
+                _company_name_field(),
+                _cin_field(),
+                _f(
+                    "issue_date",
+                    "doc.issue_date",
+                    kind="date",
+                    required=True,
+                    labels={
+                        "en": ["Date of issue of capital instruments", "Date of allotment"]
+                    },
+                    validator="generic_date",
+                ),
+                _f(
+                    "investor_name",
+                    "ownership.beneficial_owner",
+                    kind="name",
+                    multi=True,
+                    pii=True,
+                    labels={
+                        "en": ["Name of the investor", "Investor", "Name of the investing entity"]
+                    },
+                    locators=("table", "label", "kv"),
+                ),
+                _f(
+                    "investor_country",
+                    "",
+                    multi=True,
+                    labels={"en": ["Country of the investor", "Country", "Country of residence"]},
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local. ATTRIBUTE_KEYS has identity.nationality for a natural "
+                    "person; an investing entity's country of incorporation is a different "
+                    "fact and must not merge into it.",
+                ),
+                _f(
+                    "amount_of_inflow",
+                    "",
+                    kind="number",
+                    labels={"en": ["Total amount of inflow", "Amount of consideration"]},
+                    validator="amount",
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local.",
+                ),
+                _f(
+                    "ad_bank",
+                    "account.bank_name",
+                    labels={
+                        "en": [
+                            "Authorised Dealer Category-I bank",
+                            "AD Bank",
+                            "Name of the AD bank",
+                        ]
+                    },
+                ),
+                _f(
+                    "uin",
+                    "doc.reference_number",
+                    kind="id",
+                    labels={
+                        "en": ["Unique Identification Number", "UIN", "AD Reference Number"]
+                    },
+                    locators=("label", "kv"),
+                    notes="RBI allots the UIN on acknowledgement. Format has changed with each "
+                    "generation of the reporting portal; no pattern enforced.",
+                ),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_iec_certificate",
+            label="Importer-Exporter Code (IEC) certificate",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Directorate General of Foreign Trade, Ministry of Commerce and "
+            "Industry",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # "Importer-Exporter Code" is the term of art of the Indian Foreign Trade
+                # Policy; the equivalent identifiers elsewhere are called something else
+                # entirely (EORI in the EU, an importer number at US CBP), so the phrase is
+                # controlled by one issuer. "DIRECTORATE GENERAL OF FOREIGN TRADE" is NOT
+                # decisive: DGFT issues advance authorisations, RoDTEP scrips and RCMCs under
+                # the same header, so it proves the issuer and not the document.
+                Anchor(text="Importer-Exporter Code", decisive=True),
+                Anchor(text="Importer Exporter Code", decisive=True),
+                Anchor(text="आयातक-निर्यातक कोड", lang="hi", decisive=True),
+                Anchor(text="DIRECTORATE GENERAL OF FOREIGN TRADE"),
+                Anchor(text="विदेश व्यापार महानिदेशालय", lang="hi"),
+                Anchor(text="Ministry of Commerce and Industry"),
+                Anchor(text="Foreign Trade (Development and Regulation) Act, 1992"),
+                Anchor(text="Foreign Trade Policy"),
+                Anchor(text="IEC Details"),
+                Anchor(text="Nature of Concern/Firm"),
+                Anchor(text="Date of Issue"),
+                Anchor(text="Branch Code"),
+                Anchor(text="dgft.gov.in"),
+                *_GOI_FURNITURE,
+            ],
+            id_patterns=[r"\b[A-Z]{5}\d{4}[A-Z]\b"],
+            confusable_with={
+                "in_gst_certificate": (
+                    "both are PAN-derived business registrations printed as a one-page "
+                    "certificate; the IEC is DGFT's foreign-trade code and equals the PAN "
+                    "itself, the GST certificate carries a 15-character GSTIN with a state "
+                    "code prefix and a check character"
+                ),
+            },
+            negative_anchors=[
+                "Goods and Services Tax Identification Number",
+                "UDYAM REGISTRATION CERTIFICATE",
+                "CERTIFICATE OF INCORPORATION",
+            ],
+            handling=(
+                "Since the 2017 alignment the IEC *is* the entity's PAN — same ten "
+                "characters. That is a trap for anything downstream: extracting the IEC and "
+                "the PAN as two independent identifiers and finding they agree is not "
+                "corroboration, it is the same fact counted twice. The IEC is also the one "
+                "document here that answers whether the entity may lawfully import or export "
+                "at all, and it must be revalidated annually or it is deactivated — an IEC "
+                "with no current-year update is not evidence of an active trader."
+            ),
+            fields=[
+                _f(
+                    "iec",
+                    "id.pan",
+                    kind="id",
+                    required=True,
+                    pii=True,
+                    labels={"en": ["IEC", "IEC Number", "Importer-Exporter Code", "IEC Code"]},
+                    pattern=r"\b[A-Z]{5}\d{4}[A-Z]\b",
+                    validator="pan",
+                    locators=("label", "kv", "regex"),
+                    notes="Ten characters, and since 2017 identical to the entity's PAN — "
+                    "hence id.pan and the pan validator rather than an IEC-specific key. "
+                    "Older IECs issued before the alignment are ten digits and will fail "
+                    "this pattern; that is a legacy document, not a bad read.",
+                ),
+                _f("firm_name", "entity.legal_name", required=True, labels=_L_ENTITY),
+                _f(
+                    "nature_of_concern",
+                    "entity.constitution",
+                    labels={
+                        "en": ["Nature of Concern/Firm", "Nature of Concern", "Type of Firm"]
+                    },
+                ),
+                _f(
+                    "registered_address",
+                    "address.registered",
+                    kind="address",
+                    labels=_L_REG_OFFICE,
+                    locators=("kv", "label", "regex"),
+                ),
+                _pincode_field(),
+                _issue_date_field(),
+                _f(
+                    "branch_code",
+                    "",
+                    labels={"en": ["Branch Code", "Branch"]},
+                    notes="Doc-local. A multi-branch IEC lists each site with its own code.",
+                ),
+                _f(
+                    "directors",
+                    "ownership.director",
+                    kind="name",
+                    multi=True,
+                    pii=True,
+                    labels={
+                        "en": [
+                            "Details of Proprietor/Partner/Director/Karta/Managing Trustee",
+                            "Proprietor",
+                            "Partner",
+                            "Director",
+                        ]
+                    },
+                    locators=("table", "label", "kv"),
+                ),
+            ],
+        ),
+        DocTypeSpec(
+            doctype_id="in_udyam_certificate",
+            label="Udyam Registration Certificate (MSME)",
+            country="IN",
+            category=Category.corporate,
+            issuing_authority="Ministry of Micro, Small and Medium Enterprises, Government of "
+            "India (Udyam Registration portal)",
+            applies_to="corporate",
+            officially_valid=False,
+            anchors=[
+                # "Udyam" is a name the MSME Ministry coined in its 26 June 2020 notification
+                # for a scheme that exists only in India, and the certificate and the number
+                # both carry it. Decisive on the strength of the coinage, not of the English
+                # words around it.
+                Anchor(text="UDYAM REGISTRATION CERTIFICATE", decisive=True),
+                Anchor(text="Udyam Registration Number", decisive=True),
+                Anchor(text="उद्यम रजिस्ट्रेशन प्रमाणपत्र", lang="hi", decisive=True),
+                Anchor(text="MINISTRY OF MICRO, SMALL AND MEDIUM ENTERPRISES"),
+                Anchor(text="सूक्ष्म, लघु और मध्यम उद्यम मंत्रालय", lang="hi"),
+                Anchor(text="Micro, Small and Medium Enterprises Development Act, 2006"),
+                Anchor(text="TYPE OF ENTERPRISE"),
+                Anchor(text="MAJOR ACTIVITY"),
+                Anchor(text="SOCIAL CATEGORY OF ENTREPRENEUR"),
+                Anchor(text="NAME OF ENTERPRISE"),
+                Anchor(text="DATE OF UDYAM REGISTRATION"),
+                Anchor(text="DATE OF INCORPORATION / REGISTRATION OF ENTERPRISE"),
+                Anchor(text="NATIONAL INDUSTRY CLASSIFICATION CODE"),
+                Anchor(text="udyamregistration.gov.in"),
+                *_GOI_FURNITURE,
+            ],
+            id_patterns=[r"\bUDYAM-[A-Z]{2}-\d{2}-\d{7}\b"],
+            confusable_with={
+                "in_iec_certificate": (
+                    "both are one-page Government of India business registrations; Udyam is "
+                    "the MSME classification and carries a UDYAM-XX-00-0000000 number, the "
+                    "IEC is DGFT's foreign-trade code and equals the entity's PAN"
+                ),
+            },
+            negative_anchors=[
+                "Importer-Exporter Code",
+                "Goods and Services Tax Identification Number",
+                "CERTIFICATE OF INCORPORATION",
+            ],
+            handling=(
+                "The enterprise classification — micro, small or medium — is the point of the "
+                "document, and it is self-declared against turnover and investment thresholds "
+                "the enterprise reports itself. It carries real legal consequences (MSME "
+                "payment terms, priority-sector lending), so it is worth extracting, but it "
+                "is not third-party-verified data and must not be presented as if it were. "
+                "Note the certificate names an entrepreneur's social category, which is "
+                "sensitive personal data under Indian law even on a business registration."
+            ),
+            fields=[
+                _f(
+                    "udyam_number",
+                    "doc.registration_number",
+                    kind="id",
+                    required=True,
+                    labels={
+                        "en": [
+                            "Udyam Registration Number",
+                            "UDYAM REGISTRATION NUMBER",
+                            "URN",
+                        ]
+                    },
+                    pattern=r"\bUDYAM-[A-Z]{2}-\d{2}-\d{7}\b",
+                    locators=("regex", "label", "kv"),
+                    notes="UDYAM-<2-letter state>-<2-digit district>-<7-digit serial>. "
+                    "Structure only; there is no published check digit.",
+                ),
+                _f(
+                    "enterprise_name",
+                    "entity.legal_name",
+                    required=True,
+                    labels={
+                        "en": ["NAME OF ENTERPRISE", "Name of Enterprise"],
+                        "hi": ["उद्यम का नाम"],
+                    },
+                ),
+                _f(
+                    "enterprise_type",
+                    "entity.constitution",
+                    labels={
+                        "en": ["TYPE OF ENTERPRISE", "Type of Enterprise", "Micro", "Small"]
+                    },
+                    notes="Micro / Small / Medium. Self-declared against the investment and "
+                    "turnover thresholds of the MSMED Act as amended in 2020.",
+                ),
+                _f(
+                    "major_activity",
+                    "",
+                    labels={"en": ["MAJOR ACTIVITY", "Major Activity"]},
+                    notes="Doc-local. Manufacturing or Services.",
+                ),
+                _f(
+                    "social_category",
+                    "identity.category",
+                    pii=True,
+                    labels={
+                        "en": ["SOCIAL CATEGORY OF ENTREPRENEUR", "Social Category"]
+                    },
+                    notes="SC / ST / OBC / General. Sensitive personal data about a named "
+                    "individual, printed on a business registration — mask it by default "
+                    "and never use it as a business attribute.",
+                ),
+                _f(
+                    "registered_address",
+                    "address.registered",
+                    kind="address",
+                    labels={
+                        "en": [
+                            "OFFICIAL ADDRESS OF ENTERPRISE",
+                            "Address",
+                            "Location of Plant",
+                        ]
+                    },
+                    locators=("kv", "label", "regex"),
+                ),
+                _pincode_field(),
+                _f(
+                    "registration_date",
+                    "doc.issue_date",
+                    kind="date",
+                    labels={"en": ["DATE OF UDYAM REGISTRATION", "Date of Udyam Registration"]},
+                    validator="generic_date",
+                ),
+                _f(
+                    "incorporation_date",
+                    "entity.incorporation_date",
+                    kind="date",
+                    labels={
+                        "en": [
+                            "DATE OF INCORPORATION / REGISTRATION OF ENTERPRISE",
+                            "Date of Incorporation",
+                        ]
+                    },
+                    validator="generic_date",
+                ),
+                _f(
+                    "nic_code",
+                    "",
+                    labels={
+                        "en": ["NATIONAL INDUSTRY CLASSIFICATION CODE", "NIC Code", "NIC 2 Digit"]
+                    },
+                    locators=("table", "label", "kv"),
+                    notes="Doc-local.",
                 ),
             ],
         ),

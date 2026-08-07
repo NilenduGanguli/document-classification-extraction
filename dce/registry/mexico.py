@@ -1,4 +1,4 @@
-"""Mexico doctype pack — 20 :class:`~dce.models.DocTypeSpec` entries.
+"""Mexico doctype pack — 27 :class:`~dce.models.DocTypeSpec` entries.
 
 Two things drive the design of this pack.
 
@@ -24,6 +24,23 @@ they are used, and an unpublished format goes in ``notes`` rather than into a re
 ``officially_valid`` marks the credentials Mexican financial institutions accept as
 *identificación oficial* under the CNBV rules: INE/IFE, passport, cédula profesional,
 cartilla del servicio militar, matrícula consular and the INM residence card.
+
+**Listed issuers.** The BMV/CNBV filings in this pack (``mx_reporte_anual_cnbv``,
+``mx_reporte_trimestral_bmv``, ``mx_prospecto_colocacion``) are the one corner of the pack
+where a decisive anchor is easy to justify, because the regulator writes the words: the
+annual report and the quarterly are generated from the exchange's XBRL template and print
+its taxonomy role labels literally ("[411000-AR] Datos generales - Reporte Anual"), and the
+Circular Única de Emisoras prescribes the prospectus legends verbatim. What those three
+*share* — "Clave de Cotización", "Bolsa Mexicana de Valores", "Registro Nacional de
+Valores" — is evidence that a document is a Mexican securities filing and not evidence of
+which one, so it is declared non-decisively on all three.
+
+The company-written instruments are the opposite case and are handled the opposite way.
+``mx_acta_asamblea`` carries **no** decisive anchor at all: minutes are drafted by the
+company, so no string on them is controlled by a single issuer, and the Ley General de
+Sociedades Mercantiles vocabulary they reuse belongs to every Mexican company at once.
+``mx_informe_comisario`` gets one only because the statute citation it must contain
+(LGSM art. 166, fracción IV) is controlled by the legislature rather than by the author.
 """
 
 from __future__ import annotations
@@ -61,6 +78,16 @@ ATTRIBUTE_KEY_EXTENSIONS: dict[str, str] = {
     "doc.immigration_category": "Immigration category code printed on an immigration document",
     "entity.jurisdiction": "State / province / country of incorporation or organisation",
     "entity.status": "Registry status of the entity (good standing, active, dissolved)",
+    # -- listed issuers and employer registration ---------------------------
+    "entity.ticker": "Trading symbol under which a class of securities trades",
+    "entity.exchange": "Exchange on which a class of securities is registered",
+    "entity.fiscal_year_end": "Financial year end the report or filing closes on",
+    "entity.auditor": "Independent accounting firm that signed the audit report",
+    "entity.statutory_examiner": "Comisario / statutory examiner elected to supervise the "
+    "company, distinct from its external auditor",
+    "entity.shares_outstanding": "Shares of a class outstanding as of a stated date",
+    "doc.period_covered": "Reporting period a periodic report covers",
+    "id.imss_registro_patronal": "IMSS employer registry number (registro patronal)",
 }
 
 #: ``name -> what the validator must enforce``. ``curp`` and ``rfc`` are Mexico's; the rest
@@ -420,8 +447,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Personal data under the LFPDPPP: retain the extracted fields rather than the "
         "data page image.",
         anchors=[
+            # "P<MEX" is the ICAO 9303 document code plus issuing State: printed by exactly
+            # one issuer, on exactly one document, and adjacent to four check digits. That is
+            # what a decisive anchor is meant to be, and it is the model for the rest of this
+            # pack.
             _a("P<MEX", decisive=True),
-            _a("PASAPORTE", decisive=True, zone=Zone.title),
+            # "PASAPORTE" was decisive, gated to the title zone. Every Spanish-language
+            # passport on earth is titled that way, and xx_passport_generic claims the string
+            # too — a title zone cannot turn a document-class name into proof of a
+            # jurisdiction. Demoted; P<MEX carries the decisive claim, and it is the one
+            # string on the book that actually says "Mexico issued this".
+            _a("PASAPORTE", zone=Zone.title),
             _a("ESTADOS UNIDOS MEXICANOS"),
             _a("SECRETARÍA DE RELACIONES EXTERIORES"),
             _en("PASSPORT", zone=Zone.title),
@@ -822,17 +858,30 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a("Régimen"),
             _a("idCIF"),
             _a("Domicilio fiscal"),
+            # The sections the SAT prints only on the constancia. Page 1 of a CSF *is* the
+            # cédula, so nothing on page 1 can separate the two documents — but a CSF always
+            # continues into the regimes and obligations tables and a standalone cédula
+            # never does. These are the only strings in this pair that discriminate.
+            _a("Regímenes"),
+            _a("Obligaciones"),
+            _a("Actividades Económicas"),
         ],
         id_patterns=[RFC_PATTERN, CURP_PATTERN],
         confusable_with={
-            "mx_cif": "the CSF is the multi-page fiscal-status statement; the cédula de "
-            "identificación fiscal is the one-page card with the QR code and the "
-            "idCIF",
+            "mx_cif": "the CSF is the multi-page fiscal-status statement and its own first "
+            "page is the cédula, so the two are separated by what comes *after* "
+            "page 1 — the Regímenes and Obligaciones tables — not by their titles",
             "mx_opinion_cumplimiento": "the opinión states whether obligations are up to "
             "date; the constancia states who the taxpayer is",
         },
         negative_anchors=[
-            "CÉDULA DE IDENTIFICACIÓN FISCAL",
+            # "CÉDULA DE IDENTIFICACIÓN FISCAL" was removed. The SAT prints that exact
+            # heading at the top of page 1 of every Constancia de Situación Fiscal — it is
+            # the cédula, reproduced as the constancia's first page. As a negative anchor it
+            # therefore fired on every genuine instance of this doctype, penalising the CSF
+            # for being a CSF, while mx_cif's mirror-image negative penalised the cédula for
+            # the constancia heading on the same sheet. The two specs cancelled each other
+            # and the pair could only ever abstain.
             "OPINIÓN DEL CUMPLIMIENTO DE OBLIGACIONES FISCALES",
         ],
         fields=[
@@ -896,7 +945,16 @@ SPECS: tuple[DocTypeSpec, ...] = (
             "mx_rfc_csf": "the CIF is a single page with the QR code; the constancia runs "
             "to several pages and lists regimes and obligations",
         },
-        negative_anchors=["CONSTANCIA DE SITUACIÓN FISCAL", "Régimen"],
+        negative_anchors=[
+            # A standalone cédula does not carry the constancia's title, so this one is
+            # sound and stays.
+            "CONSTANCIA DE SITUACIÓN FISCAL",
+            # "Régimen" was removed: the cédula's own identification block prints "Régimen
+            # Capital", so this negative anchor fired on every genuine cédula. The plural
+            # section heading "Regímenes" is what only the constancia has, and it is
+            # declared as a positive anchor on mx_rfc_csf rather than as a negative here.
+            "Regímenes",
+        ],
         fields=[
             _rfc_field(),
             _name_field(required=False),
@@ -1167,6 +1225,678 @@ SPECS: tuple[DocTypeSpec, ...] = (
             ),
             _issue_date_field(required=True),
         ],
+    ),
+    DocTypeSpec(
+        doctype_id="mx_acta_asamblea",
+        label="Acta de Asamblea de Accionistas (shareholders' meeting minutes)",
+        country="MX",
+        category=Category.corporate,
+        issuing_authority="The company itself; protocolised before a notario público when "
+        "the resolutions have to be filed with the Registro Público de Comercio",
+        applies_to="corporate",
+        # NO DECISIVE ANCHOR, deliberately. Minutes are written by the company, so there is
+        # no string here that one issuer controls — the vocabulary below is the Ley General
+        # de Sociedades Mercantiles' own (arts. 178-206: orden del día, escrutadores, lista
+        # de asistencia, acciones representadas), which every Mexican company reuses and no
+        # single one owns. Declaring any of it decisive would be exactly the document-class
+        # claim that produced confident cross-issuer wrong answers elsewhere in this
+        # registry. This doctype can only win by concurrence over the whole cluster, which
+        # is the honest strength of the evidence.
+        anchors=[
+            _a("ASAMBLEA GENERAL ORDINARIA DE ACCIONISTAS"),
+            _a("ASAMBLEA GENERAL EXTRAORDINARIA DE ACCIONISTAS"),
+            _a("ASAMBLEA GENERAL ANUAL ORDINARIA DE ACCIONISTAS"),
+            _a("Lista de Asistencia"),
+            _a("Escrutadores"),
+            _a("Orden del Día"),
+            _a("Acciones representadas"),
+            _a("Presidente de la Asamblea"),
+            _a("Secretario de la Asamblea"),
+            _a("Resoluciones"),
+        ],
+        confusable_with={
+            "mx_acta_constitutiva": "the constitutive instrument creates the company and "
+            "carries its own decisive title; ordinary and "
+            "extraordinary assemblies of an existing company do not",
+            "mx_poder_notarial": "assemblies routinely grant powers, so the poder vocabulary "
+            "appears inside minutes — the poder is the standalone "
+            "instrument whose whole subject is the grant",
+            "mx_informe_comisario": "the comisario's report is read *to* the annual ordinary "
+            "assembly, so both name the assembly; only the report "
+            "carries the LGSM art. 166 opinion",
+        },
+        # Deliberately empty. "ACTA CONSTITUTIVA" and "PODER GENERAL PARA PLEITOS Y
+        # COBRANZAS" are the obvious candidates and both are wrong: minutes recite the
+        # constitutive instrument by name ("según consta en la escritura constitutiva") and
+        # very commonly grant exactly those three classical powers. A negative anchor that
+        # fires on genuine instances of its own doctype is the mistake that made the
+        # mx_cif / mx_rfc_csf pair unable to do anything but abstain.
+        negative_anchors=[],
+        fields=[
+            _entity_name_field(),
+            FieldSpec(
+                name="meeting_date",
+                attribute_key="doc.issue_date",
+                type="date",
+                required=True,
+                labels=_labels(
+                    ["Fecha de la asamblea", "Fecha", "celebrada el"], ["Date of the meeting"]
+                ),
+                validator="generic_date",
+            ),
+            FieldSpec(
+                name="meeting_type",
+                attribute_key="",
+                type="string",
+                labels=_labels(["Tipo de asamblea", "Asamblea"], ["Type of meeting"]),
+                notes="Ordinaria / extraordinaria / mixta. Kept without an attribute key: it "
+                "describes this instrument, not a durable attribute of the company.",
+            ),
+            FieldSpec(
+                name="resolutions",
+                attribute_key="",
+                type="string",
+                multi=True,
+                labels=_labels(
+                    ["Resoluciones", "Acuerdos", "Orden del Día"], ["Resolutions", "Agenda"]
+                ),
+                locators=["table", "kv", "label"],
+                notes="What the assembly actually decided is the reason a bank asks for the "
+                "minutes; surface it verbatim rather than trying to classify it.",
+            ),
+            FieldSpec(
+                name="administradores",
+                attribute_key="ownership.director",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_labels(
+                    ["Consejo de administración", "Administrador único", "Consejeros"],
+                    ["Directors"],
+                ),
+                validator="name",
+                locators=["table", "kv", "label"],
+            ),
+            FieldSpec(
+                name="apoderados",
+                attribute_key="ownership.authorized_signer",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_labels(["Apoderado", "Delegado especial"], ["Attorney-in-fact"]),
+                validator="name",
+            ),
+            FieldSpec(
+                name="accionistas",
+                attribute_key="ownership.beneficial_owner",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_labels(
+                    ["Accionistas", "Lista de Asistencia", "Socios"], ["Shareholders present"]
+                ),
+                validator="name",
+                locators=["table", "kv", "label"],
+            ),
+            FieldSpec(
+                name="presidente",
+                attribute_key="",
+                type="name",
+                pii=True,
+                labels=_labels(["Presidente de la Asamblea", "Presidente"], ["Chair"]),
+                validator="name",
+                notes="A meeting officer, not a company officer — the same person may chair "
+                "one assembly and hold no role in the company.",
+            ),
+            FieldSpec(
+                name="notario",
+                attribute_key="doc.notary",
+                type="name",
+                pii=True,
+                labels=_labels(["Notario público", "Notario", "Fedatario"], ["Notary"]),
+                validator="name",
+                notes="Only present when the minutes were protocolised; ordinary minutes are "
+                "signed by the meeting officers and entered in the libro de actas.",
+            ),
+        ],
+        handling="Minutes name individual shareholders and officers and record their "
+        "shareholdings; treat the attendance list as personal data.",
+    ),
+    DocTypeSpec(
+        doctype_id="mx_informe_comisario",
+        label="Informe del Comisario (statutory examiner's annual report, LGSM art. 166)",
+        country="MX",
+        category=Category.corporate,
+        issuing_authority="Comisario of the sociedad anónima (an individual or firm elected "
+        "by the shareholders under LGSM arts. 164-171)",
+        applies_to="corporate",
+        anchors=[
+            # The statute citation is the decisive evidence, not the report's title. The
+            # comisario is created by the Ley General de Sociedades Mercantiles and by
+            # nothing else, and art. 166 fracción IV is the provision that obliges the
+            # report to exist — a legislature-controlled string in exactly the sense a
+            # decisive anchor requires. Punctuation is dropped before matching, so the one
+            # spelling below also covers "artículo 166, fracción IV, de la Ley…".
+            _a(
+                "artículo 166 fracción IV de la Ley General de Sociedades Mercantiles",
+                decisive=True,
+            ),
+            #
+            # The supporting set is deliberately short, and four candidates were measured
+            # out of it rather than argued out. "Comisario" alone, "LEY GENERAL DE SOCIEDADES
+            # MERCANTILES" and "A LA ASAMBLEA GENERAL ORDINARIA DE ACCIONISTAS" are broad
+            # Spanish corporate vocabulary; because the lexical tier derives its idf from the
+            # whole registry, a spec that keeps terms like "general", "sociedad" and
+            # "accionistas" in its profile lowers their idf for every doctype that already
+            # relied on them. Measured over the 59-document reference corpus, this doctype
+            # with those anchors flipped ``corpus/mx/mx_cif.pdf`` from an abstention to a
+            # WRONG ``mx_rfc_csf``, without ever being a candidate itself. The statute
+            # citation carries the identification; the two phrases the LGSM obliges the
+            # report to contain carry the corroboration; the rest was dilution.
+            _a("INFORME DEL COMISARIO"),
+            _a("Comisario Propietario"),
+            _a("veracidad, suficiencia y razonabilidad"),
+            _a("políticas y criterios contables"),
+        ],
+        confusable_with={
+            "mx_acta_asamblea": "the report is addressed to the annual ordinary assembly and "
+            "is bound with its minutes; only the report gives an "
+            "opinion on the board's information",
+            "mx_reporte_anual_cnbv": "a listed issuer replaces the comisario with an audit "
+            "committee under the Ley del Mercado de Valores, so the "
+            "two rarely co-occur — an Anexo N carries the CNBV "
+            "taxonomy headings and this does not",
+        },
+        negative_anchors=[],
+        fields=[
+            _entity_name_field(),
+            FieldSpec(
+                name="comisario",
+                attribute_key="entity.statutory_examiner",
+                type="name",
+                required=True,
+                pii=True,
+                labels=_labels(
+                    ["Comisario Propietario", "Comisario Suplente"], ["Statutory examiner"]
+                ),
+                validator="name",
+                notes="Usually a licensed contador público acting personally. Their name is "
+                "personal data even though the role is corporate. 'C.P.' was dropped as a "
+                "label: it abbreviates both contador público and código postal.",
+            ),
+            FieldSpec(
+                name="fiscal_year_end",
+                attribute_key="entity.fiscal_year_end",
+                type="date",
+                required=True,
+                labels=_labels(
+                    ["por el ejercicio social terminado el", "al 31 de diciembre de"],
+                    ["Fiscal year ended"],
+                ),
+                validator="generic_date",
+            ),
+            FieldSpec(
+                name="opinion",
+                attribute_key="",
+                type="string",
+                labels=_labels(["En mi opinión", "En nuestra opinión"], ["Opinion"]),
+                notes="An adverse or qualified comisario opinion is a due-diligence finding in "
+                "itself; never collapse it to a boolean.",
+            ),
+            _issue_date_field(required=True),
+            FieldSpec(
+                name="signatory_title",
+                attribute_key="",
+                type="string",
+                labels=_labels(["Comisario Propietario", "Comisario Suplente"], ["Title"]),
+                notes="Propietario or suplente. A report signed by the suplente is valid but "
+                "worth surfacing — it means the elected comisario did not sign.",
+            ),
+        ],
+        handling="Names an individual professional and their signature; pii.",
+    ),
+    DocTypeSpec(
+        doctype_id="mx_imss_alta_patronal",
+        label="Alta Patronal ante el IMSS (AFIL-01 / Tarjeta de Identificación Patronal)",
+        country="MX",
+        category=Category.corporate,
+        issuing_authority="Instituto Mexicano del Seguro Social (IMSS)",
+        applies_to="corporate",
+        anchors=[
+            # IMSS form codes and the IMSS-printed card title: strings the institute alone
+            # controls. AFIL-01 splits into two words ("AFIL", "01") so it clears the
+            # short-decisive-anchor rule without a zone gate, and a form number is the
+            # canonical shape of a safe decisive anchor.
+            _a("AVISO DE INSCRIPCIÓN PATRONAL O DE MODIFICACIÓN EN SU REGISTRO", decisive=True),
+            _a("TARJETA DE IDENTIFICACIÓN PATRONAL", decisive=True),
+            _a("AFIL-01", decisive=True),
+            _a("INSTITUTO MEXICANO DEL SEGURO SOCIAL"),
+            _a("Registro Patronal"),
+            _a("INFONAVIT"),
+            _a("Prima de Riesgo de Trabajo"),
+            _a("Subdelegación"),
+            _a("Clase"),
+            _a("Actividad económica"),
+        ],
+        id_patterns=[RFC_PATTERN],
+        confusable_with={
+            "mx_rfc_csf": "the CSF is the SAT's fiscal-status statement; this is the IMSS "
+            "employer registration and carries a registro patronal, not a régimen",
+            "mx_opinion_cumplimiento": "the 32-D opinion reports whether SAT obligations are "
+            "current; this reports that the employer exists on the "
+            "IMSS padrón",
+        },
+        negative_anchors=[
+            "SERVICIO DE ADMINISTRACIÓN TRIBUTARIA",
+            "CONSTANCIA DE SITUACIÓN FISCAL",
+        ],
+        fields=[
+            _entity_name_field(),
+            FieldSpec(
+                name="registro_patronal",
+                attribute_key="id.imss_registro_patronal",
+                type="id",
+                required=True,
+                labels=_labels(
+                    ["Registro Patronal", "Número de Registro Patronal"],
+                    ["Employer registration number"],
+                ),
+                notes="Eleven alphanumeric positions. The IMSS has never published how the "
+                "positions decompose or whether the trailing digits check, so no pattern "
+                "and no validator are asserted — inventing one would reject genuine cards.",
+            ),
+            _rfc_field(required=False),
+            _address_field(
+                key="address.registered",
+                es=["Domicilio del centro de trabajo", "Domicilio"],
+                en=["Workplace address"],
+            ),
+            FieldSpec(
+                name="clase_y_fraccion",
+                attribute_key="",
+                type="string",
+                labels=_labels(["Clase", "Fracción", "Actividad económica"], ["Risk class"]),
+                notes="The class/fraction pair fixes the occupational-risk premium; it is a "
+                "fact about the workplace, not about the legal entity.",
+            ),
+            _amount_field(
+                "prima_de_riesgo",
+                key="",
+                es=["Prima de Riesgo de Trabajo", "Prima"],
+                en=["Occupational risk premium"],
+            ),
+            FieldSpec(
+                name="subdelegacion",
+                attribute_key="doc.issuing_authority",
+                type="string",
+                labels=_labels(["Subdelegación", "Delegación"], ["IMSS sub-delegation"]),
+            ),
+            _issue_date_field(required=True),
+        ],
+    ),
+    # ----------------------------------------- listed issuers (BMV / CNBV filings)
+    #
+    # Three documents that only a Mexican listed issuer produces, and the reason each one
+    # has a usable decisive anchor: the CNBV and the BMV mandate the *wording*. The Anexo N
+    # and the quarterly are generated from the exchange's XBRL template, so their section
+    # headings are literal taxonomy role labels ("[411000-AR] Datos generales - Reporte
+    # Anual") that no one but the BMV assigns; the prospectus carries a CNBV legend that the
+    # Circular Única de Emisoras prescribes verbatim. Everything the three share — "Clave de
+    # Cotización", "Bolsa Mexicana de Valores", "Registro Nacional de Valores", the RNV
+    # non-certification legend — stays non-decisive on all three, because it is evidence of
+    # "a Mexican securities filing" and not of which one.
+    DocTypeSpec(
+        doctype_id="mx_reporte_anual_cnbv",
+        label="Reporte Anual (CNBV Anexo N — Circular Única de Emisoras)",
+        country="MX",
+        category=Category.financial,
+        issuing_authority="Filed by the emisora with the Comisión Nacional Bancaria y de "
+        "Valores and the Bolsa Mexicana de Valores under the Circular Única de Emisoras",
+        applies_to="corporate",
+        anchors=[
+            _a("[411000-AR] Datos generales - Reporte Anual", decisive=True),
+            _a("[412000-N] Portada reporte anual", decisive=True),
+            _a(
+                "Reporte Anual que se presenta de acuerdo con las disposiciones de carácter "
+                "general aplicables a las emisoras de valores y a otros participantes del "
+                "mercado de valores",
+                decisive=True,
+            ),
+            _a("[413000-N] Información general"),
+            _a("[417000-N] La emisora"),
+            _a("[424000-N] Información financiera"),
+            _a("[427000-N] Administración"),
+            _a("[429000-N] Mercado de capitales"),
+            _a("[432000-N] Anexos"),
+            _a("Clave de Cotización"),
+            _a("Bolsa Mexicana de Valores"),
+            _a("Registro Nacional de Valores"),
+            _a("Comisión Nacional Bancaria y de Valores"),
+            _a(
+                "La inscripción en el Registro Nacional de Valores no implica certificación "
+                "sobre la bondad de los valores"
+            ),
+        ],
+        confusable_with={
+            "mx_reporte_trimestral_bmv": "both come out of the exchange's XBRL template; the "
+            "annual carries the -AR / -N taxonomy roles and the "
+            "quarterly carries the NIC 34 interim note",
+            "mx_prospecto_colocacion": "a prospectus offers securities and carries the CNBV "
+            "offering legend; the annual report reports on "
+            "securities already registered",
+            "mx_informe_comisario": "a listed issuer reports through an audit committee, not "
+            "a comisario",
+        },
+        negative_anchors=[
+            # Safe in one direction only, which is why it is the only one here: NIC 34
+            # governs *interim* reporting, so this note exists on a quarterly and cannot
+            # exist on a report covering a full financial year.
+            "[813000] Notas - Información financiera intermedia de conformidad con la NIC 34",
+        ],
+        fields=[
+            _entity_name_field(),
+            FieldSpec(
+                name="clave_cotizacion",
+                attribute_key="entity.ticker",
+                type="id",
+                required=True,
+                labels=_labels(
+                    ["Clave de Cotización", "Clave de cotización", "Clave de pizarra"],
+                    ["Ticker", "Trading symbol"],
+                ),
+                notes="Assigned by the BMV and unique per issuer, but reused after a "
+                "delisting — never a durable entity key on its own.",
+            ),
+            FieldSpec(
+                name="exchange",
+                attribute_key="entity.exchange",
+                type="string",
+                labels=_labels(["Bolsa", "Bolsa de valores"], ["Exchange"]),
+                notes="BMV or BIVA. Both are Mexican exchanges and an issuer may be listed on "
+                "either, so the exchange name is not evidence of the doctype.",
+            ),
+            FieldSpec(
+                name="fiscal_year_end",
+                attribute_key="entity.fiscal_year_end",
+                type="date",
+                required=True,
+                labels=_labels(
+                    ["Fecha", "Por el ejercicio social terminado el", "Ejercicio"],
+                    ["Fiscal year ended"],
+                ),
+                validator="generic_date",
+            ),
+            FieldSpec(
+                name="period_covered",
+                attribute_key="doc.period_covered",
+                type="string",
+                labels=_labels(["Periodo", "Ejercicio social"], ["Period covered"]),
+            ),
+            _address_field(
+                key="address.registered",
+                es=["Domicilio de la emisora", "Domicilio social", "Dirección"],
+                en=["Registered address"],
+            ),
+            FieldSpec(
+                name="auditor",
+                attribute_key="entity.auditor",
+                type="name",
+                labels=_labels(
+                    ["Auditor externo", "Auditores independientes", "Despacho"],
+                    ["Independent auditor"],
+                ),
+                validator="name",
+            ),
+            FieldSpec(
+                name="shares_outstanding",
+                attribute_key="entity.shares_outstanding",
+                type="number",
+                labels=_labels(
+                    ["Títulos Accionarios en Circulación", "Acciones en circulación"],
+                    ["Shares outstanding"],
+                ),
+                locators=["table", "kv", "label"],
+            ),
+            FieldSpec(
+                name="administradores",
+                attribute_key="ownership.director",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_labels(
+                    ["Consejo de Administración", "Consejeros"], ["Board of directors"]
+                ),
+                validator="name",
+                locators=["table", "kv", "label"],
+            ),
+            FieldSpec(
+                name="signatory",
+                attribute_key="ownership.authorized_signer",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_labels(
+                    ["Director General", "Director de Finanzas", "Nombre y firma"],
+                    ["Chief Executive Officer", "Chief Financial Officer"],
+                ),
+                validator="name",
+            ),
+            FieldSpec(
+                name="signatory_title",
+                attribute_key="",
+                type="string",
+                multi=True,
+                labels=_labels(["Cargo", "Puesto"], ["Title"]),
+            ),
+        ],
+        handling="A public filing, so its corporate content is not confidential — but the "
+        "officers and directors it names are still identified individuals.",
+    ),
+    DocTypeSpec(
+        doctype_id="mx_reporte_trimestral_bmv",
+        label="Información Financiera Trimestral (BMV quarterly report)",
+        country="MX",
+        category=Category.financial,
+        issuing_authority="Filed by the emisora with the Bolsa Mexicana de Valores and the "
+        "Comisión Nacional Bancaria y de Valores",
+        applies_to="corporate",
+        anchors=[
+            # NIC 34 is the IFRS interim-reporting standard; the BMV's template emits this
+            # note only on an interim filing, and the bracketed number is the exchange's own
+            # taxonomy role. Nothing else in the registry can print it.
+            _a(
+                "[813000] Notas - Información financiera intermedia de conformidad con la NIC 34",
+                decisive=True,
+            ),
+            _a("Información Financiera Trimestral"),
+            _a("[105000] Comentarios y Análisis de la Administración"),
+            _a("[700003] Datos informativos- Estado de resultados 12 meses"),
+            _a("Cantidades monetarias expresadas en Unidades"),
+            _a("Clave de Cotización"),
+            _a("Bolsa Mexicana de Valores"),
+            _a("Trimestre"),
+            _a("Consolidado"),
+        ],
+        confusable_with={
+            "mx_reporte_anual_cnbv": "the annual report is the Anexo N and carries the -AR / "
+            "-N taxonomy roles; the quarterly carries the NIC 34 "
+            "interim note and a Trimestre / Año header",
+            "mx_estado_cuenta": "a quarterly report is an issuer's own filing; a bank "
+            "statement is issued to a customer by a bank",
+        },
+        negative_anchors=[
+            # One-directional, like the annual's: the Anexo N cover roles cannot appear on a
+            # quarterly filing, which has no cover page of that kind.
+            "[411000-AR] Datos generales - Reporte Anual",
+            "[412000-N] Portada reporte anual",
+        ],
+        fields=[
+            _entity_name_field(),
+            FieldSpec(
+                name="clave_cotizacion",
+                attribute_key="entity.ticker",
+                type="id",
+                required=True,
+                labels=_labels(
+                    ["Clave de Cotización", "Clave de cotización"], ["Ticker", "Trading symbol"]
+                ),
+                notes="Assigned by the exchange, with no published structure and no check "
+                "digit — and reused after a delisting, so it is never a durable entity "
+                "key on its own.",
+            ),
+            FieldSpec(
+                name="quarter",
+                attribute_key="doc.period_covered",
+                type="string",
+                required=True,
+                labels=_labels(["Trimestre", "Trimestre y Año"], ["Quarter"]),
+                notes="Printed as a bare 1-4 next to 'Trimestre:' in the page header, with "
+                "the year in a separate 'Año:' box — capture both or the value is "
+                "meaningless.",
+            ),
+            FieldSpec(
+                name="fiscal_year",
+                attribute_key="entity.fiscal_year_end",
+                type="string",
+                labels=_labels(["Año", "Ejercicio"], ["Year"]),
+            ),
+            FieldSpec(
+                name="consolidation_basis",
+                attribute_key="",
+                type="string",
+                labels=_labels(["Consolidado", "No Consolidado"], ["Consolidated"]),
+                notes="Consolidado / No Consolidado changes what the figures mean; it is a "
+                "property of this filing, not of the entity.",
+            ),
+            _amount_field(
+                "total_assets",
+                key="",
+                es=["Total de activos", "Activos totales"],
+                en=["Total assets"],
+            ),
+            _amount_field(
+                "total_revenue",
+                key="",
+                es=["Ingresos", "Ingresos totales", "Ventas netas"],
+                en=["Revenue", "Total revenue"],
+            ),
+            FieldSpec(
+                name="signatory",
+                attribute_key="ownership.authorized_signer",
+                type="name",
+                multi=True,
+                pii=True,
+                labels=_labels(
+                    ["Director General", "Director de Finanzas", "Por:"],
+                    ["Chief Executive Officer", "Chief Financial Officer"],
+                ),
+                validator="name",
+            ),
+        ],
+    ),
+    DocTypeSpec(
+        doctype_id="mx_prospecto_colocacion",
+        label="Prospecto de Colocación (securities offering prospectus)",
+        country="MX",
+        category=Category.financial,
+        issuing_authority="Emisora and intermediario colocador; authorised for publication "
+        "by the Comisión Nacional Bancaria y de Valores",
+        applies_to="corporate",
+        anchors=[
+            # The Circular Única de Emisoras prescribes both legends verbatim and they may
+            # not be paraphrased, so the CNBV — one issuer — controls the exact wording.
+            # The second one differs from the annual report's only in its closing words
+            # ("...contenida en este Prospecto" versus "...en este Reporte Anual"), which is
+            # why the shared prefix is declared separately and non-decisively below.
+            _a(
+                "no podrán ser ofrecidos ni vendidos fuera de los Estados Unidos Mexicanos, "
+                "a menos que sea permitido por las leyes de otros países",
+                decisive=True,
+            ),
+            _a(
+                "ni convalida los actos que, en su caso, hubieren sido realizados en "
+                "contravención de las leyes",
+                decisive=True,
+            ),
+            _a("PROSPECTO DEFINITIVO"),
+            _a("PROSPECTO PRELIMINAR"),
+            _a(
+                "La inscripción en el Registro Nacional de Valores no implica certificación "
+                "sobre la bondad de los valores"
+            ),
+            _a("Registro Nacional de Valores"),
+            _a("Comisión Nacional Bancaria y de Valores"),
+            _a("Intermediario Colocador"),
+            _a("Oferta Pública"),
+            _a("Clave de pizarra"),
+            _a("Factores de Riesgo"),
+            _en("DEFINITIVE PROSPECTUS"),
+        ],
+        confusable_with={
+            "mx_reporte_anual_cnbv": "both carry the RNV non-certification legend; only a "
+            "prospectus carries the offering legend and names an "
+            "intermediario colocador",
+            "mx_reporte_trimestral_bmv": "a prospectus offers securities; the quarterly "
+            "reports on an issuer that already has them listed",
+        },
+        negative_anchors=["[411000-AR] Datos generales - Reporte Anual"],
+        fields=[
+            _entity_name_field(),
+            FieldSpec(
+                name="clave_pizarra",
+                attribute_key="entity.ticker",
+                type="id",
+                labels=_labels(
+                    ["Clave de pizarra", "Clave de Cotización"], ["Ticker", "Trading symbol"]
+                ),
+                notes="Assigned by the exchange, with no published structure and no check "
+                "digit. A debt programme's clave carries a year suffix (GDINIZ 12) that "
+                "the equity clave does not — do not strip it.",
+            ),
+            FieldSpec(
+                name="instrument_type",
+                attribute_key="",
+                type="string",
+                labels=_labels(
+                    ["Tipo de valor", "Tipo de instrumento"], ["Type of security"]
+                ),
+                notes="Certificados bursátiles, acciones, obligaciones subordinadas… — the "
+                "instrument, not the issuer, so it does not belong in the merge view.",
+            ),
+            _amount_field(
+                "offering_amount",
+                key="",
+                es=["Monto total autorizado", "Monto de la oferta", "Monto total de la emisión"],
+                en=["Aggregate offering amount"],
+            ),
+            FieldSpec(
+                name="intermediario_colocador",
+                attribute_key="",
+                type="name",
+                multi=True,
+                labels=_labels(["Intermediario Colocador", "Agente colocador"], ["Underwriter"]),
+                validator="name",
+            ),
+            FieldSpec(
+                name="rnv_registration",
+                attribute_key="doc.registration_number",
+                type="id",
+                labels=_labels(
+                    ["Número de inscripción en el Registro Nacional de Valores", "Inscripción"],
+                    ["RNV registration number"],
+                ),
+                notes="RNV numbers are assigned per issue, not per issuer, and the CNBV has "
+                "never published their composition — no pattern is asserted.",
+            ),
+            _address_field(
+                key="address.registered",
+                es=["Domicilio de la emisora", "Domicilio social"],
+                en=["Registered address"],
+            ),
+            _issue_date_field(required=True),
+        ],
+        handling="A prospectus is published to the market, so nothing in it is confidential; "
+        "the individuals it names are nonetheless identified people.",
     ),
     # ------------------------------------------------------ financial / address
     DocTypeSpec(
@@ -1550,6 +2280,92 @@ SPECS: tuple[DocTypeSpec, ...] = (
         notes="Deliberately anchor-weak and carrying no decisive anchor: it is the "
         "fallback for a Mexican proof of address whose issuer is not modelled here, "
         "and any issuer-specific doctype must be able to outrank it.",
+    ),
+    # -------------------------------------------------------------------- other
+    DocTypeSpec(
+        doctype_id="mx_aviso_privacidad",
+        label="Aviso de Privacidad (LFPDPPP privacy notice)",
+        country="MX",
+        category=Category.other,
+        issuing_authority="The responsable (data controller) itself, under the Ley Federal "
+        "de Protección de Datos Personales en Posesión de los Particulares",
+        applies_to="both",
+        anchors=[
+            # A statute title is legislature-controlled, which is the one kind of
+            # document-wide string a decisive anchor may rest on. The notice's own heading
+            # ("AVISO DE PRIVACIDAD") is a document-class name every controller writes for
+            # itself, so it stays non-decisive.
+            _a(
+                "Ley Federal de Protección de Datos Personales en Posesión de los Particulares",
+                decisive=True,
+            ),
+            _a("AVISO DE PRIVACIDAD"),
+            _a("derechos ARCO"),
+            _a("Acceso, Rectificación, Cancelación y Oposición"),
+            _a("Datos personales sensibles"),
+            _a("Responsable del tratamiento"),
+            _a("Transferencia de datos personales"),
+            _a("Finalidades del tratamiento"),
+            _a("Departamento de Datos Personales"),
+        ],
+        confusable_with={
+            "mx_acta_constitutiva": "a privacy notice states how a company handles personal "
+            "data; the acta states how the company was formed",
+        },
+        negative_anchors=[],
+        fields=[
+            FieldSpec(
+                name="responsable",
+                attribute_key="entity.legal_name",
+                type="name",
+                required=True,
+                labels=_labels(
+                    ["Responsable", "Responsable del tratamiento", "Razón social"],
+                    ["Data controller"],
+                ),
+                validator="name",
+            ),
+            _address_field(
+                key="address.registered",
+                es=["Domicilio del responsable", "Domicilio"],
+                en=["Controller address"],
+            ),
+            FieldSpec(
+                name="finalidades",
+                attribute_key="",
+                type="string",
+                multi=True,
+                labels=_labels(
+                    ["Finalidades del tratamiento", "Finalidades"], ["Purposes of processing"]
+                ),
+                locators=["table", "kv", "label"],
+            ),
+            FieldSpec(
+                name="contact_email",
+                attribute_key="identity.email",
+                type="string",
+                labels=_labels(["Correo electrónico", "Contacto"], ["Contact email"]),
+                notes="The ARCO contact address. It belongs to a department far more often "
+                "than to a person, but it is treated as personal data because sometimes "
+                "it does not.",
+                pii=True,
+            ),
+            _issue_date_field(),
+            FieldSpec(
+                name="last_updated",
+                attribute_key="",
+                type="date",
+                labels=_labels(
+                    ["Última actualización", "Fecha de última actualización"], ["Last updated"]
+                ),
+                validator="generic_date",
+                notes="A privacy notice is versioned rather than issued once; the update date "
+                "is what tells a reviewer whether it is current.",
+            ),
+        ],
+        notes="Included because Mexican counterparty and vendor due-diligence packs carry it "
+        "as a matter of course, not because it is a corporate registration document. "
+        "It proves a controller published a notice — nothing about the entity itself.",
     ),
 )
 

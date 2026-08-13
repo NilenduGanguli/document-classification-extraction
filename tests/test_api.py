@@ -301,7 +301,52 @@ def test_readyz_reports_registry_bert_and_the_egress_invariant() -> None:
         "preclassification_allowed": False,
         "enforced": True,
         "note": body["egress"]["note"],
+        # The guard being armed is not the same question as "does anything leave before the
+        # cascade runs" — ingestion finishes before the classification scope is entered, so a
+        # remote OCR provider would sit in this blind spot. It is reported here explicitly.
+        "preclassification_ocr": False,
+        "preclassification_ocr_endpoint": "",
+        # No remote provider, so the question of where one sits does not arise.
+        "preclassification_ocr_trust_boundary": "",
     }
+    # The default deployment recognises nothing and therefore transmits nothing.
+    assert body["ocr"] == {
+        "provider": "none",
+        "enabled": False,
+        "network": False,
+        "endpoint_host": "",
+        # Reported on every deployment, including this one: a field that appears only once it
+        # is interesting can only be found by somebody who already knew to look for it. The
+        # code default is the cautious value, and nothing here declared otherwise.
+        "trust_boundary": "external",
+        "trust_boundary_declared": False,
+        "trust_boundary_attribution": "",
+        "problem": "",
+        "summary": body["ocr"]["summary"],
+        "local_ocr_enabled": False,
+        "local_ocr_engine": body["ocr"]["local_ocr_engine"],
+        "providers": body["ocr"]["providers"],
+    }
+    # Every provider this build supports is listed even when switched off, and *especially*
+    # when switched off. A console that could only see the providers a deployment happens to
+    # have enabled could never say "this deployment does not send documents to Azure Read" —
+    # it could only fail to mention it, and silence is not a disclosure.
+    listed = {p["name"]: p for p in body["ocr"]["providers"]}
+    assert set(listed) == {"rapidocr", "tesseract", "azure_read", "azure_layout"}
+    assert not any(p["available"] for p in listed.values())
+    # Nothing is unavailable without saying why: the reason is what tells an operator whether
+    # to go turn a setting on or to stop looking.
+    assert all(p["reason"] for p in listed.values())
+    assert listed["azure_read"]["network"] is True
+    assert listed["azure_layout"]["network"] is True
+    assert listed["rapidocr"]["network"] is False
+    # The fact that decides which anchors could fire at all, reported rather than left for a
+    # console to infer from a vendor's name.
+    assert listed["azure_read"]["structure"] == "lines"
+    assert listed["azure_layout"]["structure"] == "roles"
+    # No endpoint is named, because none is configured — a host here would be a claim that
+    # documents go somewhere.
+    assert all(p["endpoint"] == "" for p in listed.values())
 
 
 def test_readyz_is_503_when_the_egress_invariant_is_off() -> None:

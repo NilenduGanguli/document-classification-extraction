@@ -279,7 +279,8 @@ def test_scanned_pdf_is_needs_ocr_not_an_empty_classification():
     assert result.status is IngestStatus.needs_ocr
     assert result.view is None
     assert "no usable text layer" in result.reason
-    assert "will not call a cloud OCR API" in result.remedy
+    assert "opens no socket at all" in result.remedy
+    assert "off by default" in result.remedy
 
 
 # ---------------------------------------------------------------------------

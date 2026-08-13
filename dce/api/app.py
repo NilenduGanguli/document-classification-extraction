@@ -12,12 +12,15 @@ Run it with ``uvicorn dce.api.app:app --port 8200``.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from dce import SERVICE_NAME, __version__, observability
 from dce.api.routes import (
@@ -31,6 +34,15 @@ from dce.config import Settings, get_settings
 from dce.observability import READINESS
 
 logger = logging.getLogger(__name__)
+
+#: Client-side routes of the console. A deep link or a refresh on one of these has to be
+#: answered with ``index.html`` — the browser router, not the server, resolves the rest.
+_UI_ROUTES = ("/analyze", "/registry", "/review", "/posture")
+
+#: Paths that belong to the service and must never be answered with the SPA shell. A 404 under
+#: any of these is an API 404 and stays JSON, because a caller parsing a response should not
+#: suddenly receive a web page.
+_API_PREFIXES = ("/api", "/health", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json")
 
 _DESCRIPTION = """
 Classifies and extracts documents that **have not been classified yet**.
@@ -94,6 +106,76 @@ def _assert_invariant(settings: Settings) -> None:
         logger.info("pre-classification egress: blocked (classification is in-process only)")
 
 
+def _assert_ocr_posture() -> None:
+    """Resolve the ingestion settings at boot, and shout if this deployment ships documents out.
+
+    Two reasons this is here rather than left to the first request:
+
+    * a contradictory OCR configuration (local **and** remote recognisers both switched on)
+      raises out of :class:`~dce.ingest.settings.IngestSettings`, and it should take the
+      process down at boot the way a missing BERT mount does — not surface as a 500 on
+      whichever request happened to carry an image;
+    * a deployment that sends unclassified documents out of this process should say so in the
+      first few lines of its own log, exactly as ``allow_preclassification_egress=true``
+      does. Choosing it is legitimate; being quiet about it is not.
+
+    The *level* follows the declared trust boundary, and only the level. An endpoint the
+    operator has declared on-premises is logged at ``warning``: still on every boot, still
+    naming the host, still saying the bytes leave before the doctype is known — but not at
+    ``error``, because an ``error`` on every healthy boot of a correctly-configured
+    deployment is how a log level stops meaning anything. Undeclared or external keeps
+    ``error``, and the line says which of the two it is.
+    """
+    from dce.ingest.settings import TRUST_BOUNDARY_ON_PREMISES, get_ingest_settings
+
+    settings = get_ingest_settings()
+    if settings.remote_ocr_enabled:
+        on_premises = settings.trust_boundary() == TRUST_BOUNDARY_ON_PREMISES
+        logger.log(
+            logging.WARNING if on_premises else logging.ERROR,
+            "remote OCR is ENABLED (%s -> %s): images and scanned PDFs leave this process to "
+            "be read BEFORE their doctype is known. Declared trust boundary: %s%s — the "
+            "operator's declaration, not verified here. /readyz reports "
+            "egress.preclassification_ocr=true.%s",
+            settings.remote_ocr_provider,
+            settings.remote_ocr_endpoint_host() or "(no endpoint configured)",
+            settings.trust_boundary(),
+            "" if settings.trust_boundary_declared() else " (code default; nothing declared)",
+            f" Problem: {settings.remote_ocr_problem()}" if settings.remote_ocr_problem() else "",
+        )
+    elif settings.local_ocr_enabled:
+        logger.info(
+            "OCR: local engine %s — no document leaves this process",
+            settings.local_ocr_engine,
+        )
+    else:
+        logger.info("OCR: none configured — images return needs_ocr and nothing leaves")
+
+
+def _frontend_dist() -> Path | None:
+    """Locate the compiled console, or ``None`` when it has not been built.
+
+    Three candidates, in order, because the same code runs from three different working
+    directories: an explicit ``DCE_FRONTEND_DIST`` (for a deployment that serves the bundle
+    from somewhere else), the path next to the installed package (``/app/frontend/dist`` in
+    the image, where ``dce/`` sits at ``/app/dce``), and the repo-root-relative path that a
+    developer running ``uvicorn`` from the checkout gets.
+
+    Returns ``None`` rather than raising: a missing bundle is a developer who has not run
+    ``npm run build`` yet, and the API must keep working for them.
+    """
+    override = os.environ.get("DCE_FRONTEND_DIST", "").strip()
+    candidates = (
+        [Path(override)]
+        if override
+        else [Path(__file__).resolve().parents[2] / "frontend" / "dist", Path("frontend/dist")]
+    )
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the application.
 
@@ -109,6 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _assert_invariant(app.state.settings)
+        _assert_ocr_posture()
         _load_engines(app)
         yield
 
@@ -140,22 +223,84 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         observability.observe_http(request.method, route, response.status_code, elapsed)
         return response
 
+    dist = _frontend_dist()
+    app.state.frontend_dist = dist
+
+    def _descriptor() -> dict[str, object]:
+        """The service card served at ``/`` when there is no console to serve instead."""
+        card: dict[str, object] = {
+            "service": SERVICE_NAME,
+            "version": __version__,
+            "docs": "/docs",
+            "health": "/health",
+            "readiness": "/readyz",
+            "metrics": "/metrics",
+            "api": "/api/v1",
+        }
+        if dist is None:
+            card["ui"] = (
+                "not built — the console is a vite bundle that is compiled into "
+                "frontend/dist and served from this process. Build it with "
+                "`cd frontend && npm install && npm run build`, or set DCE_FRONTEND_DIST to "
+                "an existing bundle, then restart. The API above works either way."
+            )
+        return card
+
     @app.get("/", include_in_schema=False)
-    async def _root() -> JSONResponse:
-        return JSONResponse(
-            {
-                "service": SERVICE_NAME,
-                "version": __version__,
-                "docs": "/docs",
-                "health": "/health",
-                "readiness": "/readyz",
-                "metrics": "/metrics",
-                "api": "/api/v1",
-            }
-        )
+    async def _root() -> Response:
+        """The console, when it is built; the service card when it is not.
+
+        This route is declared explicitly rather than left to the static mount because a
+        ``@app.get("/")`` registered anywhere would win over the mount anyway — better to say
+        what ``/`` returns in one place than to have it depend on declaration order.
+        """
+        if dist is not None:
+            return FileResponse(dist / "index.html")
+        return JSONResponse(_descriptor())
 
     app.include_router(system_router)
     app.include_router(router)
+
+    # ------------------------------------------------------------------
+    # The console. MOUNTED LAST, AND THE ORDER IS LOAD-BEARING.
+    #
+    # Starlette matches routes in registration order, and a Mount at "/" matches *every* path
+    # under it. Mounted before the routers it would shadow the entire API — every
+    # /api/v1/... call would come back as a 404 from StaticFiles, with no hint that a router
+    # existed. So: routers first, static last. Do not move this above the include_router
+    # calls, and do not add a route after it that you expect to be reachable.
+    #
+    # When the bundle has not been built there is nothing to mount, and nothing is: the API,
+    # the probes and the OpenAPI docs all still serve, and "/" explains how to build it. A
+    # developer who has not run `npm run build` gets a sentence, not a stack trace.
+    # ------------------------------------------------------------------
+    if dist is not None:
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="ui")
+        logger.info("console: serving %s", dist)
+    else:
+        logger.info("console: not built (looked for frontend/dist); serving the API only")
+
+    @app.exception_handler(404)
+    async def _spa_fallback(request: Request, exc: Exception) -> Response:
+        """Answer the console's client-side routes with the shell; leave the API alone.
+
+        ``/analyze`` and friends exist only in the browser's router, so a deep link or a
+        refresh arrives here as a 404 and has to be given ``index.html``. A 404 under an API
+        prefix is a real API 404 and stays JSON — a caller parsing a response must never be
+        handed a web page because it happened to ask for a doctype that is not installed.
+        """
+        path = request.url.path
+        index = dist / "index.html" if dist is not None else None
+        if (
+            index is not None
+            and request.method in ("GET", "HEAD")
+            and not path.startswith(_API_PREFIXES)
+        ):
+            return FileResponse(index)
+        if dist is None and path in _UI_ROUTES:
+            return JSONResponse(_descriptor(), status_code=404)
+        return JSONResponse({"detail": getattr(exc, "detail", "Not Found")}, status_code=404)
+
     return app
 
 

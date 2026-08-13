@@ -28,6 +28,13 @@ docs
 models
 data
 
+# The console's dependencies and its committed bundle. The image compiles the bundle itself in
+# the `ui` stage, so neither belongs in the build context: node_modules is large and
+# platform-specific, and shipping the checkout's dist would mean the image served whatever was
+# last built on somebody's laptop rather than the source in this commit.
+frontend/node_modules
+frontend/dist
+
 .env
 .env.*
 *.pem

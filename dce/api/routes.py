@@ -67,6 +67,7 @@ import binascii
 import hashlib
 import hmac
 import importlib
+import importlib.util
 import inspect
 import logging
 import math
@@ -81,10 +82,16 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from dce import SERVICE_NAME, __version__, adapters, observability
+from dce import SERVICE_NAME, __version__, adapters, observability, visual
 from dce.config import Settings
 from dce.ingest import IngestError, IngestOptions
 from dce.ingest import ingest as ingest_bytes
+from dce.ingest.ocr import PROVIDERS, provider_info
+from dce.ingest.settings import (
+    TRUST_BOUNDARY_ON_PREMISES,
+    IngestSettings,
+    get_ingest_settings,
+)
 from dce.models import (
     UNKNOWN,
     Category,
@@ -96,6 +103,7 @@ from dce.models import (
     LayoutView,
 )
 from dce.observability import READINESS, ComponentState
+from dce.visual.compare import compare_classifications
 
 logger = logging.getLogger(__name__)
 
@@ -1102,14 +1110,33 @@ class DocumentRequest(BaseModel):
     """One document, in whichever form the caller has it.
 
     Exactly one payload field is used, in this order: ``layout`` (already adapted),
-    ``azure_analyze_result``, ``des_ocr``, ``text``. Sending only ``text`` is supported and
-    degrades gracefully — see :func:`dce.adapters.from_plain_text`.
+    ``azure_analyze_result``, ``azure_read_result``, ``des_ocr``, ``text``. Sending only
+    ``text`` is supported and degrades gracefully — see :func:`dce.adapters.from_plain_text`.
+
+    **These fields are the zero-egress way to use a cloud recogniser, and the recommended
+    one.** An upstream service that already holds the document runs Azure Read or Azure
+    Layout under its own authorisation and posts the result here; this service opens no
+    socket, so the pre-classification invariant is not weighed against anything. The
+    alternative — having *this* service call Azure during ingestion — exists
+    (``DCE_INGEST_REMOTE_OCR_ENABLED``, :mod:`dce.ingest.remote_ocr`), is off by default, and
+    is reported on ``/readyz``.
     """
 
     doc_id: str = ""
     layout: LayoutView | None = None
     text: str | None = None
+    #: An Azure payload of **either** product. The shape decides which adapter runs — Read
+    #: v3.2 is the only shape with ``analyzeResult.readResults``, Document Intelligence v4.0
+    #: uses ``pages``/``paragraphs``/``tables`` — and the choice is reported back on every
+    #: response (the ``X-Document-Source`` header, and ``source`` on ``/process``) rather than
+    #: applied silently. Auto-detection is a convenience; being vague about which provider
+    #: read a document is not, because the two do not classify equally well.
     azure_analyze_result: dict[str, Any] | None = None
+    #: The same payload, declared unambiguously as Read v3.2. Use it when you want the Read
+    #: adapter whatever the shape sniffer would have concluded. **Read carries no paragraph
+    #: roles**, so every block lands in ``body`` and no title-gated decisive anchor can fire —
+    #: see :func:`dce.adapters.from_azure_read` for exactly what that costs.
+    azure_read_result: dict[str, Any] | None = None
     des_ocr: dict[str, Any] | None = None
     #: The original file, base64. **Optional, and read by nothing until a doctype has been
     #: accepted.** T2 and T3 send the document itself to Azure — a prebuilt specialist analyses
@@ -1187,10 +1214,42 @@ class TierRun(BaseModel):
     detail: str = ""
 
 
+class DocumentSource(BaseModel):
+    """Which reading of the document the cascade actually scored, and where it came from.
+
+    Reported on every request — as the ``X-Document-Source`` header on ``/classify`` and
+    ``/extract``, and as ``source`` here — for two reasons that are really the same reason:
+
+    * **The adapter is not an implementation detail.** ``azure-read-v3.2`` and
+      ``azure-prebuilt-layout`` are two different products with two different JSON shapes and
+      two different ceilings on accuracy: Read predicts no paragraph roles, so a Read payload
+      can never satisfy a title-gated decisive anchor. A caller who meant to send Layout and
+      sent Read gets a *worse* answer, not an error, and has to be able to see that from the
+      response. Auto-detection is only kind if it is also loud.
+    * **Whether the document left this process is a compliance fact**, not a performance note.
+      ``remote`` is True exactly when this service transmitted the bytes to somebody to have
+      them read — which only happens on a deployment that switched
+      ``DCE_INGEST_REMOTE_OCR_ENABLED`` on.
+    """
+
+    #: ``azure-prebuilt-layout`` | ``azure-read-v3.2`` | ``des-ocr`` | ``plain-text`` |
+    #: ``dce.ingest`` | ``dce.ingest.remote_ocr`` | ``caller-layout``.
+    provider: str = ""
+    #: True when obtaining this text required a network call **made by this service**, before
+    #: the doctype was known. False on every caller-supplied path.
+    remote: bool = False
+    #: Host the document was transmitted to, when ``remote``. Never the full URL.
+    endpoint_host: str = ""
+    #: One sentence an operator can read without knowing the field names.
+    note: str = ""
+
+
 class ProcessResponse(BaseModel):
     """Classification plus extraction, or classification alone when the cascade abstained."""
 
     classification: Classification
+    #: Which adapter read this document, and whether reading it involved egress.
+    source: DocumentSource = Field(default_factory=DocumentSource)
     extraction: ExtractionResult | None = None
     needs_review: bool = False
     detail: str = ""
@@ -1305,11 +1364,117 @@ class RegistryStatus(BaseModel):
 
 
 class EgressStatus(BaseModel):
-    """The invariant, reported so an operator can see it without reading the config."""
+    """The invariant, reported so an operator can see it without reading the config.
+
+    ``enforced`` is the *guard's* state: would :func:`dce.egress.assert_no_egress` refuse a
+    call made during classification. ``preclassification_ocr`` is a deliberately separate
+    question — whether this deployment sends documents out **before** the cascade runs at
+    all, to have them read. A deployment can have the guard fully armed and still be doing
+    that, because ingestion completes before the classification scope is ever entered. So
+    reporting only ``enforced: true`` would be a true sentence that leaves an auditor with a
+    false impression, which is exactly what this block exists to prevent.
+    """
 
     preclassification_allowed: bool
     enforced: bool
     note: str
+    #: True when a remote OCR provider is configured and usable here: unclassified documents
+    #: are transmitted out of this process, over a socket, during ingestion.
+    #:
+    #: **Whether that transmission crosses a trust boundary is a separate question**, answered
+    #: by ``preclassification_ocr_trust_boundary``. This flag stays true on an on-premises
+    #: deployment because the operation is the same one and an auditor asking "does anything
+    #: leave the process before classification" must not get "no" from a host declaration. The
+    #: two fields together say: yes, to that host, which the deployment declares is its own.
+    preclassification_ocr: bool = False
+    #: Host they are transmitted to. Empty unless ``preclassification_ocr``.
+    preclassification_ocr_endpoint: str = ""
+    #: ``external`` | ``on_premises`` — the deployment's own declaration about that host, from
+    #: ``DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY``. Empty unless ``preclassification_ocr``. It is
+    #: a claim, not a finding: see :class:`OcrStatus.trust_boundary_attribution`.
+    preclassification_ocr_trust_boundary: str = ""
+
+
+class OcrProviderStatus(BaseModel):
+    """One recogniser this build knows how to use, and whether it is usable *here*.
+
+    Every known provider is listed on every deployment, including the ones that are switched
+    off. That is deliberate and it is the difference between a console that can tell an
+    operator "this deployment does not send documents to Azure Read" and one that can only
+    tell them "nobody mentioned Azure Read". Absence is not a disclosure; a row saying
+    ``available: false`` with a reason is.
+
+    It also gives a caller the exact strings the ``ocr_provider`` pin accepts, so the pin is
+    something a client can use correctly rather than guess at.
+    """
+
+    #: The wire name, and the value :class:`IngestOptions.ocr_provider` must be given to pin
+    #: this provider: ``rapidocr`` | ``tesseract`` | ``azure_read`` | ``azure_layout``.
+    name: str
+    #: True only for the one provider this deployment would actually run. At most one is ever
+    #: true — :meth:`IngestSettings._check` refuses a configuration with two recognisers.
+    available: bool = False
+    #: **The question.** From the provider record's ``network`` flag, never from its name.
+    network: bool = False
+    #: ``roles`` or ``lines``. Reported because it decides which anchors could fire at all —
+    #: see :data:`dce.ingest.ocr._STRUCTURE`.
+    structure: str = "lines"
+    #: Host that would receive documents, when ``network`` and configured. Host, never a URL.
+    endpoint: str = ""
+    #: Why it is not available here. Never empty when ``available`` is false.
+    reason: str = ""
+    summary: str = ""
+
+
+class OcrStatus(BaseModel):
+    """How this deployment turns an image into text, and whether that leaves the process.
+
+    Reported unconditionally — including the ordinary answer, ``provider: "none"`` — so that
+    "we transmit unclassified documents to Microsoft" is a value in a field an operator
+    already reads, rather than something that appears only once it is true and can therefore
+    only be noticed by somebody who already knew to look for it.
+    """
+
+    #: ``none`` | ``rapidocr`` | ``tesseract`` | ``azure_read`` | ``azure_layout``.
+    provider: str = "none"
+    enabled: bool = False
+    #: **The question.** True only for the network providers, and taken from the provider
+    #: record's ``network`` flag rather than from anything about its name.
+    network: bool = False
+    #: Host documents are sent to, when ``network``. The host, never the full URL.
+    endpoint_host: str = ""
+    #: ``external`` | ``on_premises`` — where the DEPLOYMENT declares ``endpoint_host`` sits
+    #: relative to its own trust boundary. Reported on every deployment, including ones with
+    #: no remote provider, so that "external" is a value in a field rather than an absence.
+    #:
+    #: This service does not and cannot verify it: an internal-looking hostname and a vendor
+    #: one are the same socket from here. It changes how the disclosure reads, never what the
+    #: process does — ``network`` above and ``egress.preclassification_ocr`` stay true either
+    #: way, because the bytes leave this process either way.
+    trust_boundary: str = "external"
+    #: True when an operator set ``DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY``; false when the
+    #: value above is the code default. "We chose external" and "nobody said" are different
+    #: claims and an auditor reading ``external`` should be able to tell them apart.
+    trust_boundary_declared: bool = False
+    #: The attribution sentence: who says so, and that this service did not check. Empty when
+    #: no remote provider is configured and the question does not arise. **Consoles must render
+    #: this wherever they render a reassuring boundary** — a page that goes quiet because a
+    #: flag was set is worse than one that shouts, and this is what keeps it a claim with an
+    #: owner instead.
+    trust_boundary_attribution: str = ""
+    #: Set when the provider is switched on but cannot work (no endpoint, extra not installed).
+    problem: str = ""
+    summary: str = ""
+    #: Whether an in-process engine is switched on. Reported separately from ``provider``
+    #: because a console has to distinguish "local OCR is off here, an image returns
+    #: needs_ocr" from "we have not been told" — and silence read as "no" is exactly the
+    #: wrong default on a page an auditor uses.
+    local_ocr_enabled: bool = False
+    #: The local engine that is or would be used. Reported even when disabled.
+    local_ocr_engine: str = ""
+    #: Every recogniser this build supports, switched on or not. See
+    #: :class:`OcrProviderStatus`.
+    providers: list[OcrProviderStatus] = Field(default_factory=list)
 
 
 class TierStatus(BaseModel):
@@ -1324,6 +1489,90 @@ class TierStatus(BaseModel):
     summary: str = ""
 
 
+class SecondAvenueStatus(BaseModel):
+    """The second classification avenue, and — the load-bearing part — its COVERAGE.
+
+    Reported on every ``/readyz`` whether or not an avenue exists, because the failure this
+    block prevents is an operator discovering *by using the endpoint* that a second avenue
+    can only answer for a fraction of the registry. ``doctypes_covered`` over
+    ``doctypes_total`` is that number, and it is published even when it is zero — especially
+    when it is zero, which is the current state.
+    """
+
+    #: True only when a second avenue is loaded and can classify. Currently always false.
+    available: bool = False
+    #: Method id, when one is loaded. Empty otherwise — never a placeholder name.
+    method: str = ""
+    #: Templates in the loaded index. Zero when there is no avenue.
+    templates: int = 0
+    #: How many registry doctypes the avenue could answer for, and out of how many. An
+    #: avenue covering 12 of 182 doctypes is a legitimate thing to ship; discovering it in
+    #: production is not.
+    doctypes_covered: int = 0
+    doctypes_total: int = 0
+    #: ``doctypes_covered / doctypes_total``, precomputed so nobody has to.
+    coverage: float = 0.0
+    #: Method ids that could be configured. **Empty**: no method cleared the precision bar.
+    installable: list[str] = Field(default_factory=list)
+    #: Method ids that were built, measured against the real corpus, and retired. Published
+    #: so the readiness page carries the history and not just the gap.
+    retired: list[str] = Field(default_factory=list)
+    #: Set when an avenue was asked for and cannot be supplied.
+    problem: str = ""
+    summary: str = ""
+
+
+class AvenueResult(BaseModel):
+    """One avenue's decision trail, or the reason it did not produce one.
+
+    ``classification`` is exactly what that avenue's own endpoint would have returned — same
+    model, same fields, no summarising — so a caller comparing the two is comparing the real
+    answers and not a reduction of them.
+    """
+
+    #: ``lexical`` or the second avenue's method id.
+    avenue: str
+    #: True when the avenue ran at all. False means ``classification`` is ``None`` and
+    #: ``detail`` says why; it does **not** mean the avenue abstained.
+    ran: bool = False
+    classification: Classification | None = None
+    ms: int = 0
+    #: Why the avenue did not run, when it did not.
+    detail: str = ""
+
+
+class ComparisonResponse(BaseModel):
+    """Both decision trails, side by side, with **nothing adjudicated**.
+
+    This is a reporting surface. It has no fused answer, no preferred avenue and no
+    tie-break, and it deliberately does not expose one — the question "which avenue should
+    win, and when" has to be settled on data, and this endpoint is how that data gets
+    produced. See :mod:`dce.visual.compare` for why fusion is held back.
+
+    Read ``verdict`` as an observation about the two trails, never as a confidence: two
+    avenues can agree and both be wrong. The corpus contains a pair (``mx_cif`` /
+    ``mx_rfc_csf``) that renders as the *same document* under two registry doctype names,
+    where agreement is guaranteed and correctness is not available to any classifier at all.
+    """
+
+    doc_id: str = ""
+    #: ``agree`` | ``disagree`` | ``one_abstained`` | ``both_abstained`` | ``single_avenue``.
+    verdict: str
+    #: True only when both avenues answered and named the same doctype.
+    same_doctype: bool = False
+    #: How many of the two produced a non-abstaining answer: 0, 1 or 2.
+    answered: int = 0
+    #: What happened, and — said out loud — what was not concluded from it.
+    detail: str = ""
+    lexical: AvenueResult
+    second: AvenueResult
+    #: The second avenue's availability at the time of the call, so a run of this endpoint is
+    #: self-describing when it is read back months later out of a log.
+    second_avenue: SecondAvenueStatus = Field(default_factory=lambda: SecondAvenueStatus())
+    source: DocumentSource | None = None
+    ms: int = 0
+
+
 class ReadinessResponse(BaseModel):
     ready: bool
     service: str
@@ -1331,6 +1580,11 @@ class ReadinessResponse(BaseModel):
     registry: RegistryStatus
     bert: dict[str, Any]
     egress: EgressStatus
+    #: How images and scanned PDFs are read here, and whether reading one is a network call.
+    ocr: OcrStatus = Field(default_factory=OcrStatus)
+    #: The second classification avenue and its registry coverage. Unavailable on every
+    #: deployment today — see :mod:`dce.visual`.
+    second_avenue: SecondAvenueStatus = Field(default_factory=SecondAvenueStatus)
     #: The extraction tiers and their posture. On a default deployment every paid tier reads
     #: ``enabled: false``, which is the answer a control reviewer is actually asking for.
     tiers: list[TierStatus] = Field(default_factory=list)
@@ -1365,6 +1619,8 @@ def _ingest_to_layout(req: DocumentRequest) -> LayoutView:
             doc_id=req.doc_id,
             filename=options.filename,
             local_ocr=options.local_ocr,
+            remote_ocr=options.remote_ocr,
+            ocr_provider=options.ocr_provider,
         )
     except IngestError as exc:
         raise HTTPException(
@@ -1391,8 +1647,14 @@ def _to_layout(req: DocumentRequest) -> LayoutView:
         return _ingest_to_layout(req)
     if req.layout is not None:
         view = req.layout
+    elif req.azure_read_result is not None:
+        # Declared, not sniffed: the caller said this is Read v3.2, so it is mapped as Read
+        # even if it happened to be shaped like something else.
+        view = adapters.from_azure_read(req.azure_read_result)
     elif req.azure_analyze_result is not None:
-        view = adapters.from_azure_layout(req.azure_analyze_result)
+        # Either Azure product. `from_azure` picks the mapper from the payload's own shape and
+        # records which one in view.raw["provider"], which every response then reports.
+        view = adapters.from_azure(req.azure_analyze_result)
     elif req.des_ocr is not None:
         view = adapters.from_des_ocr(req.des_ocr)
     elif req.text is not None:
@@ -1401,13 +1663,250 @@ def _to_layout(req: DocumentRequest) -> LayoutView:
         raise HTTPException(
             status_code=400,
             detail=(
-                "supply one of: layout, azure_analyze_result, des_ocr, text, or "
-                "content_base64 together with ingest"
+                "supply one of: layout, azure_analyze_result, azure_read_result, des_ocr, "
+                "text, or content_base64 together with ingest"
             ),
         )
     if req.doc_id:
         view.doc_id = req.doc_id
     return view
+
+
+def _local_engine_installed(engine: str) -> bool:
+    """Whether the named local engine's package is importable.
+
+    ``find_spec`` rather than constructing the engine: a readiness probe runs every few
+    seconds and RapidOCR's constructor loads ONNX models.
+    """
+    module = {"rapidocr": "rapidocr_onnxruntime", "tesseract": "pytesseract"}.get(engine)
+    return module is not None and importlib.util.find_spec(module) is not None
+
+
+def _ocr_providers(resolved: IngestSettings) -> list[OcrProviderStatus]:
+    """Every recogniser this build supports, each with whether it is usable *here* and why not.
+
+    Built from :data:`dce.ingest.ocr.PROVIDERS` rather than from a list written out here, so a
+    provider added to the registry cannot be missing from the disclosure — the failure mode
+    that matters is a network provider that is configurable but never reported, and iterating
+    the registry makes that unrepresentable.
+    """
+    active = resolved.active_provider()
+    out: list[OcrProviderStatus] = []
+    for name, info in sorted(PROVIDERS.items()):
+        endpoint = ""
+        if name == active and info.network:
+            endpoint = resolved.remote_ocr_endpoint_host()
+        if name == active:
+            problem = (
+                resolved.remote_ocr_problem()
+                if info.network
+                else (
+                    ""
+                    if _local_engine_installed(name)
+                    else f"local_ocr_engine={name!r} is switched on but not installed"
+                )
+            )
+            reason = problem
+        elif info.network:
+            reason = (
+                f"this deployment's remote recogniser is {active!r}"
+                if resolved.remote_ocr_enabled
+                else (
+                    "remote OCR is switched off here (DCE_INGEST_REMOTE_OCR_ENABLED), so no "
+                    "document is transmitted to this provider to be read"
+                )
+            )
+        else:
+            reason = (
+                f"this deployment's local engine is {active!r}"
+                if resolved.local_ocr_enabled
+                else "local OCR is switched off here (DCE_INGEST_LOCAL_OCR_ENABLED)"
+            )
+        out.append(
+            OcrProviderStatus(
+                name=name,
+                available=name == active and not reason,
+                network=info.network,
+                structure=info.structure,
+                endpoint=endpoint,
+                reason=reason,
+                summary=info.summary,
+            )
+        )
+    return out
+
+
+def _egress_note(ocr: OcrStatus) -> str:
+    """The one-line egress headline on ``/readyz``, given this deployment's OCR posture.
+
+    Three sentences, one per posture, and the middle one is the point of the trust-boundary
+    declaration. The invariant claim — *classification* opens no socket — is true in all
+    three and is never quietly widened into "nothing leaves", because ingestion runs before
+    the classification scope is ever entered.
+
+    Args:
+        ocr: The already-built OCR block, so the note and the block cannot disagree.
+
+    Returns:
+        One sentence for an operator who reads only this field.
+    """
+    if not ocr.network:
+        return (
+            "classification is in-process only: no HTTP, no vendor SDK, no embedding API "
+            "before the doctype is known"
+        )
+    where = ocr.endpoint_host or "a remote OCR endpoint"
+    if ocr.trust_boundary == TRUST_BOUNDARY_ON_PREMISES:
+        return (
+            "classification itself is in-process only. Images and scanned PDFs are sent to "
+            f"{where} to be read, before their doctype is known; this deployment declares "
+            "that host is inside its own trust boundary — the operator's declaration, not "
+            "verified here — see the `ocr` block"
+        )
+    return (
+        "classification itself is in-process only, BUT this deployment sends images and "
+        f"scanned PDFs to {where} to be read, before their doctype is known — see the `ocr` "
+        "block"
+    )
+
+
+def _ocr_status(ingest_settings: IngestSettings | None = None) -> OcrStatus:
+    """How this deployment reads an image, for ``/readyz``.
+
+    The ``network`` flag comes from :func:`dce.ingest.ocr.provider_info`, i.e. from the
+    provider registry, not from string-matching a vendor name here. A provider added later
+    without that flag set is not a provider at all, so it cannot report itself as local.
+    """
+    resolved = ingest_settings or get_ingest_settings()
+    common = {
+        "local_ocr_enabled": resolved.local_ocr_enabled,
+        "local_ocr_engine": resolved.local_ocr_engine,
+        "providers": _ocr_providers(resolved),
+        # Reported on every deployment, not only the ones with a remote provider: a field that
+        # appears only once it is interesting can only be found by somebody who already knew
+        # to look. The attribution below is empty when the question does not arise.
+        "trust_boundary": resolved.trust_boundary(),
+        "trust_boundary_declared": resolved.trust_boundary_declared(),
+        "trust_boundary_attribution": resolved.trust_boundary_attribution(),
+    }
+    if resolved.remote_ocr_enabled:
+        info = provider_info(resolved.remote_ocr_provider)
+        host = resolved.remote_ocr_endpoint_host()
+        where = host or "(no endpoint configured)"
+        # The same operation, described two ways, because the operator has told us two
+        # different things about where those bytes land. Neither wording softens the fact that
+        # they leave: the on-premises sentence still says "sent", still names the host, and
+        # still says "before their doctype is known". What changes is the claim about WHO
+        # receives them — which this service takes on the operator's word, and says so.
+        summary = (
+            (
+                f"images and scanned PDFs are sent to {where} to be read by "
+                f"{resolved.remote_ocr_provider}, before their doctype is known. This "
+                "deployment declares that host is inside its own trust boundary — an "
+                "operator declaration recorded here, not a fact this service verified"
+            )
+            if resolved.trust_boundary() == TRUST_BOUNDARY_ON_PREMISES
+            else (
+                "THIS DEPLOYMENT TRANSMITS UNCLASSIFIED DOCUMENTS to "
+                f"{where} — images and scanned PDFs are sent to "
+                f"{resolved.remote_ocr_provider} to be read, before their doctype is known"
+            )
+        )
+        return OcrStatus(
+            **common,
+            provider=resolved.remote_ocr_provider,
+            enabled=True,
+            network=bool(info and info.network),
+            endpoint_host=host,
+            problem=resolved.remote_ocr_problem(),
+            summary=summary,
+        )
+    if resolved.local_ocr_enabled:
+        engine = resolved.local_ocr_engine
+        info = provider_info(engine)
+        installed = _local_engine_installed(engine)
+        return OcrStatus(
+            **common,
+            provider=engine,
+            enabled=True,
+            network=bool(info and info.network),
+            problem=(
+                ""
+                if installed
+                else f"local_ocr_engine={engine!r} is switched on but not installed"
+            ),
+            summary=(
+                f"images are recognised in-process by {engine}; no document leaves this "
+                "process"
+            ),
+        )
+    return OcrStatus(
+        **common,
+        provider="none",
+        enabled=False,
+        network=False,
+        summary=(
+            "images and scanned PDFs return needs_ocr; no recogniser is configured, so no "
+            "document leaves this process and none is guessed at"
+        ),
+    )
+
+
+#: How each provider id reads in one sentence. Keyed by ``LayoutView.raw["provider"]``.
+_SOURCE_NOTES: dict[str, str] = {
+    adapters.PROVIDER_AZURE_LAYOUT: (
+        "caller-supplied Azure Document Intelligence prebuilt-layout payload: paragraph "
+        "roles, tables and selection marks are available, and this service opened no socket"
+    ),
+    adapters.PROVIDER_AZURE_READ: (
+        "caller-supplied Azure AI Vision Read v3.2 payload: lines and words only. Read "
+        "predicts no paragraph roles, so every block is body and no title-gated decisive "
+        "anchor can fire — prefer prebuilt-layout where you have it. This service opened no "
+        "socket"
+    ),
+    adapters.PROVIDER_DES_OCR: "caller-supplied DES OCR payload; this service opened no socket",
+    adapters.PROVIDER_PLAIN_TEXT: (
+        "plain text: no zones, so title weighting and title-gated anchors do not apply"
+    ),
+    "caller-layout": "a LayoutView the caller had already adapted; this service opened no socket",
+    "dce.ingest": "parsed in this process from the uploaded bytes; no network call",
+}
+
+
+def _source_of(view: LayoutView) -> DocumentSource:
+    """Describe where ``view`` came from, from the provenance the adapters recorded.
+
+    Reads ``LayoutView.raw``, which every adapter and the ingestion pipeline populate, so this
+    stays a lookup rather than a second place that has to be told about a new provider.
+    """
+    raw = view.raw if isinstance(view.raw, dict) else {}
+    provider = str(raw.get("provider") or "caller-layout")
+    remote = bool(raw.get("ocr_is_remote"))
+    host = str(raw.get("ocr_endpoint_host") or "")
+    if remote:
+        engine = str(raw.get("ocr_engine") or "a remote provider")
+        # `provider` stays the ADAPTER that mapped the payload, so path (B) reports the same
+        # value path (A) would have for the same provider; `remote` is what distinguishes
+        # who dialled.
+        return DocumentSource(
+            provider=provider,
+            remote=True,
+            endpoint_host=host,
+            note=(
+                f"recognised by {engine} at {host or 'a remote endpoint'} and mapped by the "
+                f"{provider} adapter — THIS DEPLOYMENT TRANSMITTED AN UNCLASSIFIED DOCUMENT "
+                "to a third party to obtain its text"
+            ),
+        )
+    note = _SOURCE_NOTES.get(provider, "")
+    if not note and provider == "dce.ingest":
+        note = _SOURCE_NOTES["dce.ingest"]
+    if str(raw.get("text_source") or "") == "local_ocr":
+        note = (
+            f"recognised in this process by {raw.get('ocr_engine') or 'a local engine'}: "
+            "no network call, and OCR text scores lower than a publisher's own text"
+        )
+    return DocumentSource(provider=provider, remote=False, note=note)
 
 
 def _document_bytes(req: DocumentRequest) -> bytes | None:
@@ -1939,6 +2438,37 @@ def _review_item(raw: Any) -> ReviewItem:
         return ReviewItem(id=str(data.get("id", "")), raw=data)
 
 
+def _second_avenue_status(
+    settings: Settings, registry: RegistryPort | None
+) -> SecondAvenueStatus:
+    """Availability and **registry coverage** of the second classification avenue.
+
+    The coverage denominator comes from the live registry rather than from a constant, so a
+    deployment that has loaded 121 doctypes is not told a fraction of 182. Reported even
+    though every field is currently zero: the point of the block is that an operator can read
+    "there is no second avenue" off the readiness page instead of inferring it.
+
+    Args:
+        settings: The process settings; only ``visual_method`` is read.
+        registry: The live registry, for the coverage denominator. ``None`` falls back to the
+            documented registry size.
+    """
+    total = len(registry.specs()) if registry is not None else 0
+    status = visual.avenue_status(settings, doctypes_total=total or None, registry=registry)
+    return SecondAvenueStatus(
+        available=status.available,
+        method=status.method,
+        templates=status.templates,
+        doctypes_covered=status.doctypes_covered,
+        doctypes_total=status.doctypes_total,
+        coverage=round(status.coverage, 4),
+        installable=list(status.installable),
+        retired=list(status.retired),
+        problem=status.problem,
+        summary=status.summary,
+    )
+
+
 def _tier_statuses(settings: Settings) -> list[TierStatus]:
     """The five tiers as this deployment has them configured.
 
@@ -2012,8 +2542,25 @@ system_router = APIRouter(tags=["system"])
 # Classification and extraction are CPU-bound and fully in-process, so these handlers are
 # declared sync on purpose: FastAPI runs them in the threadpool, where they cannot stall the
 # event loop for every other request.
+def _report_source(response: Response, view: LayoutView) -> DocumentSource:
+    """Stamp ``X-Document-Source`` on a response and return the structured form.
+
+    The header is ``<provider>`` normally and ``<provider>; remote=<host>`` when this service
+    made a network call to read the document — short enough for a log line, specific enough
+    that "which adapter ran" and "did it leave the building" are both answerable from it.
+    """
+    source = _source_of(view)
+    response.headers["X-Document-Source"] = (
+        f"{source.provider}; remote={source.endpoint_host or 'yes'}"
+        if source.remote
+        else source.provider
+    )
+    return source
+
+
 @router.post("/classify", response_model=Classification)
 def classify_document(
+    response: Response,
     req: DocumentRequest,
     registry: RegistryPort = Depends(get_registry),
     classifier: ClassifierPort = Depends(get_classifier),
@@ -2023,17 +2570,102 @@ def classify_document(
 
     Returns ``200`` with ``abstained=true`` when the cascade cannot clear its thresholds; that
     is a valid answer, and the document goes to a human rather than to a model.
+
+    The ``X-Document-Source`` response header names the adapter that read the payload — the
+    two Azure products are auto-detected from the shape, and they do not classify equally
+    well, so which one ran is part of the answer.
     """
     started = time.perf_counter()
     view = _to_layout(req)
+    _report_source(response, view)
     result = classifier.classify(view, registry=registry, settings=settings)
     result.ms = result.ms or _ms(started)
     observability.observe_classification(result, time.perf_counter() - started)
     return result
 
 
+@router.post("/classify/compare", response_model=ComparisonResponse)
+def classify_compare(
+    response: Response,
+    req: DocumentRequest,
+    registry: RegistryPort = Depends(get_registry),
+    classifier: ClassifierPort = Depends(get_classifier),
+    settings: Settings = Depends(get_app_settings),
+) -> ComparisonResponse:
+    """Run every available classification avenue over one document and report how they relate.
+
+    **This endpoint adjudicates nothing.** It returns both decision trails in full plus a
+    ``verdict`` describing their relationship — agree, disagree, one abstained, both
+    abstained, or only one avenue exists. It does not fuse, rank, tie-break or promote a
+    confidence. Fusing two channels is where this codebase has produced its worst defects,
+    and a fusion rule has to be chosen on data; this endpoint is how that data gets produced,
+    which is why it is worth having even while there is only one avenue to report on.
+
+    **Today there is only one avenue.** Four visual methods were built and measured against
+    the 158-document corpus and none reached the 95% precision-when-answered the bar demands
+    — the best end-to-end result was 0.080, against a lexical cascade at 0.983 — so none
+    shipped. ``verdict`` is therefore ``single_avenue`` on every deployment, ``second``
+    carries ``ran: false`` with the reason, and ``second_avenue`` reports availability and
+    registry coverage. That is deliberately *not* an abstention: an avenue that does not
+    exist did not decline to answer, and collapsing the two would let an empty registry read
+    as a considered refusal.
+
+    A caller who wants the plain answer should call ``/classify``; the ``lexical`` block here
+    is what that route returns for the same payload, unmodified.
+    """
+    started = time.perf_counter()
+    view = _to_layout(req)
+    source = _report_source(response, view)
+
+    lex_started = time.perf_counter()
+    lexical = classifier.classify(view, registry=registry, settings=settings)
+    lexical.ms = lexical.ms or _ms(lex_started)
+    # Observed once, exactly as /classify observes it. A second avenue, when one exists, must
+    # be observed under its own label rather than adding to this counter: the metric answers
+    # "how often did the cascade abstain", and two writers would make it answer nothing.
+    observability.observe_classification(lexical, time.perf_counter() - lex_started)
+
+    avenue, problem = visual.resolve_avenue(settings)
+    second_result: Classification | None = None
+    second_ms = 0
+    if avenue is not None:  # pragma: no cover - dce.visual.AVENUES is empty
+        second_started = time.perf_counter()
+        second_result = avenue.classify(view, registry=registry, settings=settings)
+        second_ms = _ms(second_started)
+    method_id = str(getattr(avenue, "method_id", "")) if avenue is not None else ""
+
+    verdict = compare_classifications(
+        lexical, second_result, second_method=method_id, second_problem=problem
+    )
+    return ComparisonResponse(
+        doc_id=req.doc_id,
+        verdict=verdict.verdict,
+        same_doctype=verdict.same_doctype,
+        answered=verdict.answered,
+        detail=verdict.detail,
+        lexical=AvenueResult(avenue="lexical", ran=True, classification=lexical, ms=lexical.ms),
+        second=AvenueResult(
+            avenue=method_id,
+            ran=second_result is not None,
+            classification=second_result,
+            ms=second_ms,
+            detail=""
+            if second_result is not None
+            else (
+                problem
+                or "no second classification avenue is available: none of the four visual "
+                "methods measured against the real corpus reached the 95% precision bar"
+            ),
+        ),
+        second_avenue=_second_avenue_status(settings, registry),
+        source=source,
+        ms=_ms(started),
+    )
+
+
 @router.post("/extract", response_model=ExtractionResult)
 def extract_document(
+    response: Response,
     req: ExtractRequest,
     registry: RegistryPort = Depends(get_registry),
     classifier: ClassifierPort | None = Depends(get_classifier_or_none),
@@ -2052,6 +2684,7 @@ def extract_document(
     """
     started = time.perf_counter()
     view = _to_layout(req)
+    _report_source(response, view)
 
     if req.doctype_id:
         spec = registry.get(req.doctype_id)
@@ -2090,6 +2723,7 @@ def extract_document(
 @router.post("/process", response_model=ProcessResponse)
 def process_document(
     request: Request,
+    response: Response,
     req: DocumentRequest,
     registry: RegistryPort = Depends(get_registry),
     classifier: ClassifierPort = Depends(get_classifier),
@@ -2110,6 +2744,7 @@ def process_document(
     """
     started = time.perf_counter()
     view = _to_layout(req)
+    source = _report_source(response, view)
     adapt_ms = _ms(started)
 
     classify_started = time.perf_counter()
@@ -2133,6 +2768,7 @@ def process_document(
         )
         return ProcessResponse(
             classification=classification,
+            source=source,
             extraction=None,
             needs_review=True,
             detail=classification.reason
@@ -2154,6 +2790,7 @@ def process_document(
         )
         return ProcessResponse(
             classification=classification,
+            source=source,
             extraction=None,
             needs_review=True,
             detail=f"doctype {classification.doctype_id} is not in the registry",
@@ -2218,6 +2855,7 @@ def process_document(
 
     return ProcessResponse(
         classification=classification,
+        source=source,
         extraction=extraction,
         needs_review=needs_review,
         detail="missing required fields" if extraction.missing_required else "",
@@ -2522,9 +3160,41 @@ async def readyz(
         egress_ok,
         "" if egress_ok else "pre-classification egress is ALLOWED — the invariant is off",
     )
+
+    ocr = _ocr_status()
+    # Reported as a component, not as an outage. A remote recogniser is a decision somebody
+    # took on purpose; failing readiness over it would take a working service out of rotation
+    # for having been configured the way it was configured. What it must never be is *quiet*,
+    # so the disclosure is in the component's own note as well as in `ocr` and `egress`.
+    READINESS.set(
+        "ocr",
+        not ocr.problem,
+        ocr.problem or ("" if not ocr.network else ocr.summary),
+        provider=ocr.provider,
+        network=ocr.network,
+        endpoint_host=ocr.endpoint_host,
+    )
+
     bert = bert_status(settings)
     if settings.bert_enabled:
         READINESS.set("bert", bert["loaded"], "" if bert["loaded"] else "model not loaded")
+
+    # Reported, never a readiness failure. There being no second avenue is the measured state
+    # of the art here, not an outage — the service classifies perfectly well with one — but a
+    # deployment that *asked* for an avenue and cannot have it is degraded, because somebody
+    # is expecting a second opinion that will never arrive.
+    second_avenue = _second_avenue_status(settings, registry)
+    READINESS.set(
+        "second_avenue",
+        not second_avenue.problem,
+        second_avenue.problem,
+        available=second_avenue.available,
+        method=second_avenue.method,
+        templates=second_avenue.templates,
+        doctypes_covered=second_avenue.doctypes_covered,
+        doctypes_total=second_avenue.doctypes_total,
+        coverage=second_avenue.coverage,
+    )
 
     tiers = _tier_statuses(settings)
     broken = [t.problem for t in tiers if t.problem]
@@ -2554,11 +3224,13 @@ async def readyz(
         egress=EgressStatus(
             preclassification_allowed=settings.allow_preclassification_egress,
             enforced=egress_ok,
-            note=(
-                "classification is in-process only: no HTTP, no vendor SDK, no embedding API "
-                "before the doctype is known"
-            ),
+            note=_egress_note(ocr),
+            preclassification_ocr=ocr.network,
+            preclassification_ocr_endpoint=ocr.endpoint_host if ocr.network else "",
+            preclassification_ocr_trust_boundary=ocr.trust_boundary if ocr.network else "",
         ),
+        ocr=ocr,
+        second_avenue=second_avenue,
         tiers=tiers,
         components=READINESS.snapshot(),
         degraded=READINESS.degraded(),

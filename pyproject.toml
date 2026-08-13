@@ -34,17 +34,30 @@ dependencies = [
 # insufficient on your corpus. The model is NOT baked into the image — it is mounted read-only
 # at /models (see docker-compose.yml), because it is ~1.3 GB and most deployments never use it.
 #
-# NOTE: the published `bert_uncased_L-12_H-768_A-12` checkpoint ships TensorFlow + Flax weights
-# and no PyTorch bin/safetensors, so transformers must load it with `from_tf=True` (needs
-# `tensorflow`) or `from_flax=True` (needs `jax` + `flax`). Neither is listed here, because
-# which one you want depends on your base image and CPU:
-#     pip install '.[bert]' tensorflow-cpu        # from_tf=True
-#     pip install '.[bert]' jax flax              # from_flax=True
-# Converting the checkpoint to safetensors once, offline, and mounting that is faster and
-# smaller than either — and keeps the runtime free of a second framework.
+# WEIGHT FORMATS. There is ONE runtime weight path and it is PyTorch/safetensors. `transformers`
+# 5.x REMOVED TensorFlow and Flax support — there is no TFBertModel and no load_tf_weights_in_bert
+# — so `from_tf=True` / `from_flax=True` are accepted and ignored, and installing `tensorflow` or
+# `jax`+`flax` fixes nothing. There are deliberately no `bert-tf` / `bert-flax` extras here: an
+# earlier error message in dce/classify/bert_knn.py told operators to install exactly those, and
+# they never existed in this file and would not have helped if they had.
+#
+# A company-approved build is usually the ORIGINAL Google release — bert_config.json, config.json,
+# vocab.txt and bert_model.ckpt.{index,data-*,meta}, with no .bin and no .safetensors. Convert it
+# ONCE, OFFLINE, and mount the result:
+#     pip install '.[bert-convert]'
+#     python tools/convert_bert_tf_checkpoint.py convert /path/to/checkpoint_dir
+# The runtime then stays a single framework.
 bert = [
-    "transformers>=4.44",
+    "transformers>=5.0",
     "torch>=2.3",
+]
+# Dependencies of the OFFLINE converter only — an ops/build step, never imported by the service.
+# Deliberately excludes torch and transformers so a locked-down build host can do the conversion
+# without the runtime ML stack; `torch` is needed only for the optional `verify --against`
+# cross-check against a known-good pytorch_model.bin.
+bert-convert = [
+    "numpy>=1.26",
+    "safetensors>=0.4",
 ]
 # ---------------------------------------------------------------------------
 # INGESTION EXTRAS (dce.ingest) — accepting the formats a KYC pipeline actually receives.
@@ -83,6 +96,23 @@ ocr-rapidocr = [
 ocr-tesseract = [
     "pytesseract>=0.3.10",
     "pillow>=10.3",
+]
+
+# ---- REMOTE OCR: THE OTHER SIDE OF THE TRADE-OFF, AND THE ONLY EXTRA THAT ADDS EGRESS ----
+# `azure_read` (Vision Read v3.2) and `azure_layout` (Document Intelligence v4.0
+# prebuilt-layout) recognise a document by SENDING IT TO MICROSOFT, before anyone knows what
+# it is. This is the ONE extra in this file that puts an HTTP client into the runtime image,
+# and that is exactly why it is an extra: with it uninstalled the container physically cannot
+# make the call, whatever a setting says. Installing it is not sufficient either —
+# DCE_INGEST_REMOTE_OCR_ENABLED must also be true, /readyz then reports the deployment as
+# transmitting unclassified documents and names the endpoint host, and
+# dce.egress.assert_ocr_egress_permitted refuses every request until both are in place.
+#
+# Prefer the caller-supplied path: have whoever already holds the document run Read or Layout
+# under their own authorisation and post the result to /classify as azure_analyze_result /
+# azure_read_result / des_ocr. Same adapters, same classification, no socket opened here.
+azure-ocr = [
+    "httpx>=0.27",
 ]
 
 dev = [

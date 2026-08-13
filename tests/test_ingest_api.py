@@ -93,7 +93,11 @@ def test_an_image_returns_a_structured_needs_ocr_and_never_reaches_the_classifie
     assert detail["media_type"] == "jpeg"
     assert detail["ocr_available"] is False
     assert "optical recognition" in detail["reason"]
-    assert "will not call a cloud OCR API" in detail["remedy"]
+    # The remedy names the zero-egress route FIRST, and says plainly that the route
+    # where this service calls out is off by default.
+    assert "azure_analyze_result" in detail["remedy"]
+    assert "opens no socket at all" in detail["remedy"]
+    assert "off by default" in detail["remedy"]
     # The load-bearing half: nothing was classified. An abstention here would be a lie about
     # which stage gave up — the cascade never saw a single character.
     assert classifier.views == []

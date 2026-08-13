@@ -67,7 +67,16 @@ except ImportError:  # pragma: no cover - depends on the installed dependency se
 REQUIRED_COMPONENTS: tuple[str, ...] = ("registry", "egress")
 
 #: The component vocabulary the boot path is expected to report.
-KNOWN_COMPONENTS: tuple[str, ...] = ("registry", "egress", "classifier", "extractor", "bert")
+KNOWN_COMPONENTS: tuple[str, ...] = (
+    "registry",
+    "egress",
+    "classifier",
+    "extractor",
+    "bert",
+    # How images are read here, and whether reading one is a network call. Reported, never
+    # required: a remote recogniser is a decision somebody took, not an outage.
+    "ocr",
+)
 
 
 class ComponentState(BaseModel):

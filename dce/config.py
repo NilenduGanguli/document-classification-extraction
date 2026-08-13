@@ -32,6 +32,18 @@ class Settings(BaseSettings):
     #: ENTIRELY in-process: anchors, checksums and lexical scoring only, plus an optional
     #: LOCAL BERT. Enforced in code by dce.egress and covered by a test.
     #: Turning this off is a deliberate, auditable act — it is not a tuning knob.
+    #:
+    #: **There is exactly one other way an unclassified document can leave, and it is not
+    #: governed by this flag.** An image carries no text, so classifying one *requires*
+    #: recognition, and recognition happens either on this host or on somebody else's. A
+    #: deployment may choose a remote recogniser (``DCE_INGEST_REMOTE_OCR_ENABLED``,
+    #: :mod:`dce.ingest.remote_ocr`), which transmits the document to Azure during ingestion.
+    #: That path is off by default, is refused by :func:`dce.egress.assert_ocr_egress_permitted`
+    #: until an operator switches it on, and is reported on ``/readyz`` as
+    #: ``egress.preclassification_ocr`` with the endpoint host. It is deliberately a *separate*
+    #: setting rather than a value of this one: this flag lets **anything** out during
+    #: classification, and choosing a recogniser must not require, or be mistaken for, that.
+    #: A reviewer auditing pre-classification egress has to read both.
     allow_preclassification_egress: bool = False
 
     # ---- Classification cascade ----
@@ -181,10 +193,11 @@ class Settings(BaseSettings):
     # ---- Optional LOCAL BERT kNN (off by default) ---------------------------
     #: Only enable if the anchor+lexical tiers prove insufficient on your corpus. The
     #: model runs in-process from a mounted directory — no request leaves the container.
-    #: NOTE the published checkpoint ships TensorFlow + Flax weights and NO PyTorch
-    #: bin/safetensors, so transformers needs from_tf=True (requires tensorflow) or
-    #: from_flax=True (requires jax/flax). Neither is a base dependency: install the
-    #: `bert` extra deliberately.
+    #: The mounted directory must contain PyTorch or safetensors weights. transformers 5.x
+    #: removed TensorFlow and Flax support, so a TF-only checkpoint (bert_model.ckpt.*, as
+    #: shipped by the original Google release) cannot be read at runtime by any install —
+    #: convert it once, offline, with tools/convert_bert_tf_checkpoint.py. torch and
+    #: transformers are not base dependencies: install the `bert` extra deliberately.
     bert_enabled: bool = False
     bert_model_dir: str = "/models/bert_uncased_L-12_H-768_A-12"
     bert_max_tokens: int = 256           # first N tokens; the title zone carries the signal
@@ -270,6 +283,26 @@ class Settings(BaseSettings):
     #: missing fields' labels rather than the whole document: less to leak, less to pay for,
     #: and a shorter haystack for a model that is being asked to quote from it.
     llm_max_window_chars: int = 6000
+
+    # ---- Second classification avenue (dce.visual) ---------------------------
+    #: Which second, independent classification avenue runs beside the lexical cascade.
+    #:
+    #: **The only working value is ``none``, because the registry of avenues is empty.** Four
+    #: visual methods — SIFT/homography, glyph-stripped structure, layout signatures and
+    #: issuer-emblem matching — were each built and measured against the 158-document real
+    #: corpus, and none reached the required 95% precision-when-answered at any threshold.
+    #: The best any of them managed end-to-end was 0.080; the lexical cascade on the same
+    #: corpus is 0.983. See :mod:`dce.visual` for the per-method mechanism and
+    #: docs/specs/2026-08-08-visual-classification-design.md for the measurements.
+    #:
+    #: The setting exists anyway, and is deliberately a name rather than a boolean, for two
+    #: reasons. It gives ``/readyz`` something definite to report — an operator has to be
+    #: able to *read* "there is no second avenue, and it covers 0 of 182 doctypes" off the
+    #: readiness page rather than infer it from a missing field. And naming a retired method
+    #: here returns the measurement that retired it, so the next person to reach for one of
+    #: these ideas meets the numbers instead of a shrug. It is not a feature flag: setting it
+    #: cannot switch a classifier on, because there is no classifier behind it.
+    visual_method: str = "none"
 
     # ---- T5: human review queue ---------------------------------------------
     #: The queue is *not* egress and is not optional — it is where every abstention and every

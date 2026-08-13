@@ -38,6 +38,11 @@ class TextSource(enum.StrEnum):
     native = "native_text"
     #: A local, in-process OCR engine. Lower accuracy; never a network call.
     local_ocr = "local_ocr"
+    #: A REMOTE recogniser: the document was transmitted to a third party, before its type was
+    #: known, by a deployment that switched that on deliberately. Kept distinct from
+    #: ``local_ocr`` rather than folded into one "ocr" bucket precisely because the difference
+    #: between them is the entire compliance question.
+    remote_ocr = "remote_ocr"
     #: Nothing was extracted.
     none = "none"
 
@@ -73,8 +78,15 @@ class IngestResult(BaseModel):
     #: switched off (the default), the deployment switched it on but the engine's optional
     #: extra is not installed, or the caller declined it with ``local_ocr=False``.
     ocr_available: bool = False
-    #: Which engine produced the text, when ``text_source`` is ``local_ocr``.
+    #: Which engine produced the text, when ``text_source`` is ``local_ocr`` or
+    #: ``remote_ocr`` — e.g. ``rapidocr``, ``azure_layout``.
     ocr_engine: str = ""
+    #: True when ``ocr_engine`` recognised this document by **sending it somewhere**. Set from
+    #: the provider record's ``network`` flag, never from the engine's name.
+    ocr_is_remote: bool = False
+    #: Host the document was transmitted to, when ``ocr_is_remote``. The host, not the URL: it
+    #: answers "who saw this document" and cannot carry a key in a query string.
+    ocr_endpoint_host: str = ""
 
     ms: int = 0
 
@@ -96,6 +108,20 @@ class IngestResult(BaseModel):
             "reason": self.reason,
             "remedy": self.remedy,
             "ocr_available": self.ocr_available,
+        }
+
+    def provenance(self) -> dict[str, object]:
+        """Where this document's text came from — carried onto every API response.
+
+        Small and boring on purpose: ``native_text`` on most requests, and on the requests
+        where it is not, the one line that tells a reviewer whether the document left the
+        building to become readable.
+        """
+        return {
+            "text_source": str(self.text_source),
+            "ocr_engine": self.ocr_engine,
+            "ocr_is_remote": self.ocr_is_remote,
+            "ocr_endpoint_host": self.ocr_endpoint_host,
         }
 
 

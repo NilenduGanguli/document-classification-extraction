@@ -206,13 +206,19 @@ def needs_ocr_reason(media_type: MediaType, info: ImageInfo) -> str:
     )
 
 
-#: The other half of the message: what to do about it.
+#: The other half of the message: what to do about it. Three routes, listed in the order a
+#: deployment should prefer them. The first two keep every unclassified document inside a
+#: boundary somebody already owns; only the third puts one on the wire from here.
 NEEDS_OCR_REMEDY = (
-    "Either enable local in-process OCR on this deployment "
+    "Either (1) run OCR wherever your policy already allows a third party to see an "
+    "unclassified document, and resubmit the result as 'text', 'layout', "
+    "'azure_analyze_result', 'azure_read_result' or 'des_ocr' — on that path this service "
+    "opens no socket at all; or (2) enable local in-process OCR here "
     "(DCE_INGEST_LOCAL_OCR_ENABLED=true, with the ocr-rapidocr or ocr-tesseract extra "
-    "installed), or run OCR wherever your policy allows a third party to see an "
-    "unclassified document and resubmit the recognised text as 'text' or 'layout'. This "
-    "service will not call a cloud OCR API on a document whose type is not yet known."
+    "installed), which keeps the document in this process at a real cost in accuracy; or "
+    "(3) configure a remote OCR provider (DCE_INGEST_REMOTE_OCR_ENABLED=true), which makes "
+    "THIS service transmit documents whose type is not yet known to a third party. (3) is "
+    "off by default and /readyz reports every deployment that has taken it."
 )
 
 

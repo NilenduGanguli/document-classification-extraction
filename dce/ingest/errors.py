@@ -98,6 +98,26 @@ class EngineUnavailable(IngestError):
     http_status = 503
 
 
+class OcrProviderMismatch(IngestError):
+    """The caller pinned a recogniser this deployment is not configured to use.
+
+    A 400, and deliberately **not** a silent substitution. The pin exists because a caller —
+    typically the console, on behalf of an operator who has just ticked "I understand this
+    document will be sent to <endpoint>" — has been told which third party will receive the
+    document. If the deployment is reconfigured between the moment that was displayed and the
+    moment the request arrives, honouring the request anyway would send the document to a
+    party nobody acknowledged. Refusing is the only answer that keeps the acknowledgement
+    meaningful.
+
+    Note what this is not: the pin can never *enable* a provider. Pinning ``azure_read`` on a
+    deployment with no remote recogniser configured raises this too, because the active
+    provider is ``none`` — the request is refused, not granted.
+    """
+
+    code = "ocr_provider_mismatch"
+    http_status = 400
+
+
 __all__ = [
     "ArchiveBomb",
     "EngineUnavailable",
@@ -105,6 +125,7 @@ __all__ = [
     "IngestTimeout",
     "LimitExceeded",
     "MalformedDocument",
+    "OcrProviderMismatch",
     "PayloadTooLarge",
     "UnsupportedFormat",
 ]

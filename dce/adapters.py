@@ -7,6 +7,11 @@ what lets a business unit adopt the service without adopting our OCR stack:
 * :func:`from_azure_layout` — Azure AI Document Intelligence v4.0 ``prebuilt-layout``
   (the reference producer). Also tolerates a ``prebuilt-read``-shaped payload with lines but
   no paragraphs.
+* :func:`from_azure_read` — Azure AI Vision **Read v3.2**, a completely different JSON shape
+  and a materially weaker one. See its docstring: it carries no paragraph roles at all.
+* :func:`from_azure` — dispatches between those two on the payload's own shape, and reports
+  which one it chose. A caller holding "an Azure result" rarely wants to care which product
+  produced it; the service is required to care, and to say so.
 * :func:`from_des_ocr` — the Document Enrichment Service's
   ``GET /api/runs/{run_id}/pages/{n}/ocr`` response, in either its enveloped
   ``{"page": …, "raw": …}`` form or a bare page model dump.
@@ -50,6 +55,14 @@ ROLE_ZONES: dict[str, Zone] = {
 
 #: DES stores Azure's verbatim per-page payload; these keys identify it as Azure-shaped.
 _AZURE_PAGE_KEYS = ("pageNumber", "selectionMarks", "lines", "words")
+
+#: ``LayoutView.raw["provider"]`` values. Named, because three other modules key off them —
+#: the ingestion pipeline, ``/readyz`` and the response provenance — and a typo in a string
+#: literal that only shows up as a blank field in an audit trail is not worth the saving.
+PROVIDER_AZURE_LAYOUT = "azure-prebuilt-layout"
+PROVIDER_AZURE_READ = "azure-read-v3.2"
+PROVIDER_DES_OCR = "des-ocr"
+PROVIDER_PLAIN_TEXT = "plain-text"
 
 _ZERO_QUAD: Quad = [0.0] * 8
 
@@ -421,12 +434,169 @@ def from_azure_layout(analyze_result: dict[str, Any]) -> LayoutView:
         # Provenance, not the payload: the service never needs the original document, and
         # holding a multi-megabyte analyzeResult per in-flight request buys nothing.
         raw={
-            "provider": "azure-prebuilt-layout",
+            "provider": PROVIDER_AZURE_LAYOUT,
             "api_version": str(result.get("apiVersion") or ""),
             "model_id": str(result.get("modelId") or ""),
             "content_chars": len(str(result.get("content") or "")),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Azure AI Vision Read v3.2
+# ---------------------------------------------------------------------------
+def _read_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every ``readResults`` entry in a Read v3.2 payload, whichever wrapper it arrived in.
+
+    Accepted: the whole job (``{"status": …, "analyzeResult": {"readResults": […]}}``), a bare
+    ``analyzeResult``, a bare ``{"readResults": […]}``, and a single read-result dict.
+    """
+    node = _as_dict(payload)
+    inner = _as_dict(node.get("analyzeResult"))
+    source = inner or node
+    entries = _dicts(source.get("readResults"))
+    if entries:
+        return entries
+    # A single page handed over without its envelope.
+    if "lines" in source and "readResults" not in source:
+        return [source]
+    return []
+
+
+def _read_page_number(entry: dict[str, Any], default: int) -> int:
+    """Read v3.2 numbers its pages ``page``; ``pageNumber`` is tolerated for safety."""
+    for key in ("page", "pageNumber"):
+        number = _as_int(entry.get(key), 0)
+        if number > 0:
+            return number
+    return default
+
+
+def from_azure_read(analyze_result: dict[str, Any]) -> LayoutView:
+    """Build a :class:`LayoutView` from an Azure AI Vision **Read v3.2** payload.
+
+    **Every block is** :attr:`Zone.body`, and that is not a shortcut — it is what Read is.
+    Read v3.2 returns ``readResults[].lines[].words[]`` and nothing else: no ``paragraphs``,
+    no ``role``, no ``tables``, no ``selectionMarks``, no ``keyValuePairs``. There is no
+    ``title`` to map because the product does not predict one, and inferring one from font
+    height or page position is precisely the promotion :func:`from_plain_text` refuses to
+    make — a wrong ``title`` is amplified by ``zone_weight_title`` and turns an abstention
+    into a confident mistake.
+
+    **This is a real accuracy difference between the two Azure providers, not a detail.** A
+    ``DocTypeSpec`` anchor may be *zone-gated* (``Anchor.zone``): it counts only when it is
+    found in the zone it names. The shipped registry declares 30 anchors gated on ``title``,
+    21 of them decisive, and a document read by Read v3.2 can never satisfy one of them,
+    because no block will ever be in the title zone. The same document read by Document
+    Intelligence ``prebuilt-layout`` can. The cascade already knows the difference between
+    "the claim was heard and failed" and "the claim could not be evaluated" — it counts the
+    second as ``AnchorChannel.muted_decisive`` — and a Read payload puts every title-gated
+    decisive anchor into that second bucket.
+
+    So Read is a *lower-recall* provider: it abstains where Layout accepts. It is not a
+    lower-*precision* one, because a gate that cannot be evaluated only ever withholds
+    evidence, never manufactures it. That is the right direction for this service to fail in,
+    and it is still a reason to prefer ``prebuilt-layout`` wherever both are available.
+
+    Geometry: Read's ``boundingBox`` is a flat 8-number array in the same clockwise-from-
+    top-left order as Layout's ``polygon``, so it maps straight onto :data:`dce.models.Quad`.
+    Page dimensions are in the entry's own ``unit`` (``pixel`` for images, ``inch`` for PDFs).
+
+    Args:
+        analyze_result: The Read job JSON, its ``analyzeResult``, a bare
+            ``{"readResults": […]}``, or a single read-result entry — all four are accepted.
+
+    Returns:
+        The provider-neutral view. Missing or malformed sections yield empty collections
+        rather than an exception; a payload with no ``readResults`` yields an empty view.
+    """
+    entries = _read_results(analyze_result)
+    pages: list[PageInfo] = []
+    blocks: list[TextBlock] = []
+    languages: dict[str, None] = {}
+    for index, entry in enumerate(entries):
+        number = _read_page_number(entry, index + 1)
+        pages.append(
+            PageInfo(
+                page=number,
+                width=_as_float(entry.get("width")),
+                height=_as_float(entry.get("height")),
+                unit=str(entry.get("unit") or "pixel"),
+                angle=_as_float(entry.get("angle")),
+            )
+        )
+        locale = str(entry.get("language") or "").strip()
+        if locale:
+            languages.setdefault(locale, None)
+        for line in _dicts(entry.get("lines")):
+            text = _text_of(line).strip()
+            if not text:
+                continue
+            blocks.append(
+                TextBlock(
+                    text=text,
+                    zone=Zone.body,
+                    page=number,
+                    bbox=_polygon_to_quad(line.get("boundingBox")),
+                )
+            )
+    version = _as_dict(_as_dict(analyze_result).get("analyzeResult")).get("version")
+    return LayoutView(
+        pages=pages or [PageInfo(page=n) for n in sorted({b.page for b in blocks})],
+        blocks=blocks,
+        languages=list(languages),
+        raw={
+            "provider": PROVIDER_AZURE_READ,
+            "api_version": str(version or _as_dict(analyze_result).get("version") or ""),
+            "model_id": "read",
+            "pages": len(entries),
+            # Said in the payload itself, not only in a docstring: an auditor reading a stored
+            # LayoutView must be able to see why this document had no title zone.
+            "zones": "body only — Read v3.2 predicts no paragraph roles",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Azure, either product
+# ---------------------------------------------------------------------------
+def azure_payload_kind(payload: dict[str, Any]) -> str:
+    """Which Azure product produced this payload: ``"read"`` or ``"layout"``.
+
+    Decided on the one key that cannot be confused: Read v3.2 is the only shape with a
+    ``readResults`` array. Document Intelligence v4.0 uses ``pages`` / ``paragraphs`` /
+    ``tables``. Anything unrecognised is reported as ``"layout"``, because
+    :func:`from_azure_layout` is the more forgiving of the two mappers (it degrades to
+    ``pages[].lines[]`` and then to a flat ``content`` string) and so is the safer default
+    for a payload we could not identify.
+
+    Args:
+        payload: An Azure job JSON, an ``analyzeResult``, or a bare result body.
+
+    Returns:
+        ``"read"`` or ``"layout"``.
+    """
+    return "read" if _read_results(payload) else "layout"
+
+
+def from_azure(payload: dict[str, Any]) -> LayoutView:
+    """Adapt an Azure payload of **either** product, choosing the mapper by shape.
+
+    Auto-detection is a kindness to callers, not a licence to be vague: the chosen mapper is
+    recorded in ``LayoutView.raw["provider"]`` (:data:`PROVIDER_AZURE_READ` or
+    :data:`PROVIDER_AZURE_LAYOUT`) and the API surfaces it on every response, because the two
+    providers do not classify equally well and a caller who accidentally sent Read where they
+    meant Layout has to be able to see that from the answer.
+
+    Args:
+        payload: A Read v3.2 or Document Intelligence v4.0 payload.
+
+    Returns:
+        The provider-neutral view.
+    """
+    if azure_payload_kind(payload) == "read":
+        return from_azure_read(payload)
+    return from_azure_layout(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -548,13 +718,13 @@ def _from_des_normalized(page: dict[str, Any]) -> LayoutView:
         blocks=blocks,
         tables=tables,
         marks=marks,
-        raw={"provider": "des-ocr", "page": number},
+        raw={"provider": PROVIDER_DES_OCR, "page": number},
     )
 
 
 def _merge(views: list[LayoutView]) -> LayoutView:
     """Concatenate per-page views into one document view, de-duplicating languages."""
-    merged = LayoutView(raw={"provider": "des-ocr", "pages": len(views)})
+    merged = LayoutView(raw={"provider": PROVIDER_DES_OCR, "pages": len(views)})
     languages: dict[str, None] = {}
     for view in views:
         merged.pages.extend(view.pages)
@@ -600,10 +770,10 @@ def from_des_ocr(payload: dict[str, Any]) -> LayoutView:
                     "languages": raw.get("languages"),
                 }
             )
-            view.raw = {"provider": "des-ocr", "page": number}
+            view.raw = {"provider": PROVIDER_DES_OCR, "page": number}
         elif _looks_azure(meta):
             view = from_azure_layout({"pages": [meta]})
-            view.raw = {"provider": "des-ocr", "page": number}
+            view.raw = {"provider": PROVIDER_DES_OCR, "page": number}
         else:
             view = _from_des_normalized(meta)
         views.append(_renumber(view, number))
@@ -635,5 +805,5 @@ def from_plain_text(text: str) -> LayoutView:
     return LayoutView(
         pages=[PageInfo(page=1)],
         blocks=blocks,
-        raw={"provider": "plain-text", "chars": len(text or "")},
+        raw={"provider": PROVIDER_PLAIN_TEXT, "chars": len(text or "")},
     )

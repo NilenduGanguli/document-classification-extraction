@@ -5,8 +5,17 @@ text, so classifying one *requires* recognition, and sending an unclassified doc
 cloud OCR service is the exact disclosure this service was built to prevent. Local
 recognition is the only way to classify an image without breaking the invariant.
 
-Two engines are supported, and the difference between them is worth stating plainly rather
-than hiding behind the word "local":
+**There is now a second kind of provider, and it is kept at arm's length from this one.**
+:mod:`dce.ingest.remote_ocr` implements ``azure_read`` and ``azure_layout``, which recognise
+a document by *sending it to Microsoft*. They are a different thing with a different risk,
+and the difference is expressed in the type system rather than in a naming convention:
+:data:`PROVIDERS` maps every provider id to an :class:`OcrProvider` record carrying
+``network: bool``, and every decision that turns on "does this leave the process" reads that
+flag. :data:`ENGINES` below stays what it always was — the closed allowlist of LOCAL engines
+— and :func:`load_provider` still refuses everything not in it, including the network ids.
+
+Two local engines are supported, and the difference between them is worth stating plainly
+rather than hiding behind the word "local":
 
 ``rapidocr``
     RapidOCR's ONNX models, executed by ``onnxruntime`` **inside this process**. No
@@ -183,25 +192,124 @@ class TesseractProvider:
         return OcrPage(page=page, width=float(width), height=float(height), lines=lines)
 
 
-#: The closed allowlist. Adding an entry here is a code change and a review, which is the
-#: point — see the module docstring.
+#: The closed allowlist of LOCAL engines. Adding an entry here is a code change and a review,
+#: which is the point — see the module docstring. Nothing in this dict opens a socket, and
+#: :func:`load_provider` accepts nothing outside it.
 ENGINES: dict[str, str] = {
     "rapidocr": "in-process ONNX Runtime (recommended)",
     "tesseract": "local tesseract binary via a subprocess",
 }
 
+#: The allowlist of NETWORK providers, implemented in :mod:`dce.ingest.remote_ocr`. Also
+#: closed, also a code change to extend, and deliberately a *separate* dict: the one question
+#: an operator and an auditor both ask is "does recognising a document send it anywhere", and
+#: that question must not be answerable only by recognising a vendor's name in a string.
+NETWORK_ENGINES: dict[str, str] = {
+    "azure_read": "Azure AI Vision Read v3.2 — lines and words only, no paragraph roles",
+    "azure_layout": "Azure AI Document Intelligence v4.0 prebuilt-layout — roles and tables",
+}
+
+
+#: What each provider hands back, in the only terms that change a decision.
+#:
+#: ``roles``
+#:     Paragraph roles are predicted, so ``Zone.title``/``Zone.heading`` exist and a zone-gated
+#:     anchor can fire.
+#: ``lines``
+#:     Text and geometry only. Every block lands in ``Zone.body`` — see
+#:     :func:`ocr_pages_to_builder` and :func:`dce.adapters.from_azure_read` — so a title-gated
+#:     anchor cannot fire *however clearly the words are on the page*.
+#:
+#: Reported on ``/readyz`` rather than left for a console to infer from a vendor name, because
+#: it is the whole difference between two providers that both "did OCR", and it decides which
+#: evidence was even reachable. A console that guessed this would eventually guess wrong, and
+#: the direction it would be wrong in is telling a reviewer an anchor *failed* when in fact it
+#: could never have been evaluated.
+_STRUCTURE: dict[str, str] = {
+    "rapidocr": "lines",
+    "tesseract": "lines",
+    "azure_read": "lines",
+    "azure_layout": "roles",
+}
+
+
+@dataclass(frozen=True)
+class OcrProvider:
+    """One recognition provider, and the only fact about it that governs anything.
+
+    ``network`` is not documentation. It is what :mod:`dce.ingest.pipeline` branches on before
+    it will hand a provider any bytes, what ``/readyz`` reports, and what
+    :func:`dce.egress.assert_ocr_egress_permitted` is asked about. A future provider that
+    forgets to set it does not silently become "local": it is not in :data:`PROVIDERS` at all,
+    and neither loader will construct it.
+    """
+
+    name: str
+    network: bool
+    summary: str
+    #: ``roles`` or ``lines`` — see :data:`_STRUCTURE`. Defaults to ``lines``, the assumption
+    #: that claims *less* evidence was available, so a provider added without one is
+    #: under-credited rather than over-credited.
+    structure: str = "lines"
+
+
+#: Every provider this service can be configured to use, local and remote, with the flag that
+#: separates them. The single source of truth for ``/readyz`` and the pipeline.
+PROVIDERS: dict[str, OcrProvider] = {
+    **{
+        name: OcrProvider(
+            name=name, network=False, summary=summary, structure=_STRUCTURE.get(name, "lines")
+        )
+        for name, summary in ENGINES.items()
+    },
+    **{
+        name: OcrProvider(
+            name=name, network=True, summary=summary, structure=_STRUCTURE.get(name, "lines")
+        )
+        for name, summary in NETWORK_ENGINES.items()
+    },
+}
+
+
+def provider_info(name: str) -> OcrProvider | None:
+    """The :class:`OcrProvider` record for ``name``, or ``None`` when it is not a provider."""
+    return PROVIDERS.get((name or "").strip().lower())
+
+
+def is_network_provider(name: str) -> bool:
+    """Whether ``name`` recognises a document by sending it somewhere.
+
+    ``False`` for an unknown name: an id that names no provider cannot be configured, so it
+    cannot transmit anything. Callers that need to *reject* an unknown id do that separately.
+    """
+    info = provider_info(name)
+    return bool(info and info.network)
+
 
 def load_provider(engine: str, *, languages: str = "eng") -> LocalOcrProvider:
-    """Construct the named engine.
+    """Construct the named LOCAL engine.
+
+    Still a closed allowlist over :data:`ENGINES` alone. A network provider id is refused here
+    with the same error as a made-up one, and says where it does belong — loading a remote
+    provider through the local loader is exactly the confusion that would put an unclassified
+    document on the wire without anybody choosing it.
 
     Raises:
         EngineUnavailable: The name is not in :data:`ENGINES`, or its packages are missing.
     """
     key = (engine or "").strip().lower()
     if key not in ENGINES:
-        raise EngineUnavailable(
+        detail = (
             f"unknown local OCR engine {engine!r}; supported: {', '.join(sorted(ENGINES))}"
         )
+        if key in NETWORK_ENGINES:
+            detail += (
+                f". {key!r} is a NETWORK provider: it recognises a document by transmitting "
+                "it to a third party before the doctype is known. It is not loadable here. "
+                "See dce.ingest.remote_ocr, and DCE_INGEST_REMOTE_OCR_ENABLED, which is a "
+                "deliberate, auditable act and not a tuning knob."
+            )
+        raise EngineUnavailable(detail)
     if key == "rapidocr":
         return RapidOcrProvider()
     return TesseractProvider(languages=languages)
@@ -239,12 +347,17 @@ def ocr_pages_to_builder(pages: list[OcrPage], builder, limits: IngestLimits) ->
 
 __all__ = [
     "ENGINES",
+    "NETWORK_ENGINES",
+    "PROVIDERS",
     "LocalOcrProvider",
     "OcrLine",
     "OcrPage",
+    "OcrProvider",
     "RapidOcrProvider",
     "TesseractProvider",
+    "is_network_provider",
     "load_provider",
     "ocr_pages_to_builder",
+    "provider_info",
     "provider_or_none",
 ]

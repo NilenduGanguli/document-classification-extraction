@@ -24,6 +24,24 @@
 # unclassified document is classified by this container, on this CPU, with no network.
 
 # ---------------------------------------------------------------------------
+# UI: compile the console into a static bundle
+# ---------------------------------------------------------------------------
+# The console is served by this same process out of frontend/dist, so it is compiled here
+# rather than trusted from the checkout. Node exists only in this stage: the runtime image
+# carries the built assets and no JavaScript toolchain at all.
+#
+# The bundle is entirely self-contained — no CDN, no web font, no remote anything. A service
+# whose argument is that documents do not leave must not ship a console that phones out, and
+# building it here keeps that checkable on the artifact rather than in the source tree.
+FROM node:22-slim AS ui
+
+WORKDIR /ui
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci || npm install
+COPY frontend/ ./
+RUN npm run build
+
+# ---------------------------------------------------------------------------
 # Build: resolve and install into a self-contained venv
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS build
@@ -44,8 +62,19 @@ WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY dce ./dce
 
+# The `pdf` extra ships in the image; the other extras do not.
+#
+# It is the one extra that is not a policy choice. PDF is the format a KYC pipeline receives more
+# than all the others combined, and without it the service's first-contact behaviour is to refuse
+# the most ordinary document there is — a reviewer drops a PDF on the console and gets an ingest
+# error from a build that reports itself ready. That is a worse default than the disk cost.
+#
+# It also stays honest about the invariant: PyMuPDF parses bytes in-process and opens no socket,
+# so this changes what the service can READ, never where anything goes. The extras deliberately
+# left out are the ones that change that: `ocr` (a recogniser and its weights), `bert` (torch),
+# and whatever EXTRA_PACKAGES an operator adds to switch on the egress tiers.
 RUN uv venv /opt/venv \
-    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache . ${EXTRA_PACKAGES}
+    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache '.[pdf]' ${EXTRA_PACKAGES}
 
 # ---------------------------------------------------------------------------
 # Runtime
@@ -80,6 +109,11 @@ COPY --from=build --chown=dce:dce /opt/venv /opt/venv
 
 WORKDIR /app
 COPY --chown=dce:dce dce ./dce
+
+# The console, at the path dce/api/app.py resolves relative to the package (/app/frontend/dist).
+# Nothing imports it and nothing depends on it: if this COPY is removed the API, the probes and
+# the OpenAPI docs all still serve, and "/" says how to build the bundle.
+COPY --from=ui --chown=dce:dce /ui/dist ./frontend/dist
 
 USER dce
 EXPOSE 8200

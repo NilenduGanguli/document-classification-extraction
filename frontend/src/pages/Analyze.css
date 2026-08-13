@@ -1,0 +1,460 @@
+/*
+ * /analyze — page-local layout only.
+ *
+ * Every colour, radius, gap and font here comes from a token in `theme.css`. Nothing in this
+ * file introduces a palette, a font or a magic number: the four pages have to look like one
+ * console, and a page that picks its own green is how that stops being true.
+ *
+ * The classes are prefixed `az-` so they cannot collide with the shared component classes.
+ */
+
+/* ----------------------------------------------------------------- input */
+
+.az-tabs {
+  display: flex;
+  gap: var(--s-1);
+  flex-wrap: wrap;
+}
+
+.az-tab {
+  padding: var(--s-1) var(--s-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.az-tab:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.az-tab[aria-selected='true'] {
+  background: var(--c-accent-soft);
+  border-color: color-mix(in srgb, var(--c-accent) 30%, transparent);
+  color: var(--c-accent);
+}
+
+/* The drop target. Dashed until a file lands, solid once one has. */
+.az-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: 148px;
+  padding: var(--s-5);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-inset);
+  text-align: center;
+  transition: border-color var(--transition), background var(--transition);
+}
+.az-drop.over {
+  border-color: var(--c-accent);
+  background: var(--c-accent-soft);
+}
+.az-drop.loaded {
+  border-style: solid;
+  border-color: var(--border);
+}
+.az-drop .az-drop-name {
+  font-family: var(--font-mono);
+  font-size: var(--t-md);
+  color: var(--fg);
+  word-break: break-all;
+}
+
+.az-textarea {
+  width: 100%;
+  min-height: 190px;
+  font-size: var(--t-sm);
+}
+
+.az-run {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------ OCR picker */
+
+/*
+ * The provider choice. Two visual registers only, and they mean one thing each:
+ *
+ *   `.egress`  — running this puts the document on somebody else's server. It borrows the
+ *                danger colour, not the cost colour: a paid tier costs money, this costs
+ *                confidentiality, and the console should not make them look like the same
+ *                kind of decision.
+ *   `.off`     — not available on this deployment. Dimmed and non-interactive, never removed:
+ *                an operator has to be able to see that the capability exists and that this
+ *                deployment was not given it.
+ */
+.az-ocr {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.az-ocr-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-3);
+  flex-wrap: wrap;
+  font-size: var(--t-xs);
+}
+
+.az-ocr-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--s-2);
+}
+@media (min-width: 860px) {
+  .az-ocr-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.az-ocr-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--az-ocr-color, var(--border-strong));
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+.az-ocr-option:hover {
+  background: var(--bg-hover);
+}
+.az-ocr-option.active {
+  border-color: color-mix(in srgb, var(--az-ocr-color, var(--c-accent)) 45%, transparent);
+  border-left-color: var(--az-ocr-color, var(--c-accent));
+  background: var(--az-ocr-soft, var(--c-accent-soft));
+}
+.az-ocr-option.egress {
+  --az-ocr-color: var(--c-danger);
+  --az-ocr-soft: var(--c-danger-soft);
+}
+/*
+ * Leaves the process, to an endpoint the deployment DECLARES is inside its own trust boundary.
+ * Neutral rather than red, and deliberately not green either: the file does leave, so this is
+ * not the same claim as `none` or a local engine. Colour is an assertion like any other, and a
+ * red tile beside a badge reading "leaves this process" would be the console shouting the very
+ * thing its own words say is not happening.
+ */
+.az-ocr-option.offbox {
+  --az-ocr-color: var(--fg-muted);
+  --az-ocr-soft: var(--bg-hover);
+}
+.az-ocr-option:not(.egress):not(.offbox) {
+  --az-ocr-color: var(--c-accept);
+  --az-ocr-soft: var(--c-accept-soft);
+}
+.az-ocr-option.off {
+  cursor: not-allowed;
+  opacity: 0.62;
+  background: transparent;
+}
+.az-ocr-option.off:hover {
+  background: transparent;
+}
+
+.az-ocr-option input {
+  margin-top: 3px;
+  flex: none;
+}
+.az-ocr-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.az-ocr-label {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.az-ocr-label .name {
+  font-size: var(--t-base);
+  font-weight: 600;
+  color: var(--fg);
+}
+.az-ocr-summary {
+  font-size: var(--t-sm);
+  color: var(--fg-muted);
+}
+.az-ocr-why {
+  font-size: var(--t-xs);
+  color: var(--c-warn);
+}
+
+/*
+ * The structure parenthetical, beside the provider name.
+ *
+ * This carries what used to be a yellow `.az-ocr-quality` panel saying "Read v3.2 is not
+ * Document Intelligence with a smaller bill". The FACT is load-bearing — a lines-only reading
+ * gives every block Zone.body, so a title-gated anchor cannot fire on it — but it is not a
+ * warning, it is what the option IS, and it belongs on the label where somebody reads it while
+ * choosing. Quiet type on purpose: this has to sit next to the name without shouting over it.
+ */
+.az-ocr-structure {
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+}
+
+/*
+ * `.az-ocr-egress` (a red disclosure block with a per-run consent checkbox) and
+ * `.az-ocr-quality` (the yellow Read-vs-DI explainer) were deleted, not restyled.
+ *
+ * The checkbox asked an operator to acknowledge a transmission to a third party on every single
+ * run — including on deployments whose recogniser sits inside their own trust boundary, where
+ * the sentence was simply false. A consent control that fires every time trains people to click
+ * past it, which costs attention it will need for something that matters. The posture is still
+ * reported: `/readyz` and `/posture` carry the endpoint, the declared boundary and the
+ * attribution, and the picker prints one restrained `.az-note` line naming the host.
+ */
+
+/* ------------------------------------------------- how the text was read */
+
+.az-reading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-left: 3px solid var(--az-reading-color, var(--border-strong));
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+}
+.az-reading.local {
+  --az-reading-color: var(--c-accept);
+}
+.az-reading.egress {
+  --az-reading-color: var(--c-danger);
+  background: var(--c-danger-soft);
+}
+.az-reading .assert {
+  font-size: var(--t-md);
+  font-weight: 650;
+  color: var(--az-reading-color, var(--fg));
+}
+.az-reading .body {
+  max-width: 90ch;
+  font-size: var(--t-sm);
+  color: var(--fg-muted);
+}
+.az-reading-facts {
+  display: flex;
+  gap: var(--s-5);
+  flex-wrap: wrap;
+}
+
+/* A line of small "this is what the request will be" facts under the run button. */
+.az-preflight {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  flex-wrap: wrap;
+  font-size: var(--t-xs);
+  color: var(--fg-faint);
+}
+
+/* ---------------------------------------------------------------- verdict */
+
+.az-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  padding: var(--s-4);
+  border-left: 3px solid var(--az-verdict-color, var(--border-strong));
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+}
+.az-verdict.accepted {
+  --az-verdict-color: var(--c-accept);
+}
+.az-verdict.abstained {
+  --az-verdict-color: var(--c-abstain);
+}
+.az-verdict-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: min(100%, 320px);
+  flex: 1 1 340px;
+}
+.az-verdict-headline {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-size: var(--t-lg);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--az-verdict-color, var(--fg));
+}
+.az-verdict-facts {
+  display: flex;
+  gap: var(--s-5);
+  flex-wrap: wrap;
+  padding-top: var(--s-1);
+}
+
+/* ------------------------------------------------------------------ gates */
+
+/* Gate 1 is categorical, not numeric — no meter can express "the two tiers disagreed". */
+.az-gate1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-3);
+  flex-wrap: wrap;
+  padding: var(--s-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--az-gate-color, var(--border-strong));
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+}
+.az-gate1.pass {
+  --az-gate-color: var(--c-accept);
+}
+.az-gate1.fail {
+  --az-gate-color: var(--c-abstain);
+}
+.az-gate1 .az-gate1-body {
+  flex: 1 1 340px;
+  font-size: var(--t-sm);
+  color: var(--fg-muted);
+}
+
+/* Where a floor came from, printed next to every meter that has one. */
+.az-floor-src {
+  font-size: var(--t-xs);
+  color: var(--fg-faint);
+}
+
+.az-floors {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+.az-floors label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--t-xs);
+  color: var(--fg-faint);
+}
+.az-floors input {
+  width: 96px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The service's own refusal sentences, one per failed gate, quoted verbatim. */
+.az-failure {
+  padding: var(--s-2) var(--s-3);
+  border-left: 2px solid var(--c-abstain);
+  border-radius: var(--r-sm);
+  background: var(--c-abstain-soft);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  line-height: var(--lh-base);
+  color: var(--fg);
+}
+
+/* ---------------------------------------------------------------- anchors */
+
+.az-anchor-text {
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  overflow-wrap: anywhere;
+}
+.az-anchor-miss .az-anchor-text {
+  color: var(--fg-faint);
+}
+tr.az-anchor-miss td {
+  background: transparent;
+}
+
+/*
+ * A row of doctype badges.
+ *
+ * Registry labels run to sixty characters ("Confirmation of Permanent Residence (IMM 5292 / IMM
+ * 5688)"), and a flex item does not shrink below its own content unless it is told to — so on a
+ * narrow screen one long label drags the whole page into a horizontal scroll. `.doctype .lbl`
+ * already ellipsises, but only once something upstream has capped the width. This is that cap.
+ * Scoped to `az-` classes rather than to the shared `.row`, which every page uses.
+ */
+.az-badges {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.az-badges > *,
+.az-badges > a > .doctype {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.az-terms {
+  display: flex;
+  gap: var(--s-1);
+  flex-wrap: wrap;
+}
+.az-term {
+  padding: 0 var(--s-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+}
+
+/* ------------------------------------------------------------ extraction */
+
+.az-value {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.az-value .az-normalized {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--fg-faint);
+}
+tr.az-required-missing td:first-child {
+  box-shadow: inset 2px 0 0 var(--c-warn);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.az-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--s-4);
+}
+@media (min-width: 1080px) {
+  .az-cols.two {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.az-note {
+  font-size: var(--t-sm);
+  color: var(--fg-muted);
+}
+.az-note strong {
+  color: var(--fg);
+  font-weight: 600;
+}

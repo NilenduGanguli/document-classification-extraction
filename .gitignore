@@ -14,3 +14,6 @@ models/*
 # Scoring output — regenerate with tools/corpus_test.py
 reports/
 !reports/latest/
+
+# Frontend deps — dist IS committed, node_modules is not
+frontend/node_modules/

@@ -1,0 +1,278 @@
+/*
+ * /review — layout only.
+ *
+ * Every colour here is a theme token. Nothing in this file invents a hue, a font or a spacing
+ * value: the queue must look like the rest of the console, because a reviewer who has learned
+ * that blue means "declined to decide" on /analyze has to read it the same way here.
+ */
+
+/* The queue on the left, the item under decision on the right. Below 1100px they stack, with
+   the list first — you pick before you decide. */
+.review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: var(--s-4);
+  align-items: start;
+}
+
+.review-detail-col {
+  position: sticky;
+  top: calc(var(--nav-h) + var(--s-4));
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+@media (max-width: 1100px) {
+  .review-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .review-detail-col {
+    position: static;
+  }
+}
+
+/* ------------------------------------------------------------- the list */
+
+/* One document = one group. An item is one FIELD, but a reviewer thinks in documents, and the
+   document reference is the context that makes a field name mean anything. */
+.review-doc + .review-doc {
+  border-top: 1px solid var(--border);
+}
+
+.review-doc-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  padding: var(--s-2) var(--s-4);
+  background: var(--bg-inset);
+  border-bottom: 1px solid var(--border);
+}
+
+.review-doc-head .doc-id {
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
+}
+
+/* A row is a button, not a div with onClick: the queue has to be keyboard-workable. */
+.review-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--s-1) var(--s-3);
+  width: 100%;
+  padding: var(--s-2) var(--s-4);
+  border: none;
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.review-row:hover {
+  background: var(--bg-inset);
+}
+.review-row.selected {
+  background: var(--c-accent-soft);
+  border-left-color: var(--c-accent);
+}
+.review-doc:last-child .review-row:last-child {
+  border-bottom: none;
+}
+
+.review-row .field {
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-row .why {
+  grid-column: 1 / -1;
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-row .right {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  justify-self: end;
+}
+
+.rev-age {
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------- the double-entry ledger */
+
+/*
+ * Signatures as pips, so "1 of 2" is legible before anyone clicks. On a double-entry item an
+ * unfilled pip is the whole point: the item is still open even though somebody already signed.
+ */
+.rev-pips {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.rev-pips .rev-pip {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--c-abstain);
+}
+.rev-pips .rev-pip.filled {
+  background: var(--c-abstain);
+}
+.rev-pips.done .rev-pip {
+  border-color: var(--c-accept);
+}
+.rev-pips.done .rev-pip.filled {
+  background: var(--c-accept);
+}
+
+/* The blind-entry withholding notice. Not a warning — a control doing its job. */
+.rev-blind-notice {
+  padding: var(--s-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  font-size: var(--t-sm);
+  color: var(--fg-muted);
+}
+.rev-blind-notice strong {
+  color: var(--fg);
+}
+
+/* ------------------------------------------------------------ the detail */
+
+.rev-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--s-2) var(--s-3);
+  font-size: var(--t-sm);
+  align-items: baseline;
+}
+.rev-kv > dt {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+.rev-kv > dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Free-standing note under a control, for the sentence that stops a wrong click. */
+.rev-hint {
+  font-size: var(--t-xs);
+  color: var(--fg-faint);
+}
+
+.rev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.rev-field-input {
+  width: 100%;
+}
+
+/* ------------------------------------------------------- doctype search */
+
+.rev-doctype-search {
+  position: relative;
+}
+.rev-doctype-hits {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--s-1);
+  max-height: 232px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}
+.rev-doctype-hit {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.rev-doctype-hit:last-child {
+  border-bottom: none;
+}
+.rev-doctype-hit:hover,
+.rev-doctype-hit.active {
+  background: var(--bg-hover);
+}
+.rev-doctype-hit .hit-id {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- filters */
+
+.review-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.review-filters select,
+.review-filters input {
+  font-size: var(--t-xs);
+  padding: var(--s-1) var(--s-2);
+}
+
+/*
+ * The shared `.panel-head` is a single non-wrapping row. Four filter controls do not fit next
+ * to a title on a phone, and without this the title ends up wedged between two of them. Scoped
+ * to this panel so no other page inherits the wrap.
+ */
+@media (max-width: 760px) {
+  .queue-panel .panel-head {
+    flex-wrap: wrap;
+  }
+  .queue-panel .review-filters {
+    flex: 1 1 100%;
+  }
+}
+
+.rev-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  font-size: var(--t-xs);
+  color: var(--fg-faint);
+}

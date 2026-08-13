@@ -1,0 +1,199 @@
+/*
+ * /posture — page-local layout only.
+ *
+ * Everything here composes the tokens in `theme.css`; no new colours, no new spacing values.
+ * The only genuinely page-specific shapes are the invariant statement block (which has to read
+ * as an assertion rather than as a row in a table) and the finding strip (a one-line verdict
+ * above a table, so the table is the evidence and not the conclusion).
+ *
+ * EVERY CLASS IS PREFIXED `pos-`. A page stylesheet is imported into the same global bundle as
+ * every other page's, so an unprefixed `.kv` here silently restyles `.kv` on /review — which is
+ * exactly what happened before this file was namespaced. Descendant names (`.assert`, `.body`)
+ * are only ever written under a `pos-` ancestor.
+ */
+
+.posture-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+/* Identity strip: service, version, readiness, when it was observed. */
+.posture-ident {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+  margin-bottom: var(--s-4);
+  font-size: var(--t-sm);
+  color: var(--fg-muted);
+}
+
+.pos-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--s-4);
+}
+
+/* --------------------------------------------------------- the invariant */
+
+.pos-invariant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-5);
+  border: 1px solid color-mix(in srgb, var(--tone) 30%, var(--border));
+  border-left: 4px solid var(--tone);
+  border-radius: var(--r-md);
+  background: var(--tone-soft);
+}
+.pos-invariant.ok {
+  --tone: var(--c-accept);
+  --tone-soft: var(--c-accept-soft);
+}
+.pos-invariant.alarm {
+  --tone: var(--c-danger);
+  --tone-soft: var(--c-danger-soft);
+}
+.pos-invariant .assert {
+  font-size: var(--t-lg);
+  font-weight: 650;
+  line-height: var(--lh-tight);
+  color: var(--tone);
+}
+.pos-invariant .body {
+  max-width: 78ch;
+  color: var(--fg);
+}
+.pos-invariant .quote {
+  padding-left: var(--s-3);
+  border-left: 2px solid color-mix(in srgb, var(--tone) 45%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  line-height: var(--lh-base);
+  color: var(--fg-muted);
+}
+
+/* ------------------------------------------------------------- findings */
+
+/*
+ * A finding is the sentence a reader should leave with; the table under it is the evidence for
+ * that sentence. Tones are the theme's, and "nothing is enabled" gets `ok` — on this service the
+ * absence of a capability is the correct default, not an empty state to apologise for.
+ */
+.pos-finding {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+}
+.pos-finding .glyph {
+  flex: none;
+  font-size: var(--t-md);
+  line-height: 1.35;
+  color: var(--tone, var(--fg-faint));
+}
+.pos-finding .text {
+  max-width: 82ch;
+}
+.pos-finding .text strong {
+  font-weight: 650;
+}
+.pos-finding.ok {
+  --tone: var(--c-accept);
+  border-color: color-mix(in srgb, var(--c-accept) 30%, transparent);
+  background: var(--c-accept-soft);
+}
+.pos-finding.warn {
+  --tone: var(--c-warn);
+  border-color: color-mix(in srgb, var(--c-warn) 32%, transparent);
+  background: var(--c-warn-soft);
+}
+.pos-finding.cost {
+  --tone: var(--c-cost);
+  border-color: color-mix(in srgb, var(--c-cost) 32%, transparent);
+  background: var(--c-cost-soft);
+}
+.pos-finding.danger {
+  --tone: var(--c-danger);
+  border-color: color-mix(in srgb, var(--c-danger) 32%, transparent);
+  background: var(--c-danger-soft);
+}
+.pos-finding.abstain {
+  --tone: var(--c-abstain);
+  border-color: color-mix(in srgb, var(--c-abstain) 30%, transparent);
+  background: var(--c-abstain-soft);
+}
+
+/* ---------------------------------------------------------- tier ledger */
+
+/* A tier that is off is the default posture, so it recedes; a live tier is what to look at. */
+table.grid tr.pos-tier-off td {
+  color: var(--fg-muted);
+}
+table.grid tr.pos-tier-live td:first-child {
+  font-weight: 650;
+}
+.pos-summary {
+  display: block;
+  max-width: 62ch;
+}
+
+.pos-kv {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-1);
+  padding: 0 var(--s-1);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--fg-muted);
+}
+.pos-kv + .pos-kv {
+  margin-left: var(--s-1);
+}
+
+/* --------------------------------------------------------- raw evidence */
+
+.pos-tabs {
+  display: flex;
+  gap: var(--s-1);
+}
+.pos-tab {
+  padding: 2px var(--s-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+.pos-tab:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.pos-tab.active {
+  background: var(--c-accent-soft);
+  border-color: color-mix(in srgb, var(--c-accent) 30%, transparent);
+  color: var(--c-accent);
+}
+
+/* The limitation panel is a caveat, not an alarm: warn-edged, never red. */
+.panel.pos-caveat {
+  border-left: 3px solid var(--c-warn);
+}
+.pos-caveat ul {
+  margin: 0;
+  padding-left: var(--s-4);
+  max-width: 82ch;
+}
+.pos-caveat li + li {
+  margin-top: var(--s-2);
+}

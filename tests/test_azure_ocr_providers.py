@@ -43,9 +43,9 @@ from dce.ingest import IngestSettings, IngestStatus, ingest  # noqa: E402
 from dce.ingest.errors import EngineUnavailable, OcrProviderMismatch  # noqa: E402
 from dce.ingest.ocr import (  # noqa: E402
     ENGINES,
-    NETWORK_ENGINES,
     PROVIDERS,
-    is_network_provider,
+    SERVICE_ENGINES,
+    is_service_provider,
     load_provider,
 )
 from dce.ingest.result import TextSource  # noqa: E402
@@ -373,28 +373,28 @@ def test_the_declared_field_wins_over_the_sniffer():
 # ---------------------------------------------------------------------------
 def test_the_local_allowlist_is_unchanged_and_still_closed():
     assert set(ENGINES) == {"rapidocr", "tesseract"}
-    assert set(NETWORK_ENGINES) == {"azure_read", "azure_layout"}
+    assert set(SERVICE_ENGINES) == {"azure_read", "azure_layout"}
     assert set(PROVIDERS) == {"rapidocr", "tesseract", "azure_read", "azure_layout"}
 
 
-def test_the_code_distinguishes_network_providers_by_a_flag():
-    assert [name for name, info in PROVIDERS.items() if info.network] == [
+def test_the_code_distinguishes_service_providers_by_a_flag():
+    assert [name for name, info in PROVIDERS.items() if info.service] == [
         "azure_read",
         "azure_layout",
     ]
-    assert is_network_provider("azure_layout") is True
-    assert is_network_provider("rapidocr") is False
-    assert is_network_provider("azure-read") is False  # not a provider id at all
+    assert is_service_provider("azure_layout") is True
+    assert is_service_provider("rapidocr") is False
+    assert is_service_provider("azure-read") is False  # not a provider id at all
 
 
-def test_the_local_loader_refuses_a_network_provider_and_says_where_it_belongs():
-    """A remote provider must not be reachable through the local engine loader."""
+def test_the_local_loader_refuses_a_service_provider_and_says_where_it_belongs():
+    """A service provider must not be reachable through the in-process engine loader."""
     for name in ("azure_read", "azure_layout"):
         with pytest.raises(EngineUnavailable, match="unknown local OCR engine") as excinfo:
             load_provider(name)
         message = str(excinfo.value)
-        assert "NETWORK provider" in message
-        assert "DCE_INGEST_REMOTE_OCR_ENABLED" in message
+        assert "OCR SERVICE provider" in message
+        assert "DCE_INGEST_OCR_SERVICE_ENABLED" in message
 
     # And the old hole is still closed.
     with pytest.raises(EngineUnavailable, match="unknown local OCR engine"):
@@ -410,7 +410,7 @@ def test_the_guard_refuses_when_the_deployment_has_not_enabled_it():
 
     message = str(excinfo.value)
     assert "azure_layout" in message and LAYOUT_ENDPOINT in message
-    assert "DCE_INGEST_REMOTE_OCR_ENABLED" in message
+    assert "DCE_INGEST_OCR_SERVICE_ENABLED" in message
 
 
 def test_the_guard_permits_only_when_enabled():
@@ -427,10 +427,10 @@ def test_the_guard_fires_before_a_socket_is_opened(monkeypatch: pytest.MonkeyPat
     """The refusal must not be "the request failed" — the request must never be made."""
     from dce.ingest.detect import MediaType
     from dce.ingest.limits import Deadline
-    from dce.ingest.remote_ocr import RemoteOcrConfig, load_remote_provider
+    from dce.ingest.ocr_service import OcrServiceConfig, load_ocr_service_provider
 
-    provider = load_remote_provider(
-        RemoteOcrConfig(
+    provider = load_ocr_service_provider(
+        OcrServiceConfig(
             provider="azure_layout",
             endpoint=LAYOUT_ENDPOINT,
             key="",
@@ -450,7 +450,7 @@ def test_with_remote_ocr_off_an_image_is_needs_ocr_and_no_socket_is_opened(
 ):
     """The default deployment. (B) is not merely unused here — it is unreachable."""
     off = IngestSettings(_env_file=None)
-    assert off.remote_ocr_enabled is False
+    assert off.ocr_service_enabled is False
 
     attempts = block_all_sockets(monkeypatch)
     with socket_tripwire() as blocked:
@@ -458,34 +458,34 @@ def test_with_remote_ocr_off_an_image_is_needs_ocr_and_no_socket_is_opened(
 
     assert result.status is IngestStatus.needs_ocr
     assert result.view is None
-    assert result.ocr_is_remote is False
+    assert result.ocr_via_service is False
     assert attempts == [] and blocked == []
-    assert "no remote provider is configured" in result.reason
+    assert "No recogniser is configured on this deployment" in result.reason
 
 
 def test_a_request_cannot_switch_remote_ocr_on():
     """Same asymmetry as ``local_ocr``: a caller may decline, never grant."""
     off = IngestSettings(_env_file=None)
     with socket_tripwire() as blocked:
-        result = ingest(fixtures.png(), settings=off, remote_ocr=True)
+        result = ingest(fixtures.png(), settings=off, ocr_service=True)
     assert result.status is IngestStatus.needs_ocr
     assert blocked == []
 
 
-def test_a_request_can_decline_remote_ocr_with_either_flag():
+def test_a_request_can_decline_the_ocr_service_with_either_flag():
     """A caller who says "do not run OCR on this" is obeyed whichever kind is configured."""
     on = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider="azure_layout",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
         azure_di_endpoint=LAYOUT_ENDPOINT,
     )
-    for kwargs in ({"remote_ocr": False}, {"local_ocr": False}):
+    for kwargs in ({"ocr_service": False}, {"local_ocr": False}):
         with socket_tripwire() as blocked:
             result = ingest(fixtures.png(), settings=on, **kwargs)
         assert result.status is IngestStatus.needs_ocr
         assert blocked == [], f"{kwargs} still reached the network"
-        assert "declined it" in result.reason
+        assert "this request declined recognition" in result.reason
 
 
 # ---------------------------------------------------------------------------
@@ -501,13 +501,13 @@ def test_a_pin_naming_the_configured_provider_is_honoured():
     """The agreeing case must not become an error, or callers will stop sending the pin."""
     on = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider="azure_layout",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
         azure_di_endpoint=LAYOUT_ENDPOINT,
     )
     # Declining as well keeps this off the network: what is under test is the pin check, not
     # the mock.
-    result = ingest(fixtures.png(), settings=on, remote_ocr=False, ocr_provider="azure_layout")
+    result = ingest(fixtures.png(), settings=on, ocr_service=False, ocr_provider="azure_layout")
     assert result.status is IngestStatus.needs_ocr  # because it was declined, not pinned away
 
 
@@ -515,8 +515,8 @@ def test_a_pin_naming_a_different_provider_is_refused_rather_than_substituted():
     """The whole point: the document is not read by a provider nobody disclosed."""
     on = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider="azure_layout",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
         azure_di_endpoint=LAYOUT_ENDPOINT,
     )
     with socket_tripwire() as blocked, pytest.raises(OcrProviderMismatch) as caught:
@@ -524,6 +524,7 @@ def test_a_pin_naming_a_different_provider_is_refused_rather_than_substituted():
     # Refused *before* the wire, not after a call that would already have disclosed the bytes.
     assert blocked == []
     assert "azure_read" in str(caught.value) and "azure_layout" in str(caught.value)
+    assert "Refusing rather than substituting" in str(caught.value)
 
 
 def test_a_pin_cannot_switch_a_provider_on():
@@ -556,8 +557,8 @@ def test_a_mismatched_pin_is_a_structured_400_through_the_api(monkeypatch: pytes
         "get_ingest_settings",
         lambda: IngestSettings(
             _env_file=None,
-            remote_ocr_enabled=True,
-            remote_ocr_provider="azure_layout",
+            ocr_service_enabled=True,
+            ocr_service_provider="azure_layout",
             azure_di_endpoint=LAYOUT_ENDPOINT,
         ),
     )
@@ -591,33 +592,116 @@ def test_the_pin_values_are_exactly_what_readyz_advertises():
     ):
         settings = IngestSettings(
             _env_file=None,
-            remote_ocr_enabled=True,
-            remote_ocr_provider=provider,
+            ocr_service_enabled=True,
+            ocr_service_provider=provider,
             **{field: "https://example.invalid"},
         )
         advertised = [p.name for p in _ocr_status(settings).providers if p.available]
-        assert advertised == [settings.active_provider()] == [provider]
+        assert advertised == [settings.default_provider()] == [provider]
+        assert [p.name for p in _ocr_status(settings).providers if p.default] == [provider]
 
 
 # ---------------------------------------------------------------------------
 # Configuration that can only be a mistake is refused at boot
 # ---------------------------------------------------------------------------
-def test_configuring_both_recognisers_is_refused():
-    with pytest.raises(ValueError, match="Choose one"):
-        IngestSettings(_env_file=None, local_ocr_enabled=True, remote_ocr_enabled=True)
+def test_configuring_both_recognisers_without_a_default_is_refused():
+    """Both may be configured — but not with the precedence left to the code.
+
+    This replaces the older rule that refused the combination outright. A deployment whose OCR
+    runs on its own network legitimately wants every provider selectable, and
+    ``ingest.ocr_provider`` is how a request picks one. What must not happen is the *unpinned*
+    request silently getting whichever the code happened to prefer, so the deployment names it.
+    """
+    with pytest.raises(ValueError, match="ocr_default_provider is empty"):
+        IngestSettings(
+            _env_file=None,
+            local_ocr_enabled=True,
+            ocr_service_enabled=True,
+            azure_di_endpoint=LAYOUT_ENDPOINT,
+        )
 
 
-def test_a_local_engine_cannot_be_named_as_the_remote_provider():
-    with pytest.raises(ValueError, match="not a network OCR provider"):
-        IngestSettings(_env_file=None, remote_ocr_enabled=True, remote_ocr_provider="rapidocr")
+def test_configuring_both_recognisers_with_a_declared_default_is_allowed():
+    settings = IngestSettings(
+        _env_file=None,
+        local_ocr_enabled=True,
+        local_ocr_engine="rapidocr",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
+        ocr_default_provider="rapidocr",
+        azure_di_endpoint=LAYOUT_ENDPOINT,
+        azure_read_endpoint=READ_ENDPOINT,
+    )
+    assert settings.configured_providers() == ("rapidocr", "azure_layout", "azure_read")
+    assert settings.default_provider() == "rapidocr"
+    assert settings.service_providers() == ("azure_layout", "azure_read")
+    assert settings.local_providers() == ("rapidocr",)
+
+
+def test_a_default_naming_an_unconfigured_provider_is_refused():
+    """The default selects among what is configured; it cannot switch anything on."""
+    with pytest.raises(ValueError, match="is not configured on this deployment"):
+        IngestSettings(
+            _env_file=None,
+            local_ocr_enabled=True,
+            ocr_default_provider="azure_read",
+        )
+
+
+def test_a_pin_selects_among_several_configured_providers():
+    """The owner's deployment: every provider configured, each request choosing one.
+
+    The asymmetry survives — see the next test — but with more than one recogniser configured
+    the pin is how a caller reaches the one it wants instead of the deployment's default.
+    """
+    settings = IngestSettings(
+        _env_file=None,
+        local_ocr_enabled=True,
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
+        ocr_default_provider="rapidocr",
+        azure_di_endpoint=LAYOUT_ENDPOINT,
+        azure_read_endpoint=READ_ENDPOINT,
+    )
+    # Declining keeps this off the wire: what is under test is the selection, not the mock.
+    for pinned in ("rapidocr", "azure_layout", "azure_read"):
+        with socket_tripwire() as blocked:
+            result = ingest(
+                fixtures.png(), settings=settings, ocr_service=False, ocr_provider=pinned
+            )
+        assert blocked == []
+        assert result.status is IngestStatus.needs_ocr
+        assert pinned in result.reason
+
+
+def test_a_pin_still_cannot_reach_a_provider_the_deployment_did_not_configure():
+    """More providers configured does not weaken the asymmetry: choose among, never add."""
+    settings = IngestSettings(
+        _env_file=None,
+        local_ocr_enabled=True,
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
+        ocr_default_provider="rapidocr",
+        azure_di_endpoint=LAYOUT_ENDPOINT,
+    )
+    assert "azure_read" not in settings.configured_providers()
+    with socket_tripwire() as blocked, pytest.raises(OcrProviderMismatch) as caught:
+        ingest(fixtures.png(), settings=settings, ocr_provider="azure_read")
+    assert blocked == []
+    assert "azure_read" in str(caught.value)
+
+
+def test_a_local_engine_cannot_be_named_as_the_ocr_service_provider():
+    with pytest.raises(ValueError, match="not an OCR service provider"):
+        IngestSettings(_env_file=None, ocr_service_enabled=True, ocr_service_provider="rapidocr")
 
 
 def test_a_missing_endpoint_degrades_rather_than_taking_the_service_down():
     """A secret that has not landed is not a reason to stop classifying text documents."""
     settings = IngestSettings(
-        _env_file=None, remote_ocr_enabled=True, remote_ocr_provider="azure_layout"
+        _env_file=None, ocr_service_enabled=True, ocr_service_provider="azure_layout"
     )
-    assert "DCE_INGEST_AZURE_DI_ENDPOINT is empty" in settings.remote_ocr_problem()
+    assert "DCE_INGEST_AZURE_DI_ENDPOINT is empty" in settings.ocr_service_problem()
     with socket_tripwire() as blocked:
         result = ingest(fixtures.jpeg(), settings=settings)
     assert result.status is IngestStatus.needs_ocr
@@ -628,12 +712,12 @@ def test_a_missing_endpoint_degrades_rather_than_taking_the_service_down():
 def test_the_endpoint_host_is_reported_without_the_rest_of_the_url():
     settings = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider="azure_read",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_read",
         azure_read_endpoint="https://example.cognitiveservices.azure.com/some/path",
     )
-    assert settings.remote_ocr_endpoint_host() == "example.cognitiveservices.azure.com"
-    assert settings.remote_ocr_problem() == ""
+    assert settings.ocr_service_endpoint_host() == "example.cognitiveservices.azure.com"
+    assert settings.ocr_service_problem() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -659,8 +743,8 @@ def test_readyz_names_the_endpoint_when_this_deployment_ships_unclassified_docum
 
     remote = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider="azure_layout",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
         azure_di_endpoint="https://contoso.cognitiveservices.azure.com",
     )
     monkeypatch.setattr(routes, "get_ingest_settings", lambda: remote)
@@ -682,6 +766,8 @@ def test_readyz_names_the_endpoint_when_this_deployment_ships_unclassified_docum
         "local_ocr_enabled": False,
         "local_ocr_engine": body["ocr"]["local_ocr_engine"],
         "providers": body["ocr"]["providers"],
+        "configured_providers": ["azure_layout"],
+        "service_endpoint_hosts": ["contoso.cognitiveservices.azure.com"],
     }
     assert "TRANSMITS UNCLASSIFIED DOCUMENTS" in body["ocr"]["summary"]
     assert "contoso.cognitiveservices.azure.com" in body["ocr"]["summary"]
@@ -732,7 +818,7 @@ def test_a_trust_boundary_that_is_not_one_of_the_two_is_refused_rather_than_gues
     reassuring reading. Refusing is the only behaviour that cannot mislead.
     """
     with pytest.raises(ValueError, match="not a trust boundary"):
-        IngestSettings(_env_file=None, remote_ocr_trust_boundary="on-premises")
+        IngestSettings(_env_file=None, ocr_service_trust_boundary="on-premises")
 
 
 def test_declaring_on_premises_changes_the_wording_and_nothing_about_the_operation(
@@ -748,11 +834,11 @@ def test_declaring_on_premises_changes_the_wording_and_nothing_about_the_operati
     from tests.test_api import build_app
 
     def readyz(boundary: str | None) -> dict:
-        extra = {} if boundary is None else {"remote_ocr_trust_boundary": boundary}
+        extra = {} if boundary is None else {"ocr_service_trust_boundary": boundary}
         settings = IngestSettings(
             _env_file=None,
-            remote_ocr_enabled=True,
-            remote_ocr_provider="azure_layout",
+            ocr_service_enabled=True,
+            ocr_service_provider="azure_layout",
             azure_di_endpoint="https://ocr.internal.corp",
             **extra,
         )
@@ -792,29 +878,32 @@ def test_the_on_premises_reading_is_attributed_to_the_operator_and_marked_unveri
     """
     settings = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider="azure_layout",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
         azure_di_endpoint="https://ocr.internal.corp",
-        remote_ocr_trust_boundary="on_premises",
+        ocr_service_trust_boundary="on_premises",
     )
     attribution = settings.trust_boundary_attribution()
 
-    assert "DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY=on_premises" in attribution
+    assert "DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY=on_premises" in attribution
     assert "declaration" in attribution
     assert "not verified" in attribution or "has not verified" in attribution
-    # And it still states the operation, so the attribution cannot be read as a denial.
-    assert "does leave this process" in attribution
+    # And it still states the operation, so the attribution cannot be read as a denial. The
+    # wording is descriptive now rather than alarmed — "over a call from this process" instead
+    # of "does leave this process" — but the fact it has to carry is the same one.
+    assert "over a call from this process" in attribution
+    assert "before the doctype is known" in attribution
 
 
 def test_declared_external_and_defaulted_external_are_told_apart():
     """"We chose external" and "nobody said" are different claims about the same value."""
     common = {
         "_env_file": None,
-        "remote_ocr_enabled": True,
-        "remote_ocr_provider": "azure_layout",
+        "ocr_service_enabled": True,
+        "ocr_service_provider": "azure_layout",
         "azure_di_endpoint": "https://contoso.cognitiveservices.azure.com",
     }
-    chose = IngestSettings(**common, remote_ocr_trust_boundary="external")
+    chose = IngestSettings(**common, ocr_service_trust_boundary="external")
     silent = IngestSettings(**common)
 
     assert chose.trust_boundary() == silent.trust_boundary() == "external"
@@ -826,7 +915,7 @@ def test_declared_external_and_defaulted_external_are_told_apart():
 
 def test_the_boundary_question_does_not_arise_without_a_remote_provider():
     """No endpoint, nothing to make a claim about — and so no claim is made."""
-    settings = IngestSettings(_env_file=None, remote_ocr_trust_boundary="on_premises")
+    settings = IngestSettings(_env_file=None, ocr_service_trust_boundary="on_premises")
     assert settings.trust_boundary_attribution() == ""
 
 
@@ -834,9 +923,9 @@ def test_declaring_on_premises_does_not_let_a_document_out_during_classification
     """The invariant is untouched: this setting describes ingestion, and cannot widen it."""
     settings = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider="azure_layout",
-        remote_ocr_trust_boundary="on_premises",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
+        ocr_service_trust_boundary="on_premises",
     )
     # No endpoint configured, so there is nowhere to send it — and the socket tripwire proves
     # nothing was attempted anyway.
@@ -867,20 +956,20 @@ def test_a_live_mock_drives_a_real_end_to_end_classification(
     field = "azure_di_endpoint" if provider == "azure_layout" else "azure_read_endpoint"
     settings = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider=provider,
+        ocr_service_enabled=True,
+        ocr_service_provider=provider,
         **{field: endpoint},
     )
 
     result = ingest(text_image(), doc_id="pan-1", settings=settings)
 
     assert result.status is IngestStatus.ok
-    assert result.text_source is TextSource.remote_ocr
+    assert result.text_source is TextSource.ocr_service
     assert result.ocr_engine == provider
-    assert result.ocr_is_remote is True
+    assert result.ocr_via_service is True
     assert result.ocr_endpoint_host == "localhost"
     assert result.view.raw["provider"] == expected_adapter
-    assert result.view.raw["ocr_is_remote"] is True
+    assert result.view.raw["ocr_via_service"] is True
 
     # The provider difference, observed rather than asserted from a docstring.
     zones = {b.zone for b in result.view.blocks}
@@ -904,8 +993,8 @@ def test_the_same_bytes_classify_the_same_way_through_the_caller_supplied_path()
     mock_or_skip(LAYOUT_ENDPOINT)
     settings = IngestSettings(
         _env_file=None,
-        remote_ocr_enabled=True,
-        remote_ocr_provider="azure_layout",
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
         azure_di_endpoint=LAYOUT_ENDPOINT,
     )
     image = text_image()
@@ -956,8 +1045,8 @@ def test_no_ingest_module_imports_an_http_client_at_module_scope():
     cover ``dce/ingest``, and it predates both this package and the remote provider — so the
     module that exists to reach the network would have slipped through it. The rule here is
     stricter than "no HTTP client in this package", because there now legitimately is one:
-    **no module-scope import of one, including in** :mod:`dce.ingest.remote_ocr`. A default
-    build that never enables remote OCR must never load an HTTP client at all, and the only
+    **no module-scope import of one, including in** :mod:`dce.ingest.ocr_service`. A default
+    build that configures no OCR service must never load an HTTP client at all, and the only
     way to guarantee that is for the import to sit inside the function that needs it.
     """
     import re
@@ -974,8 +1063,161 @@ def test_no_ingest_module_imports_an_http_client_at_module_scope():
     assert offenders == [], f"HTTP client imported at module scope in ingestion: {offenders}"
 
 
-def test_the_remote_module_gets_its_client_lazily_and_names_the_extra():
+def test_the_service_module_gets_its_client_lazily_and_names_the_extra():
     """The one place allowed to reach the network says how, and how to not install it."""
-    source = (_REPO_ROOT / "dce" / "ingest" / "remote_ocr.py").read_text("utf-8")
+    source = (_REPO_ROOT / "dce" / "ingest" / "ocr_service.py").read_text("utf-8")
     assert 'importlib.import_module("httpx")' in source
     assert "azure-ocr" in source
+
+
+# ---------------------------------------------------------------------------
+# The rename: the old environment variables still configure the same deployment
+# ---------------------------------------------------------------------------
+# `remote_ocr` described a disclosure. On a deployment whose OCR runs inside its own network
+# that description was wrong, so the concept is now `ocr_service` — an endpoint this
+# deployment configures. A rename that broke a running deployment on upgrade would be a worse
+# failure than the wording it fixed, so every old name is still read.
+def test_the_old_environment_variables_still_configure_the_new_settings(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    for name, value in (
+        ("DCE_INGEST_REMOTE_OCR_ENABLED", "true"),
+        ("DCE_INGEST_REMOTE_OCR_PROVIDER", "azure_read"),
+        ("DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY", "on_premises"),
+        ("DCE_INGEST_REMOTE_OCR_TIMEOUT_SECONDS", "12"),
+        ("DCE_INGEST_REMOTE_OCR_MAX_POLLS", "7"),
+        ("DCE_INGEST_AZURE_READ_ENDPOINT", "https://ocr.internal.corp"),
+    ):
+        monkeypatch.setenv(name, value)
+
+    settings = IngestSettings(_env_file=None)
+
+    assert settings.ocr_service_enabled is True
+    assert settings.ocr_service_provider == "azure_read"
+    assert settings.default_provider() == "azure_read"
+    assert settings.trust_boundary() == "on_premises"
+    assert settings.trust_boundary_declared() is True
+    assert settings.ocr_service_timeout_seconds == 12.0
+    assert settings.ocr_service_max_polls == 7
+    assert settings.ocr_service_endpoint_host() == "ocr.internal.corp"
+
+
+def test_the_new_environment_variable_wins_when_both_are_set(monkeypatch: pytest.MonkeyPatch):
+    """An upgrade that sets the new name must not be overridden by a stale old one."""
+    monkeypatch.setenv("DCE_INGEST_REMOTE_OCR_PROVIDER", "azure_read")
+    monkeypatch.setenv("DCE_INGEST_OCR_SERVICE_PROVIDER", "azure_layout")
+    monkeypatch.setenv("DCE_INGEST_OCR_SERVICE_ENABLED", "true")
+    monkeypatch.setenv("DCE_INGEST_AZURE_DI_ENDPOINT", LAYOUT_ENDPOINT)
+
+    assert IngestSettings(_env_file=None).ocr_service_provider == "azure_layout"
+
+
+def test_the_deprecated_names_are_reported_so_a_boot_log_can_name_them(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Silent aliasing would leave a deployment on the old names forever."""
+    from dce.ingest.settings import legacy_env_aliases_in_use
+
+    assert legacy_env_aliases_in_use({"DCE_INGEST_OCR_SERVICE_ENABLED": "true"}) == {}
+    assert legacy_env_aliases_in_use({"DCE_INGEST_REMOTE_OCR_ENABLED": "true"}) == {
+        "DCE_INGEST_REMOTE_OCR_ENABLED": "DCE_INGEST_OCR_SERVICE_ENABLED"
+    }
+
+
+def test_a_caller_may_still_send_the_old_request_flag():
+    """``ingest.remote_ocr`` is the old spelling of ``ingest.ocr_service``."""
+    from dce.ingest import IngestOptions
+
+    assert IngestOptions(remote_ocr=False).ocr_service is False
+    assert IngestOptions(ocr_service=False).ocr_service is False
+    assert IngestOptions().ocr_service is None
+
+
+# ---------------------------------------------------------------------------
+# Posture wording: configuration under on_premises, caution under external
+# ---------------------------------------------------------------------------
+# Both paths are tested because the asymmetry is the point. A deployment that has declared
+# its OCR is in-network should not be told it is disclosing documents; a deployment that has
+# declared nothing must not be reassured. The *facts* — provider, endpoint host, "before the
+# doctype is known" — are in both, because the wording may re-describe the operation and may
+# never conceal it.
+def _readyz_with(monkeypatch: pytest.MonkeyPatch, **overrides) -> dict:
+    from dce.api import routes
+    from tests.test_api import build_app
+
+    settings = IngestSettings(
+        _env_file=None,
+        ocr_service_enabled=True,
+        ocr_service_provider="azure_layout",
+        azure_di_endpoint="https://ocr.internal.corp",
+        **overrides,
+    )
+    monkeypatch.setattr(routes, "get_ingest_settings", lambda: settings)
+    client, _, _ = build_app()
+    return client.get("/readyz").json()
+
+
+def test_under_on_premises_the_posture_reads_as_configuration_not_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    body = _readyz_with(monkeypatch, ocr_service_trust_boundary="on_premises")
+
+    note = body["egress"]["note"]
+    summary = body["ocr"]["summary"]
+
+    # It still says WHERE, WHAT reads it, and WHEN — an operator needs the endpoint.
+    assert "ocr.internal.corp" in note and "ocr.internal.corp" in summary
+    assert "azure_layout" in note and "azure_layout" in summary
+    assert "before their doctype is known" in note
+    assert body["egress"]["preclassification_ocr"] is True
+    assert body["egress"]["preclassification_ocr_endpoint"] == "ocr.internal.corp"
+    assert body["egress"]["preclassification_ocr_trust_boundary"] == "on_premises"
+
+    # And it does not describe that as a disclosure.
+    assert "BUT this deployment sends" not in note
+    assert "TRANSMITS UNCLASSIFIED DOCUMENTS" not in summary
+    assert "third party" not in summary and "third party" not in note
+    assert "on its own network" in note and "on its own network" in summary
+
+
+def test_under_external_the_posture_stays_cautious_declared_or_merely_defaulted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A deployment that declares nothing must not get the reassuring reading."""
+    for overrides in ({}, {"ocr_service_trust_boundary": "external"}):
+        body = _readyz_with(monkeypatch, **overrides)
+
+        assert "BUT this deployment sends" in body["egress"]["note"]
+        assert "TRANSMITS UNCLASSIFIED DOCUMENTS" in body["ocr"]["summary"]
+        assert body["egress"]["preclassification_ocr_trust_boundary"] == "external"
+        assert body["ocr"]["endpoint_host"] == "ocr.internal.corp"
+
+    # Only the attribution distinguishes "we chose external" from "nobody said".
+    assert "no trust boundary has been declared" in (
+        _readyz_with(monkeypatch)["ocr"]["trust_boundary_attribution"]
+    )
+
+
+def test_readyz_lists_every_configured_provider_as_selectable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The deployment this compose file describes: all of them usable, one of them default."""
+    body = _readyz_with(
+        monkeypatch,
+        local_ocr_enabled=True,
+        local_ocr_engine="rapidocr",
+        ocr_default_provider="azure_layout",
+        azure_read_endpoint="https://ocr.internal.corp",
+        ocr_service_trust_boundary="on_premises",
+    )
+
+    assert body["ocr"]["configured_providers"] == ["rapidocr", "azure_layout", "azure_read"]
+    listed = {p["name"]: p for p in body["ocr"]["providers"]}
+    assert [name for name, p in listed.items() if p["default"]] == ["azure_layout"]
+    # Both Azure rows name their endpoint, so a picker can say where each one reads.
+    assert listed["azure_layout"]["endpoint"] == "ocr.internal.corp"
+    assert listed["azure_read"]["endpoint"] == "ocr.internal.corp"
+    # The Read-vs-Layout accuracy fact stays on the label at the point of choice.
+    assert listed["azure_read"]["structure"] == "lines"
+    assert listed["azure_layout"]["structure"] == "roles"
+    assert "no paragraph roles" in listed["azure_read"]["summary"]

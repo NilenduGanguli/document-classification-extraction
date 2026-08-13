@@ -119,9 +119,17 @@ function PosturePill({ ready }: { ready: ReadinessResponse | null }) {
       (declaration.boundary === 'on_premises'
         ? 'This deployment declares that host is inside its own trust boundary — the operator’s declaration, not verified here.'
         : 'No trust boundary has been declared for that host.');
+    // Where the deployment declares the recogniser inside its own network, "read remotely" in
+    // amber is the wrong pill to carry on every screen. Remote means outside the organisation's
+    // control; an OCR pod in the same cluster is not that. What remains true either way is the
+    // architecture — the reading happens over the network rather than in this process — so an
+    // on-premises deployment gets that fact, in the neutral tone a fact deserves. The tooltip
+    // still carries the endpoint and the service's own attribution verbatim, so nothing is
+    // hidden; only the alarm is dropped, and only where it does not apply.
+    const onPremises = declaration.boundary === 'on_premises';
     return (
-      <Badge tone="warn" title={`${base} ${closing} See /posture.`}>
-        documents are read remotely
+      <Badge tone={onPremises ? 'neutral' : 'warn'} title={`${base} ${closing} See /posture.`}>
+        {onPremises ? 'images read by an in-network service' : 'documents are read remotely'}
       </Badge>
     );
   }

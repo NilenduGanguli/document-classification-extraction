@@ -1,34 +1,48 @@
-"""Remote OCR: **egress, before the doctype is known**, and therefore off by default.
+"""OCR service providers: recognition by a **call to an OCR endpoint**, off by default.
 
 This is provider (B). It is the honest other half of a trade-off :mod:`dce.ingest` states
 plainly: an image carries no text, classifying one requires recognition, and recognition
-happens either on this host or on somebody else's. There is no third option. A deployment
-that cannot install a local engine and cannot accept ``needs_ocr`` has to send the document
-somewhere, and this module is how — deliberately, visibly, and never by accident.
+happens either in this process or on another host. There is no third option. A deployment
+that cannot install an in-process engine and cannot accept ``needs_ocr`` has to call an OCR
+service, and this module is how — deliberately, visibly, and never by accident.
 
 --------------------------------------------------------------------------------
-WHAT USING THIS COSTS, STATED BEFORE HOW IT WORKS
+WHAT USING THIS MEANS, STATED BEFORE HOW IT WORKS
 --------------------------------------------------------------------------------
-Turning ``DCE_INGEST_REMOTE_OCR_ENABLED`` on means this service transmits documents that
-**have not been classified** — another business unit's documents, whose type nobody knows yet
-— to Microsoft. That is the disclosure :mod:`dce.egress` exists to prevent. Four things make
-it a decision rather than a slip:
+Turning ``DCE_INGEST_OCR_SERVICE_ENABLED`` on means documents that **have not been
+classified** are sent to the endpoint this deployment configures, to be read, before anybody
+knows what they are.
+
+**Whose network that endpoint is on is the deployment's to state, not this module's to guess.**
+``ocr.internal.corp`` and ``x.cognitiveservices.azure.com`` are the same operation from here:
+resolve a name, open a socket, put a document on it. Where a deployment declares
+``DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY=on_premises`` — an OCR pod in the operator's own
+cluster, a private endpoint inside their own VPC — the documents stay inside the
+organisation's control, and this module is simply how that deployment reads an image. Where
+nothing is declared the cautious reading applies instead, because silence is not a statement
+that the host is internal.
+
+Four things keep it a decision rather than a slip, and they hold under either declaration:
 
 1. It is off by default, and the base install has no HTTP client at all
    (``pip install '.[azure-ocr]'``), so the default build *cannot* do this.
-2. It is a **separate** setting from ``local_ocr_enabled``. Calling a network provider "local
+2. It is a **separate** setting from ``local_ocr_enabled``. Calling a service provider "local
    OCR" would make the word "local" a lie in the place an operator reads fastest.
 3. Every request — submit and each poll — passes
    :func:`dce.egress.assert_ocr_egress_permitted`, a positive check that names the provider
    and the endpoint. ``assert_no_egress`` would be silent here (ingestion runs before the
    classification scope is entered), and relying on that silence would be a bypass.
-4. ``/readyz`` reports the deployment as transmitting unclassified documents and names the
-   endpoint host, whether or not anybody asked.
+4. ``/readyz`` names the provider and the endpoint host whether or not anybody asked, and
+   reports the declared boundary next to them, with its provenance.
 
-**The zero-egress alternatives, in preference order**, both of which keep the invariant
-intact: the caller-supplied path (an upstream service does the OCR and posts the result to
-``/classify`` as ``azure_analyze_result`` / ``azure_read_result`` / ``des_ocr``), and a local
-engine (:mod:`dce.ingest.ocr`).
+**The alternatives that involve no call from this process at all**, in preference order: the
+caller-supplied path (an upstream service does the OCR and posts the result to ``/classify``
+as ``azure_analyze_result`` / ``azure_read_result`` / ``des_ocr``), and an in-process engine
+(:mod:`dce.ingest.ocr`).
+
+This is emphatically **not** the same authorisation as the paid post-classification tiers
+(T2/T3 Azure prebuilt, T4 LLM), which send a document to a vendor once its type is known.
+Those have their own settings and their own gate, and nothing here relaxes either.
 
 --------------------------------------------------------------------------------
 PROTOCOL
@@ -47,13 +61,13 @@ proven against these services in the Document Enrichment Service (``des/ocr/azur
 Polling is bounded twice — by a wall clock *and* by a poll count — because a provider that
 answers instantly with a non-terminal status would otherwise be hammered for the whole
 timeout. The ingestion :class:`~dce.ingest.limits.Deadline` bounds it a third time, so a
-remote call can never outlive the request budget the caller was promised.
+service call can never outlive the request budget the caller was promised.
 
 **The whole document goes in one call**, not one call per rasterised page. Both services
 accept PDFs and images natively, so this needs no PDF renderer, and — the point that matters
 — the payload that comes back is byte-for-byte the shape a caller would have posted on path
 (A). The same adapter maps it. Provider (B) is therefore *exactly* provider (A) with the
-network call made here instead of there, which is the only property that makes the two
+service call made here instead of there, which is the only property that makes the two
 comparable to a reviewer.
 """
 from __future__ import annotations
@@ -105,15 +119,16 @@ def _require_httpx():
         return importlib.import_module("httpx")
     except ImportError as exc:  # pragma: no cover - exercised by the extras matrix, not CI
         raise EngineUnavailable(
-            "remote OCR needs 'httpx', which is not installed. The base install deliberately "
-            "ships no HTTP client: a build that cannot open a socket cannot leak a document. "
-            "Install the optional extra deliberately: pip install '.[azure-ocr]'."
+            "the OCR service client needs 'httpx', which is not installed. The base install "
+            "deliberately ships no HTTP client: a build that cannot open a socket cannot send "
+            "a document anywhere. Install the optional extra deliberately: "
+            "pip install '.[azure-ocr]'."
         ) from exc
 
 
 @dataclass(frozen=True)
-class RemoteOcrConfig:
-    """Everything one remote provider needs, resolved from :class:`IngestSettings`."""
+class OcrServiceConfig:
+    """Everything one OCR service provider needs, resolved from :class:`IngestSettings`."""
 
     provider: str
     endpoint: str
@@ -131,12 +146,16 @@ class RemoteOcrConfig:
         return parsed.hostname or ""
 
 
-class RemoteOcrProvider(Protocol):
-    """What a network recogniser must offer. Mirrors the local protocol, plus the flag."""
+class OcrServiceProvider(Protocol):
+    """What a service recogniser must offer. Mirrors the in-process protocol, plus the flag.
+
+    ``service`` is the architectural fact — this recogniser is reached by a call to another
+    host — and is deliberately silent about whose host that is. See the module docstring.
+    """
 
     name: str
     #: Always True. The pipeline branches on this, not on the provider's name.
-    network: bool
+    service: bool
     endpoint: str
 
     def recognize(self, data: bytes, *, media_type: MediaType, deadline: Deadline) -> LayoutView:
@@ -147,9 +166,9 @@ class RemoteOcrProvider(Protocol):
 class _AzureAsyncProvider:
     """Shared 202 + ``Operation-Location`` + bounded-poll client for both Azure products."""
 
-    network = True
+    service = True
 
-    def __init__(self, config: RemoteOcrConfig, *, enabled: bool) -> None:
+    def __init__(self, config: OcrServiceConfig, *, enabled: bool) -> None:
         self._config = config
         #: Carried, not read from a global: the guard must be told what the *deployment*
         #: decided, by the code that resolved the deployment's settings, so that constructing
@@ -187,8 +206,8 @@ class _AzureAsyncProvider:
     def _budget(self, deadline: Deadline) -> float:
         """Seconds this analyse may take: the provider's own cap, or the request's if shorter.
 
-        The ingestion deadline wins when it is tighter, so a remote call can never outlive the
-        budget a caller was promised — a long poll is not a licence to hold a request open.
+        The ingestion deadline wins when it is tighter, so a service call can never outlive
+        the budget a caller was promised — a long poll is not a licence to hold a request open.
         """
         return max(0.0, min(float(self._config.timeout_seconds), deadline.remaining))
 
@@ -209,8 +228,8 @@ class _AzureAsyncProvider:
             payload would go through.
 
         Raises:
-            EgressViolation: When this deployment has not permitted remote OCR, or when the
-                call is made from inside a classification scope.
+            EgressViolation: When this deployment has not configured an OCR service, or when
+                the call is made from inside a classification scope.
             EngineUnavailable: No HTTP client installed, a transport failure, a non-202
                 submit, or a 202 with no ``Operation-Location``.
             IngestTimeout: The job did not reach a terminal status within the budget or the
@@ -221,7 +240,7 @@ class _AzureAsyncProvider:
         budget = self._budget(deadline)
         if budget <= 0:
             raise IngestTimeout(
-                f"no time left for remote OCR at {self._config.host!r}; the ingestion "
+                f"no time left for the OCR service call to {self._config.host!r}; the ingestion "
                 "deadline was already spent before the document could be submitted"
             )
         started = time.monotonic()
@@ -234,14 +253,14 @@ class _AzureAsyncProvider:
             # transport error can carry a request body, and this one's body is a customer's
             # unclassified document.
             raise EngineUnavailable(
-                f"remote OCR provider {self.name!r} at {self._config.host!r} failed: "
+                f"OCR service provider {self.name!r} at {self._config.host!r} failed: "
                 f"{type(exc).__name__}"
             ) from exc
 
         status = str(job.get("status") or "").lower()
         if status != "succeeded":
             raise MalformedDocument(
-                f"remote OCR provider {self.name!r} ended with status {status!r}; the "
+                f"OCR service provider {self.name!r} ended with status {status!r}; the "
                 "document could not be analysed"
             )
         return self._to_layout(job)
@@ -256,13 +275,13 @@ class _AzureAsyncProvider:
         )
         if response.status_code != 202:
             raise EngineUnavailable(
-                f"remote OCR provider {self.name!r} answered the analyse request with HTTP "
+                f"OCR service provider {self.name!r} answered the analyse request with HTTP "
                 f"{response.status_code} rather than 202"
             )
         operation_url = response.headers.get("Operation-Location", "")
         if not operation_url:
             raise EngineUnavailable(
-                f"remote OCR provider {self.name!r} returned 202 with no Operation-Location "
+                f"OCR service provider {self.name!r} returned 202 with no Operation-Location "
                 "header; there is nothing to poll"
             )
         return operation_url
@@ -280,12 +299,12 @@ class _AzureAsyncProvider:
             job = response.json()
             if not isinstance(job, dict):
                 raise MalformedDocument(
-                    f"remote OCR provider {self.name!r} returned a non-object job document"
+                    f"OCR service provider {self.name!r} returned a non-object job document"
                 )
             if str(job.get("status") or "").lower() in _TERMINAL:
                 return job
         raise IngestTimeout(
-            f"remote OCR provider {self.name!r} at {self._config.host!r} did not finish "
+            f"OCR service provider {self.name!r} at {self._config.host!r} did not finish "
             f"within {self._config.timeout_seconds:g}s / {self._config.max_polls} polls; the "
             "document was not classified rather than the request being held open"
         )
@@ -323,41 +342,41 @@ class AzureLayoutProvider(_AzureAsyncProvider):
         return from_azure_layout(job)
 
 
-#: The closed allowlist of network providers, keyed the same way
-#: :data:`dce.ingest.ocr.NETWORK_ENGINES` is. Extending it is a code change and a review.
+#: The closed allowlist of service providers, keyed the same way
+#: :data:`dce.ingest.ocr.SERVICE_ENGINES` is. Extending it is a code change and a review.
 _CONSTRUCTORS = {
     "azure_read": AzureReadProvider,
     "azure_layout": AzureLayoutProvider,
 }
 
 
-def load_remote_provider(config: RemoteOcrConfig, *, enabled: bool) -> RemoteOcrProvider:
-    """Construct the named network provider.
+def load_ocr_service_provider(config: OcrServiceConfig, *, enabled: bool) -> OcrServiceProvider:
+    """Construct the named OCR service provider.
 
     Args:
         config: Endpoint, key, versions and the polling bounds.
-        enabled: Whether the deployment permitted remote OCR. Passed through to
+        enabled: Whether the deployment configured an OCR service. Passed through to
             :func:`dce.egress.assert_ocr_egress_permitted` on every request; constructing a
             provider with ``enabled=False`` is legal and useless, which is the intent — the
             permission is checked where the bytes leave, not where the object is made.
 
     Raises:
-        EngineUnavailable: ``config.provider`` is not a network provider, the endpoint is
+        EngineUnavailable: ``config.provider`` is not a service provider, the endpoint is
             empty (with nowhere to send a document there is nothing to construct), or the
             HTTP client is not installed. The pipeline treats all three as "this deployment
-            cannot recognise images" and returns ``needs_ocr``, exactly as it does for a
-            local engine whose extra is missing — a half-configured recogniser must degrade
-            the same way whichever kind it is.
+            cannot recognise images" and returns ``needs_ocr``, exactly as it does for an
+            in-process engine whose extra is missing — a half-configured recogniser must
+            degrade the same way whichever kind it is.
     """
     constructor = _CONSTRUCTORS.get((config.provider or "").strip().lower())
     if constructor is None:
         raise EngineUnavailable(
-            f"unknown remote OCR provider {config.provider!r}; supported: "
+            f"unknown OCR service provider {config.provider!r}; supported: "
             f"{', '.join(sorted(_CONSTRUCTORS))}"
         )
     if not config.endpoint.strip():
         raise EngineUnavailable(
-            f"remote OCR provider {config.provider!r} has no endpoint configured; with "
+            f"OCR service provider {config.provider!r} has no endpoint configured; with "
             "nowhere to send a document there is nothing to construct"
         )
     # Checked here as well as at the first request, so a missing extra presents as
@@ -370,8 +389,8 @@ def load_remote_provider(config: RemoteOcrConfig, *, enabled: bool) -> RemoteOcr
 __all__ = [
     "AzureLayoutProvider",
     "AzureReadProvider",
-    "RemoteOcrConfig",
-    "RemoteOcrProvider",
+    "OcrServiceConfig",
+    "OcrServiceProvider",
     "content_type_for",
-    "load_remote_provider",
+    "load_ocr_service_provider",
 ]

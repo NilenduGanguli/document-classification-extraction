@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from dce.ingest.builder import LayoutBuilder
 from dce.ingest.detect import IMAGE_TYPES, MediaType, decode_text, detect
@@ -27,7 +27,13 @@ from dce.ingest.images import (
     recognize_image,
 )
 from dce.ingest.limits import Deadline, IngestLimits
-from dce.ingest.ocr import LocalOcrProvider, ocr_pages_to_builder, provider_or_none
+from dce.ingest.ocr import (
+    ENGINES,
+    SERVICE_ENGINES,
+    LocalOcrProvider,
+    ocr_pages_to_builder,
+    provider_or_none,
+)
 from dce.ingest.result import IngestResult, IngestStatus, TextSource
 from dce.ingest.settings import IngestSettings, get_ingest_settings
 from dce.models import LayoutView
@@ -45,141 +51,135 @@ class IngestOptions(BaseModel):
       recognition engine, and whether this deployment stands behind that engine's accuracy,
       are operator decisions; a caller flag that could switch them on would make the default
       meaningless.
-    * ``remote_ocr`` is the same asymmetry over the network providers, and it matters more:
-      a caller who knows this particular document may not leave their jurisdiction can always
-      decline, and can never grant. **Either flag set to False declines whichever recogniser
-      this deployment has configured** — only one is ever active (:meth:`IngestSettings._check`
-      refuses both at once), and a caller saying "do not run OCR on this" must be honoured
-      whichever kind is installed rather than silently applying to the other one.
-    * ``ocr_provider`` is an **assertion, not a selector**, and the distinction is the whole
-      point. It says "read this only if the recogniser configured here is the one I was told
-      about"; a mismatch raises
+    * ``ocr_service`` (accepted under its old name ``remote_ocr``) is the same asymmetry over
+      the service providers, and it matters more: a caller who knows this particular document
+      may not leave their jurisdiction can always decline, and can never grant. **Either flag
+      set to False declines recognition for this request**, whichever recogniser would have
+      run — a caller saying "do not run OCR on this" must be honoured whichever kind is
+      configured rather than silently applying to the other one.
+    * ``ocr_provider`` **chooses among the recognisers this deployment configured, and can
+      never add one.** That asymmetry is the whole point. A deployment may configure several
+      — an in-process engine and one or both Azure services — and a caller then names the one
+      it wants; naming anything else raises
       :class:`~dce.ingest.errors.OcrProviderMismatch` rather than quietly using whatever is
-      installed. It therefore cannot grant either: pinning ``azure_read`` where no remote
-      recogniser is enabled is a refusal, not an enablement.
+      installed. Pinning ``azure_read`` where no OCR service is configured is therefore a
+      refusal, not an enablement.
 
       Without it the worst failure on this path is silent. A console shows an operator "this
-      document will be sent to <endpoint>", the operator accepts, the deployment is
-      reconfigured to a different provider, and the document goes to a third party nobody
+      document will be read by <endpoint>", the operator accepts, the deployment is
+      reconfigured to a different provider, and the document is read somewhere nobody
       acknowledged — with every response still reporting, truthfully, that OCR succeeded.
       The pin turns that into an error.
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
     filename: str | None = Field(default=None, max_length=512)
     local_ocr: bool | None = None
-    remote_ocr: bool | None = None
-    #: The provider the caller expects to run, e.g. ``azure_layout``. See the class docstring:
-    #: checked against :meth:`IngestSettings.active_provider`, never used to choose one.
+    #: Decline the OCR service for this request. ``remote_ocr`` is the old name and is still
+    #: accepted, so a caller written against the previous API keeps working.
+    ocr_service: bool | None = Field(
+        default=None, validation_alias=AliasChoices("ocr_service", "remote_ocr")
+    )
+    #: The provider this request wants, e.g. ``azure_layout``. See the class docstring: chosen
+    #: from :meth:`IngestSettings.configured_providers`, never able to extend it.
     ocr_provider: str | None = Field(default=None, max_length=64)
 
 
-def _check_provider_pin(settings: IngestSettings, pinned: str | None) -> None:
-    """Verify a caller's ``ocr_provider`` assertion against what is actually configured.
+def _selected_provider(settings: IngestSettings, pinned: str | None) -> str:
+    """The recogniser this request will use, by name, or ``"none"``.
 
-    Checked whenever it is set, including when the caller also declined recognition. It is an
-    assertion about the *deployment*, and an assertion that is wrong is worth saying so
-    regardless of whether this particular request would have acted on it — a caller working
-    from a stale picture of where documents go should find that out on the first request, not
-    on the first one that happens to contain an image.
+    A pin is checked whenever it is set, including when the caller also declined recognition.
+    It is an assertion about the *deployment*, and an assertion that is wrong is worth saying
+    so regardless of whether this particular request would have acted on it — a caller working
+    from a stale picture of where documents are read should find that out on the first request,
+    not on the first one that happens to contain an image.
+
+    Returns:
+        The provider id, or ``"none"`` when this deployment has configured no recogniser.
 
     Raises:
-        OcrProviderMismatch: The pin does not name the active recogniser.
+        OcrProviderMismatch: The pin names something this deployment has not configured.
     """
-    if pinned is None:
-        return
-    wanted = pinned.strip().lower()
+    wanted = (pinned or "").strip().lower()
     if not wanted:
-        return
-    active = settings.active_provider()
-    if wanted == active:
-        return
-    if active == "none":
+        return settings.default_provider()
+    if settings.is_configured(wanted):
+        return wanted
+    configured = settings.configured_providers()
+    if not configured:
         detail = (
-            f"this request pinned ocr_provider={wanted!r}, but no recogniser is configured on "
-            "this deployment. A pin cannot switch one on: it only refuses to let a document "
-            "be read by a provider other than the one the caller was told about"
+            f"this request asked for ocr_provider={wanted!r}, but no recogniser is configured "
+            "on this deployment. The pin chooses among the recognisers an operator configured: "
+            "it cannot switch one on"
         )
     else:
         detail = (
-            f"this request pinned ocr_provider={wanted!r}, but the recogniser configured here "
-            f"is {active!r}. Refusing rather than substituting: if a caller has disclosed one "
-            "destination to a user, reading the document with a different one would make that "
-            "disclosure false"
+            f"this request asked for ocr_provider={wanted!r}, but the recognisers configured "
+            f"here are {', '.join(configured)}. Refusing rather than substituting: if a caller "
+            "has disclosed one destination to a user, reading the document with a different "
+            "one would make that disclosure false"
         )
     raise OcrProviderMismatch(detail)
 
 
-def _declined(local_ocr: bool | None, remote_ocr: bool | None) -> bool:
+def _declined(local_ocr: bool | None, ocr_service: bool | None) -> bool:
     """Whether the caller declined recognition, by either flag.
 
-    Either one is enough. Only one recogniser is ever active on a deployment, and a caller
-    saying "do not run OCR on this document" must be obeyed whichever kind happens to be
-    installed rather than silently applying to the other one.
+    Either one is enough. A caller saying "do not run OCR on this document" must be obeyed
+    whichever kind of recogniser this deployment would have used, rather than silently applying
+    to the other one.
     """
-    return local_ocr is False or remote_ocr is False
+    return local_ocr is False or ocr_service is False
 
 
-def _resolve_provider(
-    settings: IngestSettings, requested: bool | None
-) -> tuple[LocalOcrProvider | None, bool]:
-    """``(provider, enabled_on_this_deployment)``."""
-    if not settings.local_ocr_enabled:
-        return None, False
-    if requested is False:
-        return None, True
-    return (
-        provider_or_none(settings.local_ocr_engine, languages=settings.local_ocr_languages),
-        True,
-    )
+def _resolve_local_provider(
+    settings: IngestSettings, selected: str, *, declined: bool
+) -> LocalOcrProvider | None:
+    """The in-process engine for this request, or ``None`` when one will not run."""
+    if declined or selected not in ENGINES:
+        return None
+    return provider_or_none(selected, languages=settings.local_ocr_languages)
 
 
-def _resolve_remote_provider(settings: IngestSettings, *, declined: bool):
-    """``(provider, enabled_on_this_deployment)`` for the NETWORK recogniser.
+def _resolve_service_provider(settings: IngestSettings, selected: str, *, declined: bool):
+    """The OCR service provider for this request, or ``None`` when one will not run.
 
     Constructing the provider is not the permission — :func:`dce.egress.assert_ocr_egress_permitted`
     is, and it runs at every request the provider makes. This returns ``None`` for the three
-    ways there is nothing to call: the deployment did not switch remote OCR on, the caller
-    declined it for this request, or it is on but has no endpoint (a secret that has not
-    landed, which degrades to ``needs_ocr`` rather than taking the service down).
-
-    Returns:
-        ``(provider_or_none, enabled_on_this_deployment)``.
+    ways there is nothing to call: the selected recogniser is not a service provider, the
+    caller declined recognition for this request, or the provider is configured but has no
+    endpoint (a secret that has not landed, which degrades to ``needs_ocr`` rather than taking
+    the service down).
     """
-    if not settings.remote_ocr_enabled:
-        return None, False
-    if declined:
-        return None, True
-    # Imported here, not at module scope: this module is on the default, zero-egress build's
-    # import path, and the remote module's whole job is to reach the network.
-    from dce.ingest.remote_ocr import RemoteOcrConfig, load_remote_provider
+    if declined or selected not in SERVICE_ENGINES:
+        return None
+    # Imported here, not at module scope: this module is on the default build's import path,
+    # and the service module's whole job is to reach another host over a socket.
+    from dce.ingest.ocr_service import OcrServiceConfig, load_ocr_service_provider
 
-    read = settings.remote_ocr_provider == "azure_read"
-    config = RemoteOcrConfig(
-        provider=settings.remote_ocr_provider,
-        endpoint=(settings.azure_read_endpoint if read else settings.azure_di_endpoint).strip(),
+    read = selected == "azure_read"
+    config = OcrServiceConfig(
+        provider=selected,
+        endpoint=settings.provider_endpoint(selected),
         key=settings.azure_read_key if read else settings.azure_di_key,
         api_version=(
             settings.azure_read_api_version if read else settings.azure_di_api_version
         ),
         model="" if read else settings.azure_di_model,
-        timeout_seconds=settings.remote_ocr_timeout_seconds,
-        poll_interval_seconds=settings.remote_ocr_poll_interval_seconds,
-        max_polls=settings.remote_ocr_max_polls,
+        timeout_seconds=settings.ocr_service_timeout_seconds,
+        poll_interval_seconds=settings.ocr_service_poll_interval_seconds,
+        max_polls=settings.ocr_service_max_polls,
     )
     try:
-        return load_remote_provider(config, enabled=True), True
+        return load_ocr_service_provider(config, enabled=True)
     except EngineUnavailable:
         # No endpoint, or the HTTP extra is not installed. Both are "we cannot", not "we
-        # refuse", and both are already described by IngestSettings.remote_ocr_problem().
-        return None, True
+        # refuse", and both are already described by IngestSettings.provider_problem().
+        return None
 
 
-def _why_no_engine(
-    settings: IngestSettings,
-    enabled: bool,
-    requested: bool | None,
-    remote_requested: bool | None = None,
-) -> str:
+def _why_no_engine(settings: IngestSettings, selected: str, *, declined: bool) -> str:
     """The clause that distinguishes the ways ``ocr_available`` can be False.
 
     "We cannot read this" is only actionable if the caller can tell *why* nothing recognised
@@ -190,34 +190,33 @@ def _why_no_engine(
     further prose by its consumers — the console appends "This is not a failed classification…"
     directly after it — and an unterminated clause runs the two sentences together.
     """
-    if settings.remote_ocr_enabled:
-        if _declined(requested, remote_requested):
-            return (
-                ". A remote OCR provider is configured here but this request declined it "
-                "(local_ocr=false / remote_ocr=false)."
-            )
-        problem = settings.remote_ocr_problem()
-        if problem:
-            return f". Remote OCR is switched on here but unusable: {problem}."
+    if selected == "none":
         return (
-            ". Remote OCR is switched on here but the HTTP client is not installed — see the "
-            "azure-ocr extra."
+            ". No recogniser is configured on this deployment — neither an in-process engine "
+            "(DCE_INGEST_LOCAL_OCR_ENABLED) nor an OCR service "
+            "(DCE_INGEST_OCR_SERVICE_ENABLED)."
         )
-    if not enabled:
+    if declined:
         return (
-            ". Local OCR is switched off on this deployment, and no remote provider is "
-            "configured."
+            f". {selected} is configured here but this request declined recognition "
+            "(local_ocr=false / ocr_service=false)."
         )
-    if requested is False:
-        return ". Local OCR is available here but this request declined it (local_ocr=false)."
+    problem = settings.provider_problem(selected)
+    if problem:
+        return f". {selected} is configured here but unusable: {problem}."
+    if selected in SERVICE_ENGINES:
+        return (
+            f". The OCR service provider {selected} is configured here but the HTTP client is "
+            "not installed — see the azure-ocr extra."
+        )
     return (
-        ". Local OCR is switched on here but its engine is not installed — see the "
+        f". Local OCR is switched on here but the {selected} engine is not installed — see the "
         "ocr-rapidocr / ocr-tesseract extras."
     )
 
 
-def _cap_remote_view(view: LayoutView, limits: IngestLimits) -> tuple[bool, list[str]]:
-    """Apply the truncating caps to a view a remote provider produced.
+def _cap_service_view(view: LayoutView, limits: IngestLimits) -> tuple[bool, list[str]]:
+    """Apply the truncating caps to a view an OCR service produced.
 
     Path (A) applies no caps — a caller-supplied payload is the caller's own problem, and the
     request-body limit already bounds it. Path (B) is different: **we** asked for this payload,
@@ -250,7 +249,7 @@ def _cap_remote_view(view: LayoutView, limits: IngestLimits) -> tuple[bool, list
     return bool(hits), hits
 
 
-def _remote_ingest(
+def _service_ingest(
     data: bytes,
     media_type: MediaType,
     provider,
@@ -263,7 +262,7 @@ def _remote_ingest(
     detection_basis: str,
     started: float,
 ) -> IngestResult:
-    """Recognise a document by **sending it to a third party**, and record that we did.
+    """Recognise a document by **calling the configured OCR service**, and record that we did.
 
     The document goes out whole and comes back as the provider's own payload, which is mapped
     by the very adapter a caller-supplied payload would go through
@@ -272,29 +271,29 @@ def _remote_ingest(
     reviewer comparing the two paths is comparing who dialled, not what was parsed.
     """
     view = provider.recognize(data, media_type=media_type, deadline=deadline)
-    truncated, hits = _cap_remote_view(view, limits)
+    truncated, hits = _cap_service_view(view, limits)
     view.doc_id = doc_id
     host = getattr(provider, "endpoint", "")
     view.raw = {
         **view.raw,
-        "ingested_by": "dce.ingest.remote_ocr",
+        "ingested_by": "dce.ingest.ocr_service",
         "media_type": str(media_type),
         "detected_by": detection_basis,
-        "text_source": str(TextSource.remote_ocr),
+        "text_source": str(TextSource.ocr_service),
         "ocr_engine": provider.name,
         # Recorded on the view itself, not only on the result: a stored LayoutView must be
-        # able to answer "did this document leave the building to become readable" on its own.
-        "ocr_is_remote": True,
-        "ocr_endpoint_host": settings.remote_ocr_endpoint_host() or host,
+        # able to answer "was this document read in this process or by a service" on its own.
+        "ocr_via_service": True,
+        "ocr_endpoint_host": settings.provider_endpoint_host(provider.name) or host,
         "truncated": truncated,
     }
     result.view = view
     result.status = IngestStatus.ok
-    result.text_source = TextSource.remote_ocr
+    result.text_source = TextSource.ocr_service
     result.ocr_engine = provider.name
     result.ocr_available = True
-    result.ocr_is_remote = True
-    result.ocr_endpoint_host = settings.remote_ocr_endpoint_host()
+    result.ocr_via_service = True
+    result.ocr_endpoint_host = settings.provider_endpoint_host(provider.name)
     result.block_count = len(view.blocks)
     result.char_count = sum(len(b.text) for b in view.blocks)
     result.page_count = len(view.pages) or result.page_count
@@ -376,7 +375,7 @@ def ingest(
     limits: IngestLimits | None = None,
     settings: IngestSettings | None = None,
     local_ocr: bool | None = None,
-    remote_ocr: bool | None = None,
+    ocr_service: bool | None = None,
     ocr_provider: str | None = None,
 ) -> IngestResult:
     """Turn an uploaded file into a :class:`~dce.models.LayoutView`, or say why not.
@@ -390,9 +389,10 @@ def ingest(
             default.
         local_ocr: ``False`` to suppress recognition for this request. ``True`` requests it
             but cannot enable it where the deployment has not.
-        remote_ocr: The same asymmetry over the network providers. Either flag set to
-            ``False`` declines whichever recogniser this deployment configured.
-        ocr_provider: Assert which recogniser must be the configured one. Never selects one.
+        ocr_service: The same asymmetry over the service providers. Either flag set to
+            ``False`` declines whichever recogniser this request would have used.
+        ocr_provider: Choose among the recognisers this deployment configured. Never adds
+            one.
 
     Returns:
         An :class:`~dce.ingest.result.IngestResult`, with ``status`` either ``ok`` (``view``
@@ -401,16 +401,17 @@ def ingest(
     Raises:
         IngestError: Any subclass, for an upload that could not be parsed. Never anything
             else — a parser's internal exception is translated at its own boundary.
-        OcrProviderMismatch: ``ocr_provider`` names something other than the recogniser this
-            deployment is configured to use.
-        EgressViolation: Only on the remote-OCR path, and only when it was reached without
-            the deployment permitting it. Not caught and softened here: a refused disclosure
+        OcrProviderMismatch: ``ocr_provider`` names a recogniser this deployment has not
+            configured.
+        EgressViolation: Only on the OCR-service path, and only when it was reached without
+            the deployment having configured one. Not caught and softened here: a refused call
             must not present as a parse failure.
     """
     started = time.perf_counter()
     settings = settings or get_ingest_settings()
     limits = limits or settings.limits()
-    _check_provider_pin(settings, ocr_provider)
+    selected = _selected_provider(settings, ocr_provider)
+    declined = _declined(local_ocr, ocr_service)
 
     if len(data) > limits.max_bytes:
         raise PayloadTooLarge(
@@ -419,26 +420,24 @@ def ingest(
     deadline = Deadline(limits.max_seconds)
     detection = detect(data, filename=filename, limits=limits, deadline=deadline)
     media_type = detection.media_type
-    provider, ocr_enabled = _resolve_provider(settings, local_ocr)
-    # Mutually exclusive with the local one by construction: IngestSettings refuses a
-    # configuration with both switched on, so at most one of these is ever non-None.
-    remote, _remote_enabled = _resolve_remote_provider(
-        settings, declined=_declined(local_ocr, remote_ocr)
-    )
+    # At most one of these is ever non-None: `selected` names one recogniser, and it is
+    # either an in-process engine or a service provider.
+    provider = _resolve_local_provider(settings, selected, declined=declined)
+    service = _resolve_service_provider(settings, selected, declined=declined)
 
     builder = LayoutBuilder(limits, deadline)
     result = IngestResult(
         media_type=media_type,
         detected_by=detection.basis,
         byte_size=len(data),
-        ocr_available=(ocr_enabled and provider is not None) or remote is not None,
+        ocr_available=provider is not None or service is not None,
     )
 
     def _no_ocr(reason: str) -> IngestResult:
         """The honest refusal, with the clause that says which of the ways it was."""
         result.status = IngestStatus.needs_ocr
         result.text_source = TextSource.none
-        result.reason = reason + _why_no_engine(settings, ocr_enabled, local_ocr, remote_ocr)
+        result.reason = reason + _why_no_engine(settings, selected, declined=declined)
         result.remedy = NEEDS_OCR_REMEDY
         result.ms = int((time.perf_counter() - started) * 1000)
         return result
@@ -447,9 +446,9 @@ def ingest(
     if media_type in IMAGE_TYPES:
         info = probe(data, media_type)
         result.page_count = info.frames
-        if remote is not None:
-            return _remote_ingest(
-                data, media_type, remote, settings, limits, deadline, result,
+        if service is not None:
+            return _service_ingest(
+                data, media_type, service, settings, limits, deadline, result,
                 doc_id=doc_id, detection_basis=detection.basis, started=started,
             )
         if provider is None:
@@ -474,11 +473,11 @@ def ingest(
             builder.truncated = True
             builder.limits_hit.append("max_pages")
         if outcome.needs_ocr:
-            # A scan. The remote provider takes the PDF whole — both Azure products read PDFs
-            # natively — so nothing is rasterised and no page renderer is involved.
-            if remote is not None:
-                return _remote_ingest(
-                    data, media_type, remote, settings, limits, deadline, result,
+            # A scan. The service provider takes the PDF whole — both Azure products read
+            # PDFs natively — so nothing is rasterised and no page renderer is involved.
+            if service is not None:
+                return _service_ingest(
+                    data, media_type, service, settings, limits, deadline, result,
                     doc_id=doc_id, detection_basis=detection.basis, started=started,
                 )
             return _no_ocr(scanned_reason(outcome))

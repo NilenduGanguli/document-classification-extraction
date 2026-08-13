@@ -84,25 +84,36 @@ per-deployment decision with a per-page price and a data-flow consequence, not a
 ### Reading an image: three answers, and only one of them is egress
 
 An image carries no text. Classifying one **requires** optical recognition, and recognition
-happens either on this host or on somebody else's — there is no third place. That is a genuine
+happens either in this process or on another host — there is no third place. That is a genuine
 trade-off, not a bug to code around, so the service offers all three answers and makes it
 obvious which one a deployment has taken.
 
-| | Who calls Azure | Zone roles | Egress from DCE | Default |
+| | Who calls the recogniser | Zone roles | Call out of this process | Default |
 |---|---|---|---|---|
 | **(A) Caller-supplied** — post the result to `/classify` as `azure_analyze_result` (either product), `azure_read_result` or `des_ocr` | your upstream service, under its own authorisation | Layout: yes. Read: no | **none — no socket is opened** | recommended |
 | **(B) Local OCR** — `DCE_INGEST_LOCAL_OCR_ENABLED=true` plus the `ocr-rapidocr` / `ocr-tesseract` extra | nobody | no | none | off |
-| **(C) Remote OCR** — `DCE_INGEST_REMOTE_OCR_ENABLED=true` plus an endpoint plus `EXTRA_PACKAGES="httpx>=0.27"` | **this service, before the doctype is known** | Layout: yes. Read: no | **yes** | off |
+| **(C) An OCR service** — `DCE_INGEST_OCR_SERVICE_ENABLED=true` plus an endpoint plus `EXTRA_PACKAGES="httpx>=0.27"` | **this service, before the doctype is known** | Layout: yes. Read: no | **yes** | off |
 
 **Prefer (A).** It gives you Azure-quality text *and* leaves the invariant untouched, because
 the recognition happens where the document already legitimately is. All three feed the same
 adapters and the same cascade — the only difference is who dialled.
 
+**(B) and (C) can be configured together, and more than one provider at a time.** Set
+`DCE_INGEST_OCR_DEFAULT_PROVIDER` to say which one runs when a request names none, and a
+caller then selects among them per request with `ingest.ocr_provider`. The pin chooses among
+what the deployment configured; it can never add a provider. Configuring both without naming
+a default stops the process at boot rather than the code picking one silently.
+
 **(C) is an auditable act, not a tuning knob.** It is off by default; the default image has no
 HTTP client, so it cannot be taken by accident; every request passes
 `dce.egress.assert_ocr_egress_permitted`, which names the provider and the endpoint and refuses
-inside a classification scope; configuring (B) and (C) together stops the process at boot
-rather than picking one silently; and a deployment that has taken it says so:
+inside a classification scope; and a deployment that has taken it says so. **Whose network the
+endpoint is on is declared, not inferred** — `DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY` is
+`external` by default, so a deployment that declares nothing gets the cautious reading below;
+declaring `on_premises` makes the same block read as configuration ("images are read by
+`azure_layout` at `<host>`, which this deployment declares is on its own network") without
+changing a single fact it reports. The settings were once called `DCE_INGEST_REMOTE_OCR_*`;
+those names are still read as aliases and the service names them at boot.
 
 ```console
 $ curl -s localhost:8200/readyz | jq '{ocr, preclassification_ocr: .egress.preclassification_ocr}'

@@ -4,12 +4,25 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Empty by default, and that is the strongest control this service has: with no HTTP
-        # client installed, the image *cannot* send a document anywhere. Set it to
-        # "httpx>=0.27" only if you are enabling T2/T3/T4 below, or the REMOTE OCR provider
-        # further down — and see the README section "What changes when you enable a paid
-        # tier". Those are the only two reasons this line should ever be non-empty.
-        EXTRA_PACKAGES: "${EXTRA_PACKAGES:-}"
+        # THE OCR STACK THIS DEPLOYMENT USES. Two things go in here and nothing else:
+        #
+        #   * rapidocr + onnxruntime — the in-process engine, so `rapidocr` in the console's
+        #     provider picker is a real option rather than a greyed-out row;
+        #   * httpx — the HTTP client the OCR service providers need to reach the OCR
+        #     endpoints configured below.
+        #
+        # Leaving it EMPTY is still the strongest control this service has: with no HTTP
+        # client installed the image *cannot* send a document anywhere, whatever a setting
+        # says. This file is not that build — it is the in-network deployment, where OCR runs
+        # inside the operator's own boundary — so the client is installed deliberately and
+        # /readyz says so. If you want the zero-dependency build back, set EXTRA_PACKAGES=""
+        # and turn the OCR block below off.
+        #
+        # Note what is still NOT here: nothing for the paid post-classification tiers beyond
+        # the shared HTTP client. T2/T3/T4 remain off (see further down) and they are a
+        # different authorisation — a vendor reading a document whose type is known — from an
+        # OCR service on your own network reading one whose type is not.
+        EXTRA_PACKAGES: "${EXTRA_PACKAGES:-rapidocr-onnxruntime>=1.3 onnxruntime>=1.17 numpy>=1.26 pillow>=10.3 httpx>=0.27}"
     image: document-classification-extraction:0.1.0
     container_name: dce
     ports:
@@ -41,57 +54,67 @@ services:
       CLASSIFY_MIN_SUPPORT: "0.30"
       CLASSIFY_MIN_COVERAGE: "0.20"
 
-      # ---- OCR: HOW AN IMAGE BECOMES TEXT, AND WHETHER IT LEAVES ------------------------
+      # ---- OCR: HOW AN IMAGE BECOMES TEXT ------------------------------------------------
       # An image carries no text, so classifying one REQUIRES recognition, and recognition
-      # happens either on this host or on somebody else's. There is no third option and this
-      # block is where you pick. Leaving it exactly as it is gives you the default: images
-      # and scanned PDFs come back as a structured `needs_ocr`, nothing is guessed at, and
-      # nothing leaves.
+      # happens either in this process or on another host. There is no third option and this
+      # block is where you pick — or, as here, where you configure several and let each
+      # request choose.
       #
-      # The BEST answer is usually not in this block at all: have whoever already holds the
-      # document run Azure Read or Azure Layout under their own authorisation and POST the
-      # result to /classify as `azure_analyze_result` (either product — the shape decides the
-      # adapter), `azure_read_result` or `des_ocr`. Identical classification, and this
-      # service opens no socket. The console's "Azure result" and "DES OCR" tabs are that
-      # path.
+      # THIS DEPLOYMENT CONFIGURES ALL OF THEM, because all of them run inside the operator's
+      # own network: rapidocr in this container, and both Azure products against the local
+      # mocks. Every entry in the console's provider picker is therefore selectable, and
+      # `ingest.ocr_provider` on the API chooses between them per request. A pin can only ever
+      # choose among what is configured here; it can never switch something on.
       #
-      # (a) LOCAL, in-process. Zero egress, materially lower accuracy. Needs the image to be
-      #     rebuilt with the ocr-rapidocr or ocr-tesseract extra.
-      DCE_INGEST_LOCAL_OCR_ENABLED: "${DCE_INGEST_LOCAL_OCR_ENABLED:-false}"
+      # There is still a path that involves no call from this process at all, and it is the
+      # right answer for a deployment whose OCR lives somewhere this container cannot reach:
+      # have whoever already holds the document run Azure Read or Azure Layout under their own
+      # authorisation and POST the result to /classify as `azure_analyze_result` (either
+      # product — the shape decides the adapter), `azure_read_result` or `des_ocr`. Identical
+      # classification, and this service opens no socket. The console's "Azure result" and
+      # "DES OCR" tabs are that path.
+      #
+      # (a) IN-PROCESS. Nothing is sent anywhere; materially lower accuracy than either Azure
+      #     product. Needs the image built with rapidocr installed — see EXTRA_PACKAGES above.
+      DCE_INGEST_LOCAL_OCR_ENABLED: "${DCE_INGEST_LOCAL_OCR_ENABLED:-true}"
       DCE_INGEST_LOCAL_OCR_ENGINE: "${DCE_INGEST_LOCAL_OCR_ENGINE:-rapidocr}"
       #
-      # (b) REMOTE. THIS SENDS DOCUMENTS NOBODY HAS CLASSIFIED YET out of this process, to be
-      #     read by a service on the other end of a socket. Whether that is a third party or
-      #     your own OCR appliance is declared below and is NOT something the code can work
-      #     out. It is here because refusing to read an image is not the right answer for
-      #     every deployment, and because a capability that has to be forked in is a
-      #     capability nobody reviews. Three things are required and all three are visible:
-      #     this flag, an endpoint, and an image rebuilt with EXTRA_PACKAGES="httpx>=0.27".
-      #     /readyz then reports ocr.network=true, egress.preclassification_ocr=true, the
-      #     endpoint host and the declared boundary. It cannot be combined with (a) — the
-      #     container refuses to start rather than pick one silently.
-      DCE_INGEST_REMOTE_OCR_ENABLED: "${DCE_INGEST_REMOTE_OCR_ENABLED:-false}"
+      # (b) OCR SERVICE. Documents nobody has classified yet are sent to the endpoints below to
+      #     be read. Whose network those endpoints are on is declared further down and is NOT
+      #     something the code can work out — here they are local mocks on this Mac, and in the
+      #     cluster they are Azure pods beside this one. Three things are required and all
+      #     three are visible: this flag, an endpoint per provider, and an image built with an
+      #     HTTP client. /readyz then reports every configured provider, its endpoint host,
+      #     ocr.network=true, egress.preclassification_ocr=true and the declared boundary.
+      DCE_INGEST_OCR_SERVICE_ENABLED: "${DCE_INGEST_OCR_SERVICE_ENABLED:-true}"
       # azure_layout (Document Intelligence v4.0 prebuilt-layout) or azure_read (Vision Read
       # v3.2). Prefer layout: Read predicts no paragraph roles, so a Read payload can never
-      # satisfy a title-gated decisive anchor and classifies on strictly less evidence.
-      DCE_INGEST_REMOTE_OCR_PROVIDER: "${DCE_INGEST_REMOTE_OCR_PROVIDER:-azure_layout}"
-      # Deliberately NOT the same variables as AZURE_DI_ENDPOINT/KEY below: sending a
-      # document before its type is known and sending one after are two different
+      # satisfy a title-gated decisive anchor and classifies on strictly less evidence. Both
+      # are configured below; this names the one the service side runs by default.
+      DCE_INGEST_OCR_SERVICE_PROVIDER: "${DCE_INGEST_OCR_SERVICE_PROVIDER:-azure_layout}"
+      # With an in-process engine AND an OCR service both configured, one of them runs when a
+      # request names no provider — and the code refuses to guess which, because preferring
+      # either would silently override one of the two decisions. So it is declared. Set it to
+      # `rapidocr` if you would rather an unpinned request stay in this process and only the
+      # requests that ask go to the service.
+      DCE_INGEST_OCR_DEFAULT_PROVIDER: "${DCE_INGEST_OCR_DEFAULT_PROVIDER:-azure_layout}"
+      # Deliberately NOT the same variables as AZURE_DI_ENDPOINT/KEY below: reading a document
+      # before its type is known and sending one to a paid vendor tier after are two different
       # authorisations, and one variable granting both would let enabling T2 quietly enable
-      # this. The keys belong in a secret store.
+      # this. The keys belong in a secret store; the mocks below need none.
       #
       # Local mocks for both products live in the document-enrichment-services repo
       # (`docker compose up azure-ocr-mock azure-di-mock`) and listen on the host at
-      # :5006 (Read v3.2) and :5007 (DI v4.0). From this container reach them at
-      # http://host.docker.internal:5007 — never point a real deployment at a mock.
-      DCE_INGEST_AZURE_DI_ENDPOINT: "${DCE_INGEST_AZURE_DI_ENDPOINT:-}"
+      # :5006 (Read v3.2) and :5007 (DI v4.0). From this container they are reached at
+      # host.docker.internal — never point a real deployment at a mock.
+      DCE_INGEST_AZURE_DI_ENDPOINT: "${DCE_INGEST_AZURE_DI_ENDPOINT:-http://host.docker.internal:5007}"
       DCE_INGEST_AZURE_DI_KEY: "${DCE_INGEST_AZURE_DI_KEY:-}"
       DCE_INGEST_AZURE_DI_API_VERSION: "${DCE_INGEST_AZURE_DI_API_VERSION:-2024-11-30}"
       DCE_INGEST_AZURE_DI_MODEL: "${DCE_INGEST_AZURE_DI_MODEL:-prebuilt-layout}"
-      DCE_INGEST_AZURE_READ_ENDPOINT: "${DCE_INGEST_AZURE_READ_ENDPOINT:-}"
+      DCE_INGEST_AZURE_READ_ENDPOINT: "${DCE_INGEST_AZURE_READ_ENDPOINT:-http://host.docker.internal:5006}"
       DCE_INGEST_AZURE_READ_KEY: "${DCE_INGEST_AZURE_READ_KEY:-}"
       #
-      # WHERE THAT ENDPOINT SITS — a declaration, because it cannot be inferred.
+      # WHERE THOSE ENDPOINTS SIT — a declaration, because it cannot be inferred.
       # `ocr.internal.corp` and `x.cognitiveservices.azure.com` are the same operation to this
       # service: resolve a name, open a socket, put a document on it. A hostname is not
       # evidence of ownership — private DNS can point `internal` at anything, and a private
@@ -100,18 +123,22 @@ services:
       # reading, never the reassuring one by omission.
       #
       # This compose file declares `on_premises` because that is what THIS deployment is: the
-      # OCR and Azure services run inside the operator's own boundary, so the documents do not
-      # reach a third party. Declaring it changes how /readyz READS — it stops describing an
-      # internal hop as a transmission to a third party — and changes nothing about what the
-      # process DOES: ocr.network and egress.preclassification_ocr stay true, the endpoint is
-      # still named, and /readyz records that this value is the operator's declaration and not
-      # something the service verified. Point this at a vendor endpoint, or at anything
-      # outside your own network, and you must set `external`.
-      DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY: "${DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY:-on_premises}"
+      # OCR services run inside the operator's own boundary, so documents never leave the
+      # organisation's control. Declaring it changes how /readyz READS — the posture becomes a
+      # description of how this deployment reads an image, not a warning about a disclosure —
+      # and changes nothing about what the process DOES: ocr.network and
+      # egress.preclassification_ocr stay true, the endpoint is still named, and /readyz
+      # records that this value is the operator's declaration and not something the service
+      # verified. Point this at a vendor endpoint, or at anything outside your own network,
+      # and you must set `external`.
+      DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY: "${DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY:-on_premises}"
       # Bounded twice on purpose: a caller is holding the request open, and `needs_ocr` is
       # where an unreadable document was going anyway.
-      DCE_INGEST_REMOTE_OCR_TIMEOUT_SECONDS: "${DCE_INGEST_REMOTE_OCR_TIMEOUT_SECONDS:-30}"
-      DCE_INGEST_REMOTE_OCR_MAX_POLLS: "${DCE_INGEST_REMOTE_OCR_MAX_POLLS:-60}"
+      DCE_INGEST_OCR_SERVICE_TIMEOUT_SECONDS: "${DCE_INGEST_OCR_SERVICE_TIMEOUT_SECONDS:-30}"
+      DCE_INGEST_OCR_SERVICE_MAX_POLLS: "${DCE_INGEST_OCR_SERVICE_MAX_POLLS:-60}"
+      #
+      # The DCE_INGEST_REMOTE_OCR_* names these replaced are still read as aliases, so an
+      # existing .env keeps working; the service logs a line at boot naming any it finds.
 
       # ---- Optional local BERT tier (L3) -------------------------------------------------
       # Off by default. Enable it only if anchors + lexical prove insufficient on your corpus
@@ -172,6 +199,11 @@ services:
       # what it is for. See /readyz `second_avenue` for availability and registry coverage,
       # POST /api/v1/classify/compare for the comparison surface, and
       # docs/specs/2026-08-08-visual-classification-design.md §5B for the post-mortems.
+
+    # host.docker.internal resolves on Docker Desktop; on Linux this maps it to the host so
+    # the OCR endpoints above are reachable the same way on both.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     volumes:
       # The checkpoint is ~1.3 GB and optional, so it is mounted read-only rather than baked

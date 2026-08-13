@@ -10,7 +10,7 @@
     The bytes carry **no text at all** — a JPEG, a TIFF, a scanned PDF whose pages are one
     image each. This is not an error and not an abstention. Nothing was misread and no
     classifier ran; there was simply nothing to read, and saying so is the only honest answer
-    a service that must not call a cloud OCR API can give. ``reason`` says what the file is,
+    a service with no recogniser configured can give. ``reason`` says what the file is,
     ``remedy`` says what the caller can do, and ``ocr_available`` says whether this deployment
     could have done it locally, so an operator can tell "we chose not to" from "we cannot".
 
@@ -36,13 +36,13 @@ class TextSource(enum.StrEnum):
 
     #: The publisher's own text — a PDF text layer, a DOCX's XML, an email body.
     native = "native_text"
-    #: A local, in-process OCR engine. Lower accuracy; never a network call.
+    #: A local, in-process OCR engine. Lower accuracy; no call to another host.
     local_ocr = "local_ocr"
-    #: A REMOTE recogniser: the document was transmitted to a third party, before its type was
-    #: known, by a deployment that switched that on deliberately. Kept distinct from
-    #: ``local_ocr`` rather than folded into one "ocr" bucket precisely because the difference
-    #: between them is the entire compliance question.
-    remote_ocr = "remote_ocr"
+    #: An OCR SERVICE: the document was read by the endpoint this deployment configures,
+    #: before its type was known. Kept distinct from ``local_ocr`` rather than folded into one
+    #: "ocr" bucket because which of the two read a document is a fact about the deployment
+    #: that a reviewer must be able to see without inferring it from a provider's name.
+    ocr_service = "ocr_service"
     #: Nothing was extracted.
     none = "none"
 
@@ -79,13 +79,14 @@ class IngestResult(BaseModel):
     #: extra is not installed, or the caller declined it with ``local_ocr=False``.
     ocr_available: bool = False
     #: Which engine produced the text, when ``text_source`` is ``local_ocr`` or
-    #: ``remote_ocr`` — e.g. ``rapidocr``, ``azure_layout``.
+    #: ``ocr_service`` — e.g. ``rapidocr``, ``azure_layout``.
     ocr_engine: str = ""
-    #: True when ``ocr_engine`` recognised this document by **sending it somewhere**. Set from
-    #: the provider record's ``network`` flag, never from the engine's name.
-    ocr_is_remote: bool = False
-    #: Host the document was transmitted to, when ``ocr_is_remote``. The host, not the URL: it
-    #: answers "who saw this document" and cannot carry a key in a query string.
+    #: True when ``ocr_engine`` recognised this document by **calling an OCR service** rather
+    #: than reading it in this process. Set from the provider record's ``service`` flag, never
+    #: from the engine's name.
+    ocr_via_service: bool = False
+    #: Host that read the document, when ``ocr_via_service``. The host, not the URL: it answers
+    #: "which service read this document" and cannot carry a key in a query string.
     ocr_endpoint_host: str = ""
 
     ms: int = 0
@@ -114,13 +115,13 @@ class IngestResult(BaseModel):
         """Where this document's text came from — carried onto every API response.
 
         Small and boring on purpose: ``native_text`` on most requests, and on the requests
-        where it is not, the one line that tells a reviewer whether the document left the
-        building to become readable.
+        where it is not, the one line that tells a reviewer whether the document was read in
+        this process or by a service, and which one.
         """
         return {
             "text_source": str(self.text_source),
             "ocr_engine": self.ocr_engine,
-            "ocr_is_remote": self.ocr_is_remote,
+            "ocr_via_service": self.ocr_via_service,
             "ocr_endpoint_host": self.ocr_endpoint_host,
         }
 

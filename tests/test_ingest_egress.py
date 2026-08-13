@@ -196,7 +196,7 @@ def test_a_request_can_switch_local_ocr_off(local_ocr: InProcessOcr):
     # ``ocr_available`` is per-request, so it is False — and the reason distinguishes
     # "declined" from "switched off" and from "engine not installed".
     assert result.ocr_available is False
-    assert "declined it" in result.reason
+    assert "this request declined recognition" in result.reason
 
 
 # ---------------------------------------------------------------------------

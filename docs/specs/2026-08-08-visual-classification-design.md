@@ -34,7 +34,8 @@ infer the trust boundary, and it must not silently assume the safe answer.
 **Proposal.** The deployment *declares* the boundary, and the declaration is attributable:
 
 ```
-DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY = external | on_premises     # default: external
+DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY = external | on_premises    # default: external
+# (shipped as DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY; renamed later, old name still read)
 ```
 
 - `external` (default, unchanged behaviour): posture reads *"this deployment sends images and

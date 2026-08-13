@@ -216,9 +216,10 @@ NEEDS_OCR_REMEDY = (
     "opens no socket at all; or (2) enable local in-process OCR here "
     "(DCE_INGEST_LOCAL_OCR_ENABLED=true, with the ocr-rapidocr or ocr-tesseract extra "
     "installed), which keeps the document in this process at a real cost in accuracy; or "
-    "(3) configure a remote OCR provider (DCE_INGEST_REMOTE_OCR_ENABLED=true), which makes "
-    "THIS service transmit documents whose type is not yet known to a third party. (3) is "
-    "off by default and /readyz reports every deployment that has taken it."
+    "(3) configure an OCR service (DCE_INGEST_OCR_SERVICE_ENABLED=true plus an endpoint), "
+    "which has THIS service send documents whose type is not yet known to that endpoint to "
+    "be read. (3) is off by default, and /readyz names the provider, the endpoint host and "
+    "the trust boundary the deployment declares for it."
 )
 
 

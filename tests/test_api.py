@@ -326,6 +326,8 @@ def test_readyz_reports_registry_bert_and_the_egress_invariant() -> None:
         "local_ocr_enabled": False,
         "local_ocr_engine": body["ocr"]["local_ocr_engine"],
         "providers": body["ocr"]["providers"],
+        "configured_providers": [],
+        "service_endpoint_hosts": [],
     }
     # Every provider this build supports is listed even when switched off, and *especially*
     # when switched off. A console that could only see the providers a deployment happens to

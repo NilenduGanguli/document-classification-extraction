@@ -107,49 +107,62 @@ def _assert_invariant(settings: Settings) -> None:
 
 
 def _assert_ocr_posture() -> None:
-    """Resolve the ingestion settings at boot, and shout if this deployment ships documents out.
+    """Resolve the ingestion settings at boot, and say how this deployment reads an image.
 
     Two reasons this is here rather than left to the first request:
 
-    * a contradictory OCR configuration (local **and** remote recognisers both switched on)
-      raises out of :class:`~dce.ingest.settings.IngestSettings`, and it should take the
+    * a contradictory OCR configuration (both kinds of recogniser configured with no default
+      named) raises out of :class:`~dce.ingest.settings.IngestSettings`, and it should take the
       process down at boot the way a missing BERT mount does — not surface as a 500 on
       whichever request happened to carry an image;
     * a deployment that sends unclassified documents out of this process should say so in the
-      first few lines of its own log, exactly as ``allow_preclassification_egress=true``
-      does. Choosing it is legitimate; being quiet about it is not.
+      first few lines of its own log, exactly as ``allow_preclassification_egress=true`` does.
 
     The *level* follows the declared trust boundary, and only the level. An endpoint the
-    operator has declared on-premises is logged at ``warning``: still on every boot, still
-    naming the host, still saying the bytes leave before the doctype is known — but not at
-    ``error``, because an ``error`` on every healthy boot of a correctly-configured
-    deployment is how a log level stops meaning anything. Undeclared or external keeps
-    ``error``, and the line says which of the two it is.
+    operator has declared on-premises is logged at ``info``: still on every boot, still naming
+    the provider and the host, still saying the document is read before its doctype is known —
+    but as configuration, because a ``warning`` on every healthy boot of a deployment that is
+    configured exactly as intended is how a log level stops meaning anything. Undeclared or
+    external keeps ``error``, and the line says which of the two it is.
     """
-    from dce.ingest.settings import TRUST_BOUNDARY_ON_PREMISES, get_ingest_settings
+    from dce.ingest.settings import (
+        TRUST_BOUNDARY_ON_PREMISES,
+        get_ingest_settings,
+        legacy_env_aliases_in_use,
+    )
+
+    legacy = legacy_env_aliases_in_use()
+    if legacy:
+        logger.warning(
+            "deprecated ingestion environment variables in use: %s. They are still honoured "
+            "as aliases and nothing is broken; rename them at your convenience.",
+            "; ".join(f"{old} -> {new}" for old, new in sorted(legacy.items())),
+        )
 
     settings = get_ingest_settings()
-    if settings.remote_ocr_enabled:
+    service_providers = settings.service_providers()
+    if service_providers:
         on_premises = settings.trust_boundary() == TRUST_BOUNDARY_ON_PREMISES
+        problem = settings.ocr_service_problem()
         logger.log(
-            logging.WARNING if on_premises else logging.ERROR,
-            "remote OCR is ENABLED (%s -> %s): images and scanned PDFs leave this process to "
-            "be read BEFORE their doctype is known. Declared trust boundary: %s%s — the "
-            "operator's declaration, not verified here. /readyz reports "
+            logging.INFO if on_premises else logging.ERROR,
+            "OCR service configured (%s -> %s): images and scanned PDFs are read there, "
+            "BEFORE their doctype is known. Declared trust boundary: %s%s — the operator's "
+            "declaration, recorded here and not verified. /readyz reports "
             "egress.preclassification_ocr=true.%s",
-            settings.remote_ocr_provider,
-            settings.remote_ocr_endpoint_host() or "(no endpoint configured)",
+            ", ".join(service_providers),
+            settings.ocr_service_endpoint_host() or "(no endpoint configured)",
             settings.trust_boundary(),
             "" if settings.trust_boundary_declared() else " (code default; nothing declared)",
-            f" Problem: {settings.remote_ocr_problem()}" if settings.remote_ocr_problem() else "",
+            f" Problem: {problem}" if problem else "",
         )
-    elif settings.local_ocr_enabled:
+    if settings.local_ocr_enabled:
         logger.info(
-            "OCR: local engine %s — no document leaves this process",
+            "OCR: in-process engine %s — no document is sent anywhere to be read",
             settings.local_ocr_engine,
         )
-    else:
-        logger.info("OCR: none configured — images return needs_ocr and nothing leaves")
+    if not service_providers and not settings.local_ocr_enabled:
+        logger.info("OCR: none configured — images return needs_ocr and nothing is sent out")
 
 
 def _frontend_dist() -> Path | None:

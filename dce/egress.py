@@ -40,15 +40,17 @@ locally mounted BERT checkpoint off disk is not egress and does not call it. Dow
 checkpoint from a model hub is, and does.
 
 --------------------------------------------------------------------------------
-THE ONE PLACE THE TWO DIRECTIONS DO NOT COVER: REMOTE OCR
+THE ONE PLACE THE TWO DIRECTIONS DO NOT COVER: THE OCR SERVICE PATH
 --------------------------------------------------------------------------------
 An image carries no text. Classifying one *requires* recognition, and recognition happens
-either on this host or on somebody else's. That is a genuine trade-off, not a bug, and
-:mod:`dce.ingest` resolves it by defaulting to a local engine or an honest ``needs_ocr``.
+either in this process or on another host. That is a genuine trade-off, not a bug, and
+:mod:`dce.ingest` resolves it by defaulting to an in-process engine or an honest ``needs_ocr``.
 
-A deployment may nevertheless choose ``azure_read`` or ``azure_layout``
-(:mod:`dce.ingest.remote_ocr`), which recognise a document by transmitting it to Microsoft
-*before the doctype is known*. **Neither guard above would stop that, and saying so is more
+A deployment may nevertheless configure ``azure_read`` or ``azure_layout``
+(:mod:`dce.ingest.ocr_service`), which recognise a document by handing it to an OCR endpoint
+*before the doctype is known*. Whether that endpoint is a vendor's or a pod in the operator's
+own cluster is the deployment's declaration, not this module's inference — but either way the
+bytes leave this process, and **neither guard above would stop that, so saying so is more
 useful than pretending otherwise.** Ingestion runs before :func:`classification_scope` is
 entered — the cascade opens the scope inside ``classify()``, and ingestion has already
 finished by then — so ``assert_no_egress`` is a *no-op* on that path. Its silence there is an
@@ -56,16 +58,17 @@ accident of ordering, not a permission, and a call site that relied on that sile
 the bypass this module exists to prevent.
 
 :func:`assert_ocr_egress_permitted` is therefore a **positive** check rather than a negative
-one: it refuses unless an operator has switched the provider on, it refuses inside a
-classification scope no matter what is switched on, and it names the endpoint in both the
-exception and the metric. It permits exactly one thing — transmitting a document to the
-configured recognition endpoint, in :mod:`dce.ingest.remote_ocr`, to obtain its text — and it
-grants nothing to any other call site, tier or module.
+one: it refuses unless an operator has configured the provider, it refuses inside a
+classification scope no matter what is configured, and it names the endpoint in both the
+exception and the metric. It permits exactly one thing — sending a document to the configured
+recognition endpoint, from :mod:`dce.ingest.ocr_service`, to obtain its text — and it grants
+nothing to any other call site, tier or module.
 
 It deliberately does **not** read ``allow_preclassification_egress``. That setting is the
-blanket one; it lets *anything* out during classification and it stays False. Choosing a
-remote OCR provider should not require, and must not be confused with, turning the invariant
-off wholesale.
+blanket one; it lets *anything* out during classification, it governs the paid
+post-classification tiers, and it stays False. Configuring an OCR service — which on an
+on-premises deployment is a call to the operator's own infrastructure — should not require,
+and must not be confused with, turning the invariant off wholesale.
 """
 from __future__ import annotations
 
@@ -250,7 +253,7 @@ def assert_no_egress(stage: str, *, settings: Settings | None = None) -> None:
 def assert_ocr_egress_permitted(provider: str, endpoint: str, *, enabled: bool) -> None:
     """Permit the **one** pre-classification network call this service will make, or refuse it.
 
-    Called by :mod:`dce.ingest.remote_ocr` immediately before every request it makes, submit
+    Called by :mod:`dce.ingest.ocr_service` immediately before every request it makes, submit
     and poll alike. Read the module docstring for why this exists as a positive check rather
     than as another :func:`assert_no_egress` call site.
 
@@ -266,37 +269,37 @@ def assert_ocr_egress_permitted(provider: str, endpoint: str, *, enabled: bool) 
             as the metric label.
         endpoint: The base URL documents would be sent to. Quoted in the exception so an
             operator reading a log knows *where*, not merely *that*.
-        enabled: Whether this deployment has switched the provider on
-            (``DCE_INGEST_REMOTE_OCR_ENABLED``). The caller passes it rather than this module
+        enabled: Whether this deployment has configured the provider
+            (``DCE_INGEST_OCR_SERVICE_ENABLED``). The caller passes it rather than this module
             importing ingestion settings, which would be a circular import and would also put
             an ingestion concern into the file a control reviewer reads for the invariant.
 
     Raises:
         EgressViolation: When ``enabled`` is False — the default, and the state of every
-            deployment that has not deliberately chosen a remote recogniser — or when the
+            deployment that has not deliberately configured an OCR service — or when the
             caller is inside :func:`classification_scope`, which means the cascade itself is
             trying to recognise a document mid-classification and is a bug however the
             deployment is configured.
     """
     if not enabled:
-        _record_block(f"ingest.remote_ocr.{provider}")
+        _record_block(f"ingest.ocr_service.{provider}")
         raise EgressViolation(
-            f"remote OCR provider {provider!r} tried to send an unclassified document to "
-            f"{endpoint!r}, and this deployment has not permitted that. Recognising a "
-            "document off-host is pre-classification egress by definition: the document "
-            "whose type we do not yet know is precisely the one we are not allowed to send "
-            "anywhere. Set DCE_INGEST_REMOTE_OCR_ENABLED=true to permit it — a deliberate, "
-            "auditable act that /readyz then reports as 'this deployment transmits "
-            "unclassified documents to <host>'. The zero-egress alternatives are a local "
-            "engine (DCE_INGEST_LOCAL_OCR_ENABLED) or the caller-supplied path, where an "
-            "upstream service does the OCR and posts the result to /classify."
+            f"OCR service provider {provider!r} tried to send an unclassified document to "
+            f"{endpoint!r}, and this deployment has not configured that. Reading a document "
+            "on another host is pre-classification egress by definition: the document whose "
+            "type we do not yet know is precisely the one that must not go anywhere nobody "
+            "chose. Set DCE_INGEST_OCR_SERVICE_ENABLED=true to configure it — a deliberate, "
+            "auditable act that /readyz then reports, naming the provider, the endpoint host "
+            "and the declared trust boundary. The alternatives that involve no call at all "
+            "are an in-process engine (DCE_INGEST_LOCAL_OCR_ENABLED) or the caller-supplied "
+            "path, where an upstream service does the OCR and posts the result to /classify."
         )
     if _IN_CLASSIFICATION.get():
-        _record_block(f"ingest.remote_ocr.{provider}")
+        _record_block(f"ingest.ocr_service.{provider}")
         raise EgressViolation(
-            f"remote OCR provider {provider!r} was called from inside classification_scope. "
+            f"OCR service provider {provider!r} was called from inside classification_scope. "
             "Ingestion runs before the cascade; a recognition call made from within it is the "
-            "classifier asking a third party what the document is, which no setting permits."
+            "classifier asking another service what the document is, which no setting permits."
         )
 
 

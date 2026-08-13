@@ -74,7 +74,17 @@ COPY dce ./dce
 # left out are the ones that change that: `ocr` (a recogniser and its weights), `bert` (torch),
 # and whatever EXTRA_PACKAGES an operator adds to switch on the egress tiers.
 RUN uv venv /opt/venv \
-    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache '.[pdf]' ${EXTRA_PACKAGES}
+    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache '.[pdf]' ${EXTRA_PACKAGES} \
+    # If anything in the closure pulled in the GUI build of OpenCV, replace it with the headless
+    # one. `rapidocr-onnxruntime` declares plain `opencv-python`, which links libxcb and the rest
+    # of the X11 stack — on a server image those libraries are absent, so the import fails at
+    # runtime with `libxcb.so.1: cannot open shared object file` and the recogniser reports itself
+    # "not installed" while `find_spec` cheerfully finds it. The headless wheel is the same
+    # library without the window-system bindings, which is all a service ever wanted.
+    && if VIRTUAL_ENV=/opt/venv uv pip show opencv-python >/dev/null 2>&1; then \
+         VIRTUAL_ENV=/opt/venv uv pip uninstall opencv-python \
+         && VIRTUAL_ENV=/opt/venv uv pip install --no-cache opencv-python-headless; \
+       fi
 
 # ---------------------------------------------------------------------------
 # Runtime

@@ -98,14 +98,16 @@ ocr-tesseract = [
     "pillow>=10.3",
 ]
 
-# ---- REMOTE OCR: THE OTHER SIDE OF THE TRADE-OFF, AND THE ONLY EXTRA THAT ADDS EGRESS ----
+# ---- OCR SERVICE: THE OTHER SIDE OF THE TRADE-OFF, AND THE ONLY EXTRA THAT ADDS A CLIENT ----
 # `azure_read` (Vision Read v3.2) and `azure_layout` (Document Intelligence v4.0
-# prebuilt-layout) recognise a document by SENDING IT TO MICROSOFT, before anyone knows what
-# it is. This is the ONE extra in this file that puts an HTTP client into the runtime image,
-# and that is exactly why it is an extra: with it uninstalled the container physically cannot
-# make the call, whatever a setting says. Installing it is not sufficient either —
-# DCE_INGEST_REMOTE_OCR_ENABLED must also be true, /readyz then reports the deployment as
-# transmitting unclassified documents and names the endpoint host, and
+# prebuilt-layout) recognise a document by SENDING IT TO AN OCR ENDPOINT, before anyone knows
+# what it is — a vendor's on one deployment, a pod in the operator's own cluster on another,
+# which is why the trust boundary is declared and not inferred. This is the ONE extra in this
+# file that puts an HTTP client into the runtime image, and that is exactly why it is an
+# extra: with it uninstalled the container physically cannot make the call, whatever a
+# setting says. Installing it is not sufficient either — DCE_INGEST_OCR_SERVICE_ENABLED must
+# also be true (the old DCE_INGEST_REMOTE_OCR_* names are still read as aliases), /readyz then
+# names the provider, the endpoint host and the declared boundary, and
 # dce.egress.assert_ocr_egress_permitted refuses every request until both are in place.
 #
 # Prefer the caller-supplied path: have whoever already holds the document run Read or Layout

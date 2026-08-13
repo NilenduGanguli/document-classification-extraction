@@ -33,16 +33,18 @@ class Settings(BaseSettings):
     #: LOCAL BERT. Enforced in code by dce.egress and covered by a test.
     #: Turning this off is a deliberate, auditable act — it is not a tuning knob.
     #:
-    #: **There is exactly one other way an unclassified document can leave, and it is not
-    #: governed by this flag.** An image carries no text, so classifying one *requires*
-    #: recognition, and recognition happens either on this host or on somebody else's. A
-    #: deployment may choose a remote recogniser (``DCE_INGEST_REMOTE_OCR_ENABLED``,
-    #: :mod:`dce.ingest.remote_ocr`), which transmits the document to Azure during ingestion.
-    #: That path is off by default, is refused by :func:`dce.egress.assert_ocr_egress_permitted`
-    #: until an operator switches it on, and is reported on ``/readyz`` as
-    #: ``egress.preclassification_ocr`` with the endpoint host. It is deliberately a *separate*
-    #: setting rather than a value of this one: this flag lets **anything** out during
-    #: classification, and choosing a recogniser must not require, or be mistaken for, that.
+    #: **There is exactly one other way an unclassified document can leave this process, and
+    #: it is not governed by this flag.** An image carries no text, so classifying one
+    #: *requires* recognition, and recognition happens either in this process or on another
+    #: host. A deployment may configure an OCR service (``DCE_INGEST_OCR_SERVICE_ENABLED``,
+    #: :mod:`dce.ingest.ocr_service`), which hands the document to that endpoint during
+    #: ingestion — a vendor's on one deployment, a pod in the operator's own cluster on
+    #: another, which is why the boundary is declared rather than inferred. That path is off by
+    #: default, is refused by :func:`dce.egress.assert_ocr_egress_permitted` until an operator
+    #: configures it, and is reported on ``/readyz`` as ``egress.preclassification_ocr`` with
+    #: the endpoint host. It is deliberately a *separate* setting rather than a value of this
+    #: one: this flag lets **anything** out during classification and governs the paid vendor
+    #: tiers, and choosing a recogniser must not require, or be mistaken for, that.
     #: A reviewer auditing pre-classification egress has to read both.
     allow_preclassification_egress: bool = False
 

@@ -660,17 +660,27 @@ function OcrPicker({
                   {STRUCTURE_TAG[option.structure] && (
                     <span className="az-ocr-structure">({STRUCTURE_TAG[option.structure]})</span>
                   )}
+                  {/* Same operation, two honest descriptions, and which one is honest depends
+                      on the deployment rather than on the code.
+
+                      Where the recogniser runs inside the deployment's own network — an OCR
+                      pod in the same cluster, or a mock on the same machine — "egress" is not
+                      the cautious wording, it is the WRONG one. Egress means leaving the
+                      organisation's control; it does not mean leaving a process. Painting an
+                      in-cluster service call red teaches an operator to discount the colour,
+                      which costs the warnings that do matter.
+
+                      So on-premises gets architecture, not alarm: whether the recogniser runs
+                      in this process or over the network is a real fact worth stating, and it
+                      is all that is left to state. Where no such declaration exists, the
+                      cautious reading stands. */}
                   {option.egress ? (
-                    /* Same operation, two honest descriptions. On a deployment that declares
-                       its recogniser on-premises, "egress" in red is not the cautious wording,
-                       it is the wrong one — so the badge states what is verifiable (the bytes
-                       leave this process) and attributes the rest to the operator. */
                     onPremises ? (
                       <Badge
                         tone="neutral"
-                        title="the document leaves this process to be read, to a host this deployment declares is inside its own trust boundary"
+                        title="read by a service on this deployment's own network, over the network rather than in this process"
                       >
-                        leaves this process
+                        in-network service
                       </Badge>
                     ) : (
                       <Badge
@@ -681,11 +691,14 @@ function OcrPicker({
                       </Badge>
                     )
                   ) : (
-                    <Badge tone="accept" title="nothing leaves this process">
-                      no egress
+                    <Badge
+                      tone="accept"
+                      title="runs inside this process; no network call of any kind"
+                    >
+                      in-process
                     </Badge>
                   )}
-                  {!option.available && <Badge tone="neutral">unavailable here</Badge>}
+                  {!option.available && <Badge tone="neutral">not configured here</Badge>}
                 </span>
                 <span className="az-ocr-summary">{option.summary}</span>
                 {!option.available && (

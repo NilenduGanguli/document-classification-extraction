@@ -28,10 +28,11 @@ Three options are on the table:
     the file is and why it cannot read it, and hands the decision back to the caller — who
     knows their own jurisdiction's rules about where an unclassified customer document may
     go, and this service does not.
-(c) **Remote, cloud OCR** (:mod:`dce.ingest.remote_ocr`). The best text by a distance, and
-    the exact disclosure above. Off by default, behind its own setting, behind a named guard
-    (:func:`dce.egress.assert_ocr_egress_permitted`), and reported on ``/readyz`` as "this
-    deployment transmits unclassified documents to <host>". See below.
+(c) **An OCR service** (:mod:`dce.ingest.ocr_service`). The best text by a distance, and a
+    call out of this process before the doctype is known. Off by default, behind its own
+    setting, behind a named guard (:func:`dce.egress.assert_ocr_egress_permitted`), and
+    reported on ``/readyz`` with the provider, the endpoint host and the trust boundary the
+    deployment declares for it. See below.
 
 **What was chosen: (b) always, (a) as an optional extra that defaults OFF, (c) as an
 optional extra that defaults OFF and announces itself when it is not.**
@@ -63,29 +64,35 @@ The reasoning, in order of weight:
 What local OCR is **not** allowed to be: a network call. Both engines run on this host, and
 ``tests/test_ingest_egress.py`` pushes an image through the whole ingestion path with the
 socket tripwire armed to prove it. An engine that needs an endpoint is not a local engine and
-is not in :data:`dce.ingest.ocr.ENGINES`; it is in :data:`~dce.ingest.ocr.NETWORK_ENGINES`,
-carries ``network=True`` on its :class:`~dce.ingest.ocr.OcrProvider` record, and every
-decision that turns on "does this leave the process" reads that flag rather than the name.
+is not in :data:`dce.ingest.ocr.ENGINES`; it is in :data:`~dce.ingest.ocr.SERVICE_ENGINES`,
+carries ``service=True`` on its :class:`~dce.ingest.ocr.OcrProvider` record, and every
+decision that turns on "is this read here or by another host" reads that flag rather than the
+name.
 
 --------------------------------------------------------------------------------
-(c) REMOTE OCR — WHAT IT COSTS, AND WHY IT IS NOT THE DEFAULT
+(c) THE OCR SERVICE PATH — WHAT IT MEANS, AND WHY IT IS NOT THE DEFAULT
 --------------------------------------------------------------------------------
 ``azure_read`` (Vision Read v3.2) and ``azure_layout`` (Document Intelligence v4.0
-``prebuilt-layout``) recognise a document by **sending it to Microsoft, before anyone knows
-what it is**. Nothing about that is made safe by an ``if``, so it is made *visible* instead:
+``prebuilt-layout``) recognise a document by **handing it to an OCR endpoint, before anyone
+knows what it is**. Whose endpoint that is — a vendor's, or a pod in the operator's own
+cluster — is the deployment's declaration and not something this code can work out, so the
+architecture is stated plainly and the ownership question is answered by
+``DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY``:
 
 * off by default, and the base install has no HTTP client at all, so the default build
   physically cannot do it (``pip install '.[azure-ocr]'``);
-* its own setting, ``DCE_INGEST_REMOTE_OCR_ENABLED`` — deliberately **not** an extra value of
+* its own setting, ``DCE_INGEST_OCR_SERVICE_ENABLED`` — deliberately **not** an extra value of
   ``local_ocr_engine``, because the word "local" would then be a lie in the place an operator
   reads fastest, and deliberately **not** ``allow_preclassification_egress``, which is the
-  blanket switch and stays off;
-* configuring both it and local OCR is refused at boot: there is no precedence between them
-  that would not silently override one of the two decisions;
+  blanket switch, governs the paid vendor tiers, and stays off;
+* a deployment may configure it *alongside* local OCR, and then a request selects between them
+  with ``ingest.ocr_provider``; what is refused at boot is configuring both and naming no
+  default, because there is no precedence between them that would not silently override one
+  of the two decisions;
 * every request it makes passes :func:`dce.egress.assert_ocr_egress_permitted`, which names
   the provider and the endpoint and refuses inside a classification scope;
-* ``/readyz`` reports the provider, whether it is local or remote, and — when remote — the
-  endpoint host, so an operator sees the disclosure without being told to look for it.
+* ``/readyz`` reports every configured provider, whether each is in-process or a service call,
+  the endpoint host, and the declared boundary with its provenance.
 
 **The caller-supplied path remains the recommended answer** and the one the console offers
 first: an upstream service that already holds the document runs Read or Layout under its own

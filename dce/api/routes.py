@@ -1117,9 +1117,9 @@ class DocumentRequest(BaseModel):
     one.** An upstream service that already holds the document runs Azure Read or Azure
     Layout under its own authorisation and posts the result here; this service opens no
     socket, so the pre-classification invariant is not weighed against anything. The
-    alternative — having *this* service call Azure during ingestion — exists
-    (``DCE_INGEST_REMOTE_OCR_ENABLED``, :mod:`dce.ingest.remote_ocr`), is off by default, and
-    is reported on ``/readyz``.
+    alternative — having *this* service call an OCR endpoint during ingestion — exists
+    (``DCE_INGEST_OCR_SERVICE_ENABLED``, :mod:`dce.ingest.ocr_service`), is off by default,
+    and is reported on ``/readyz``.
     """
 
     doc_id: str = ""
@@ -1226,19 +1226,20 @@ class DocumentSource(BaseModel):
       can never satisfy a title-gated decisive anchor. A caller who meant to send Layout and
       sent Read gets a *worse* answer, not an error, and has to be able to see that from the
       response. Auto-detection is only kind if it is also loud.
-    * **Whether the document left this process is a compliance fact**, not a performance note.
-      ``remote`` is True exactly when this service transmitted the bytes to somebody to have
-      them read — which only happens on a deployment that switched
-      ``DCE_INGEST_REMOTE_OCR_ENABLED`` on.
+    * **Whether reading the document required a call out of this process is an architectural
+      fact**, not a performance note. ``remote`` is True exactly when this service sent the
+      bytes to an OCR endpoint to have them read — which only happens on a deployment that
+      configured one (``DCE_INGEST_OCR_SERVICE_ENABLED``). Whose network that endpoint is on
+      is the deployment's declaration, reported on ``/readyz`` and echoed in ``note``.
     """
 
     #: ``azure-prebuilt-layout`` | ``azure-read-v3.2`` | ``des-ocr`` | ``plain-text`` |
-    #: ``dce.ingest`` | ``dce.ingest.remote_ocr`` | ``caller-layout``.
+    #: ``dce.ingest`` | ``dce.ingest.ocr_service`` | ``caller-layout``.
     provider: str = ""
-    #: True when obtaining this text required a network call **made by this service**, before
-    #: the doctype was known. False on every caller-supplied path.
+    #: True when obtaining this text required a call to an OCR service **made by this
+    #: service**, before the doctype was known. False on every caller-supplied path.
     remote: bool = False
-    #: Host the document was transmitted to, when ``remote``. Never the full URL.
+    #: Host the document was sent to, when ``remote``. Never the full URL.
     endpoint_host: str = ""
     #: One sentence an operator can read without knowing the field names.
     note: str = ""
@@ -1378,20 +1379,20 @@ class EgressStatus(BaseModel):
     preclassification_allowed: bool
     enforced: bool
     note: str
-    #: True when a remote OCR provider is configured and usable here: unclassified documents
-    #: are transmitted out of this process, over a socket, during ingestion.
+    #: True when an OCR service provider is configured and usable here: unclassified
+    #: documents are sent out of this process, over a socket, during ingestion.
     #:
-    #: **Whether that transmission crosses a trust boundary is a separate question**, answered
-    #: by ``preclassification_ocr_trust_boundary``. This flag stays true on an on-premises
+    #: **Whether that leaves the organisation's control is a separate question**, answered by
+    #: ``preclassification_ocr_trust_boundary``. This flag stays true on an on-premises
     #: deployment because the operation is the same one and an auditor asking "does anything
     #: leave the process before classification" must not get "no" from a host declaration. The
     #: two fields together say: yes, to that host, which the deployment declares is its own.
     preclassification_ocr: bool = False
-    #: Host they are transmitted to. Empty unless ``preclassification_ocr``.
+    #: Host they are sent to. Empty unless ``preclassification_ocr``.
     preclassification_ocr_endpoint: str = ""
     #: ``external`` | ``on_premises`` — the deployment's own declaration about that host, from
-    #: ``DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY``. Empty unless ``preclassification_ocr``. It is
-    #: a claim, not a finding: see :class:`OcrStatus.trust_boundary_attribution`.
+    #: ``DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY``. Empty unless ``preclassification_ocr``. It
+    #: is a claim, not a finding: see :class:`OcrStatus.trust_boundary_attribution`.
     preclassification_ocr_trust_boundary: str = ""
 
 
@@ -1408,13 +1409,19 @@ class OcrProviderStatus(BaseModel):
     something a client can use correctly rather than guess at.
     """
 
-    #: The wire name, and the value :class:`IngestOptions.ocr_provider` must be given to pin
-    #: this provider: ``rapidocr`` | ``tesseract`` | ``azure_read`` | ``azure_layout``.
+    #: The wire name, and the value :class:`IngestOptions.ocr_provider` must be given to
+    #: select this provider: ``rapidocr`` | ``tesseract`` | ``azure_read`` | ``azure_layout``.
     name: str
-    #: True only for the one provider this deployment would actually run. At most one is ever
-    #: true — :meth:`IngestSettings._check` refuses a configuration with two recognisers.
+    #: True for every provider this deployment configured. More than one can be true: a
+    #: deployment may offer an in-process engine and one or both OCR services side by side,
+    #: and a request chooses between them with ``ingest.ocr_provider``.
     available: bool = False
-    #: **The question.** From the provider record's ``network`` flag, never from its name.
+    #: True for the single provider that runs when a request names none.
+    default: bool = False
+    #: **The architectural fact.** True when this provider reads a document by calling another
+    #: host rather than in this process. From the provider record's ``service`` flag, never
+    #: from its name. It says nothing about *whose* host that is — see
+    #: :class:`OcrStatus.trust_boundary`, which is the deployment's own declaration.
     network: bool = False
     #: ``roles`` or ``lines``. Reported because it decides which anchors could fire at all —
     #: see :data:`dce.ingest.ocr._STRUCTURE`.
@@ -1430,34 +1437,44 @@ class OcrStatus(BaseModel):
     """How this deployment turns an image into text, and whether that leaves the process.
 
     Reported unconditionally — including the ordinary answer, ``provider: "none"`` — so that
-    "we transmit unclassified documents to Microsoft" is a value in a field an operator
-    already reads, rather than something that appears only once it is true and can therefore
-    only be noticed by somebody who already knew to look for it.
+    "images are read by a service at <host>" is a value in a field an operator already reads,
+    rather than something that appears only once it is true and can therefore only be noticed
+    by somebody who already knew to look for it.
     """
 
+    #: The recogniser that runs when a request names none:
     #: ``none`` | ``rapidocr`` | ``tesseract`` | ``azure_read`` | ``azure_layout``.
     provider: str = "none"
     enabled: bool = False
-    #: **The question.** True only for the network providers, and taken from the provider
-    #: record's ``network`` flag rather than from anything about its name.
+    #: **The architectural fact.** True when *any* configured recogniser reads a document by
+    #: calling another host — not merely when the default one does, because a request may
+    #: select any configured provider and an operator asking "can reading an image here
+    #: involve a call out" must not get "no" because the default happens to be in-process.
+    #: Taken from the provider records' ``service`` flag, never from anything about a name.
     network: bool = False
-    #: Host documents are sent to, when ``network``. The host, never the full URL.
+    #: Host that reads documents: the default provider's when that is a service, otherwise the
+    #: first configured service endpoint. The host, never the full URL.
     endpoint_host: str = ""
+    #: Every configured service endpoint host, when more than one is selectable.
+    service_endpoint_hosts: list[str] = Field(default_factory=list)
+    #: Every recogniser a request may select here, in the order ``ocr_provider`` accepts them.
+    configured_providers: list[str] = Field(default_factory=list)
     #: ``external`` | ``on_premises`` — where the DEPLOYMENT declares ``endpoint_host`` sits
     #: relative to its own trust boundary. Reported on every deployment, including ones with
     #: no remote provider, so that "external" is a value in a field rather than an absence.
     #:
     #: This service does not and cannot verify it: an internal-looking hostname and a vendor
-    #: one are the same socket from here. It changes how the disclosure reads, never what the
-    #: process does — ``network`` above and ``egress.preclassification_ocr`` stay true either
-    #: way, because the bytes leave this process either way.
+    #: one are the same socket from here. It changes how the posture reads — under
+    #: ``on_premises`` it is configuration rather than a warning — but never what the process
+    #: does: ``network`` above and ``egress.preclassification_ocr`` stay true either way,
+    #: because the bytes leave this process either way.
     trust_boundary: str = "external"
-    #: True when an operator set ``DCE_INGEST_REMOTE_OCR_TRUST_BOUNDARY``; false when the
+    #: True when an operator set ``DCE_INGEST_OCR_SERVICE_TRUST_BOUNDARY``; false when the
     #: value above is the code default. "We chose external" and "nobody said" are different
     #: claims and an auditor reading ``external`` should be able to tell them apart.
     trust_boundary_declared: bool = False
     #: The attribution sentence: who says so, and that this service did not check. Empty when
-    #: no remote provider is configured and the question does not arise. **Consoles must render
+    #: no service provider is configured and the question does not arise. **Consoles must render
     #: this wherever they render a reassuring boundary** — a page that goes quiet because a
     #: flag was set is worse than one that shouts, and this is what keeps it a claim with an
     #: owner instead.
@@ -1465,7 +1482,7 @@ class OcrStatus(BaseModel):
     #: Set when the provider is switched on but cannot work (no endpoint, extra not installed).
     problem: str = ""
     summary: str = ""
-    #: Whether an in-process engine is switched on. Reported separately from ``provider``
+    #: Whether an in-process engine is configured. Reported separately from ``provider``
     #: because a console has to distinguish "local OCR is off here, an image returns
     #: needs_ocr" from "we have not been told" — and silence read as "no" is exactly the
     #: wrong default on a page an auditor uses.
@@ -1619,7 +1636,7 @@ def _ingest_to_layout(req: DocumentRequest) -> LayoutView:
             doc_id=req.doc_id,
             filename=options.filename,
             local_ocr=options.local_ocr,
-            remote_ocr=options.remote_ocr,
+            ocr_service=options.ocr_service,
             ocr_provider=options.ocr_provider,
         )
     except IngestError as exc:
@@ -1686,47 +1703,55 @@ def _ocr_providers(resolved: IngestSettings) -> list[OcrProviderStatus]:
     """Every recogniser this build supports, each with whether it is usable *here* and why not.
 
     Built from :data:`dce.ingest.ocr.PROVIDERS` rather than from a list written out here, so a
-    provider added to the registry cannot be missing from the disclosure — the failure mode
-    that matters is a network provider that is configurable but never reported, and iterating
-    the registry makes that unrepresentable.
+    provider added to the registry cannot be missing from the report — the failure mode that
+    matters is a provider that is configurable but never listed, and iterating the registry
+    makes that unrepresentable.
+
+    A deployment may configure several — an in-process engine and one or both OCR services —
+    and every one of them is ``available``, so a caller can select between them with
+    ``ingest.ocr_provider``. Exactly one carries ``default``: the one that runs when a request
+    names none.
     """
-    active = resolved.active_provider()
+    configured = resolved.configured_providers()
+    default = resolved.default_provider()
     out: list[OcrProviderStatus] = []
     for name, info in sorted(PROVIDERS.items()):
-        endpoint = ""
-        if name == active and info.network:
-            endpoint = resolved.remote_ocr_endpoint_host()
-        if name == active:
-            problem = (
-                resolved.remote_ocr_problem()
-                if info.network
+        endpoint = resolved.provider_endpoint_host(name) if info.service else ""
+        if name in configured:
+            reason = (
+                resolved.provider_problem(name)
+                if info.service
                 else (
                     ""
                     if _local_engine_installed(name)
                     else f"local_ocr_engine={name!r} is switched on but not installed"
                 )
             )
-            reason = problem
-        elif info.network:
+        elif info.service:
+            others = ", ".join(resolved.service_providers())
             reason = (
-                f"this deployment's remote recogniser is {active!r}"
-                if resolved.remote_ocr_enabled
+                (
+                    f"no endpoint is configured for {name} here, so no document is sent to it; "
+                    f"this deployment's OCR service reads through {others}"
+                )
+                if resolved.ocr_service_enabled and others
                 else (
-                    "remote OCR is switched off here (DCE_INGEST_REMOTE_OCR_ENABLED), so no "
-                    "document is transmitted to this provider to be read"
+                    "no OCR service is configured here (DCE_INGEST_OCR_SERVICE_ENABLED), so no "
+                    "document is sent to this provider to be read"
                 )
             )
         else:
             reason = (
-                f"this deployment's local engine is {active!r}"
+                f"this deployment's in-process engine is {resolved.local_ocr_engine!r}"
                 if resolved.local_ocr_enabled
                 else "local OCR is switched off here (DCE_INGEST_LOCAL_OCR_ENABLED)"
             )
         out.append(
             OcrProviderStatus(
                 name=name,
-                available=name == active and not reason,
-                network=info.network,
+                available=name in configured and not reason,
+                default=name == default,
+                network=info.service,
                 structure=info.structure,
                 endpoint=endpoint,
                 reason=reason,
@@ -1737,12 +1762,18 @@ def _ocr_providers(resolved: IngestSettings) -> list[OcrProviderStatus]:
 
 
 def _egress_note(ocr: OcrStatus) -> str:
-    """The one-line egress headline on ``/readyz``, given this deployment's OCR posture.
+    """The one-line headline on ``/readyz``, given this deployment's OCR posture.
 
     Three sentences, one per posture, and the middle one is the point of the trust-boundary
-    declaration. The invariant claim — *classification* opens no socket — is true in all
-    three and is never quietly widened into "nothing leaves", because ingestion runs before
-    the classification scope is ever entered.
+    declaration. Under ``on_premises`` this is **configuration, not a warning**: the deployment
+    has said the endpoint is its own, so the sentence describes how images are read and where,
+    and stops there. Under ``external`` — declared or, more importantly, merely defaulted — it
+    stays cautious, because a deployment that has declared nothing must not get the reassuring
+    reading.
+
+    The invariant claim — *classification* opens no socket — is true in all three and is never
+    quietly widened into "nothing leaves", because ingestion runs before the classification
+    scope is ever entered.
 
     Args:
         ocr: The already-built OCR block, so the note and the block cannot disagree.
@@ -1755,13 +1786,18 @@ def _egress_note(ocr: OcrStatus) -> str:
             "classification is in-process only: no HTTP, no vendor SDK, no embedding API "
             "before the doctype is known"
         )
-    where = ocr.endpoint_host or "a remote OCR endpoint"
+    where = ocr.endpoint_host or "the configured OCR endpoint"
+    # Name the provider only when it is the one that actually runs unpinned; on a deployment
+    # whose default is in-process the service is a selectable alternative, not the reader.
+    reader = next(
+        (p.name for p in ocr.providers if p.default and p.network), "an OCR service"
+    )
     if ocr.trust_boundary == TRUST_BOUNDARY_ON_PREMISES:
         return (
-            "classification itself is in-process only. Images and scanned PDFs are sent to "
-            f"{where} to be read, before their doctype is known; this deployment declares "
-            "that host is inside its own trust boundary — the operator's declaration, not "
-            "verified here — see the `ocr` block"
+            "classification itself is in-process only. Images and scanned PDFs are read by "
+            f"{reader} at {where}, before their doctype is known; this deployment declares "
+            "that host is on its own network — the operator's declaration, recorded here and "
+            "not verified — see the `ocr` block"
         )
     return (
         "classification itself is in-process only, BUT this deployment sends images and "
@@ -1774,70 +1810,106 @@ def _ocr_status(ingest_settings: IngestSettings | None = None) -> OcrStatus:
     """How this deployment reads an image, for ``/readyz``.
 
     The ``network`` flag comes from :func:`dce.ingest.ocr.provider_info`, i.e. from the
-    provider registry, not from string-matching a vendor name here. A provider added later
-    without that flag set is not a provider at all, so it cannot report itself as local.
+    provider registry's ``service`` flag, not from string-matching a vendor name here. A
+    provider added later without that flag set is not a provider at all, so it cannot report
+    itself as in-process.
     """
     resolved = ingest_settings or get_ingest_settings()
+    configured = resolved.configured_providers()
+    # Deduplicated, order preserved: two providers commonly sit behind one host, and listing
+    # it twice would read as two destinations.
+    service_hosts = list(
+        dict.fromkeys(
+            host
+            for host in (
+                resolved.provider_endpoint_host(p) for p in resolved.service_providers()
+            )
+            if host
+        )
+    )
     common = {
         "local_ocr_enabled": resolved.local_ocr_enabled,
         "local_ocr_engine": resolved.local_ocr_engine,
         "providers": _ocr_providers(resolved),
-        # Reported on every deployment, not only the ones with a remote provider: a field that
+        "configured_providers": list(configured),
+        "service_endpoint_hosts": service_hosts,
+        # Reported on every deployment, not only the ones with a service provider: a field that
         # appears only once it is interesting can only be found by somebody who already knew
         # to look. The attribution below is empty when the question does not arise.
         "trust_boundary": resolved.trust_boundary(),
         "trust_boundary_declared": resolved.trust_boundary_declared(),
         "trust_boundary_attribution": resolved.trust_boundary_attribution(),
     }
-    if resolved.remote_ocr_enabled:
-        info = provider_info(resolved.remote_ocr_provider)
-        host = resolved.remote_ocr_endpoint_host()
+    default = resolved.default_provider()
+    info = provider_info(default)
+    # More than one recogniser can be configured at once, so an operator reading the headline
+    # needs to know that the default is a default and not the only option.
+    choice = (
+        ""
+        if len(configured) < 2
+        else (
+            f". A request may select any of {', '.join(configured)} with ingest.ocr_provider; "
+            f"{default} runs when it names none"
+        )
+    )
+    if info is not None and info.service:
+        host = resolved.provider_endpoint_host(default)
         where = host or "(no endpoint configured)"
         # The same operation, described two ways, because the operator has told us two
-        # different things about where those bytes land. Neither wording softens the fact that
-        # they leave: the on-premises sentence still says "sent", still names the host, and
-        # still says "before their doctype is known". What changes is the claim about WHO
-        # receives them — which this service takes on the operator's word, and says so.
+        # different things about where those bytes land. The on-premises wording is
+        # configuration — this is how this deployment reads an image, and where — while the
+        # external wording stays a disclosure, because nobody has said the far end is theirs.
         summary = (
             (
-                f"images and scanned PDFs are sent to {where} to be read by "
-                f"{resolved.remote_ocr_provider}, before their doctype is known. This "
-                "deployment declares that host is inside its own trust boundary — an "
-                "operator declaration recorded here, not a fact this service verified"
+                f"images and scanned PDFs are read by {default} at {where}, before their "
+                "doctype is known. This deployment declares that host is on its own network, "
+                "so documents stay within the operator's infrastructure — an operator "
+                "declaration recorded here, not a fact this service verified"
             )
             if resolved.trust_boundary() == TRUST_BOUNDARY_ON_PREMISES
             else (
                 "THIS DEPLOYMENT TRANSMITS UNCLASSIFIED DOCUMENTS to "
-                f"{where} — images and scanned PDFs are sent to "
-                f"{resolved.remote_ocr_provider} to be read, before their doctype is known"
+                f"{where} — images and scanned PDFs are sent to {default} to be read, before "
+                "their doctype is known"
             )
         )
         return OcrStatus(
             **common,
-            provider=resolved.remote_ocr_provider,
+            provider=default,
             enabled=True,
-            network=bool(info and info.network),
+            network=True,
             endpoint_host=host,
-            problem=resolved.remote_ocr_problem(),
-            summary=summary,
+            problem=resolved.provider_problem(default),
+            summary=summary + choice,
         )
-    if resolved.local_ocr_enabled:
-        engine = resolved.local_ocr_engine
-        info = provider_info(engine)
-        installed = _local_engine_installed(engine)
+    if info is not None:
+        installed = _local_engine_installed(default)
         return OcrStatus(
             **common,
-            provider=engine,
+            provider=default,
             enabled=True,
-            network=bool(info and info.network),
+            # True when the deployment also configured a service provider, even though the
+            # default is in-process: a request may select it, so "can reading an image here
+            # involve a call out" is yes.
+            network=bool(service_hosts),
+            endpoint_host=service_hosts[0] if service_hosts else "",
             problem=(
                 ""
                 if installed
-                else f"local_ocr_engine={engine!r} is switched on but not installed"
+                else f"local_ocr_engine={default!r} is switched on but not installed"
             ),
             summary=(
-                f"images are recognised in-process by {engine}; no document leaves this "
-                "process"
+                (
+                    f"images are recognised in this process by {default} unless a request "
+                    f"selects otherwise; {', '.join(service_hosts)} is also configured and "
+                    "reads documents a request sends it"
+                    if service_hosts
+                    else (
+                        f"images are recognised in this process by {default}; no document is "
+                        "sent anywhere to be read"
+                    )
+                )
+                + choice
             ),
         )
     return OcrStatus(
@@ -1847,7 +1919,7 @@ def _ocr_status(ingest_settings: IngestSettings | None = None) -> OcrStatus:
         network=False,
         summary=(
             "images and scanned PDFs return needs_ocr; no recogniser is configured, so no "
-            "document leaves this process and none is guessed at"
+            "document is sent anywhere and none is guessed at"
         ),
     )
 
@@ -1881,22 +1953,33 @@ def _source_of(view: LayoutView) -> DocumentSource:
     """
     raw = view.raw if isinstance(view.raw, dict) else {}
     provider = str(raw.get("provider") or "caller-layout")
-    remote = bool(raw.get("ocr_is_remote"))
+    via_service = bool(raw.get("ocr_via_service"))
     host = str(raw.get("ocr_endpoint_host") or "")
-    if remote:
-        engine = str(raw.get("ocr_engine") or "a remote provider")
+    if via_service:
+        engine = str(raw.get("ocr_engine") or "an OCR service")
+        where = host or "the configured endpoint"
+        on_premises = (
+            get_ingest_settings().trust_boundary() == TRUST_BOUNDARY_ON_PREMISES
+        )
         # `provider` stays the ADAPTER that mapped the payload, so path (B) reports the same
         # value path (A) would have for the same provider; `remote` is what distinguishes
-        # who dialled.
+        # who dialled. The note follows the declared boundary: configuration where the
+        # operator has said the endpoint is theirs, a disclosure where nobody has said so.
+        note = (
+            (
+                f"recognised by {engine} at {where} and mapped by the {provider} adapter — "
+                "read by an OCR service this deployment declares is on its own network, "
+                "before the doctype was known"
+            )
+            if on_premises
+            else (
+                f"recognised by {engine} at {where} and mapped by the {provider} adapter — "
+                "THIS DEPLOYMENT TRANSMITTED AN UNCLASSIFIED DOCUMENT outside its own "
+                "boundary to obtain its text"
+            )
+        )
         return DocumentSource(
-            provider=provider,
-            remote=True,
-            endpoint_host=host,
-            note=(
-                f"recognised by {engine} at {host or 'a remote endpoint'} and mapped by the "
-                f"{provider} adapter — THIS DEPLOYMENT TRANSMITTED AN UNCLASSIFIED DOCUMENT "
-                "to a third party to obtain its text"
-            ),
+            provider=provider, remote=True, endpoint_host=host, note=note
         )
     note = _SOURCE_NOTES.get(provider, "")
     if not note and provider == "dce.ingest":
@@ -2546,8 +2629,9 @@ def _report_source(response: Response, view: LayoutView) -> DocumentSource:
     """Stamp ``X-Document-Source`` on a response and return the structured form.
 
     The header is ``<provider>`` normally and ``<provider>; remote=<host>`` when this service
-    made a network call to read the document — short enough for a log line, specific enough
-    that "which adapter ran" and "did it leave the building" are both answerable from it.
+    called an OCR endpoint to read the document — short enough for a log line, specific enough
+    that "which adapter ran" and "was it read here or by a service" are both answerable from
+    it.
     """
     source = _source_of(view)
     response.headers["X-Document-Source"] = (

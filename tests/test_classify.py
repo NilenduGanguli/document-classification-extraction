@@ -1493,3 +1493,226 @@ def test_one_mislabelled_line_cannot_change_the_verdict():
             f"body -> {as_body.doctype_id}, title -> {as_title.doctype_id}"
         )
         assert as_title.abstained == as_body.abstained
+
+
+# ---------------------------------------------------------------------------
+# (h) Gate 1 asks the two tiers about the doctype the accept is made OVER
+# ---------------------------------------------------------------------------
+#: A page whose masthead and body vocabulary the three specs below carve up deliberately.
+_RECONCILIATION_PAGE = (
+    "ANNUAL WITHHOLDING RECONCILIATION STATEMENT",
+    "reconciliation period ending December",
+    "Employer identification number",
+    "Signature of authorised officer",
+    "Notarised on the premises today",
+    "Wharfage and demurrage schedule",
+)
+
+
+def _reconciliation_registry(*, rival_shares_the_page_vocabulary: bool) -> list[DocTypeSpec]:
+    """Three doctypes: the real one, its nearest rival, and a lexically loud bystander.
+
+    ``target`` owns the masthead, so it leads the anchor channel and the combined channel.
+    ``rival`` shares one anchor, so it is the runner-up. ``chatter`` matches no anchor at all —
+    its declared vocabulary is three short phrases that all happen to appear on this page, and
+    ``explained`` is a *fraction of the class's own mass*, so a small profile that is fully
+    exhibited scores high. ``chatter`` therefore tops the lexical channel while sitting last on
+    the combined one, which is precisely the position from which it cannot be the answer.
+
+    ``rival_shares_the_page_vocabulary`` moves ``rival``'s profile onto the page so that the
+    lexical channel prefers *it* instead — the case where a tier really is contradicting the
+    verdict.
+    """
+    target = DocTypeSpec(
+        doctype_id="target", label="Target Statement", country="US", category=Category.tax,
+        anchors=[Anchor(text="ANNUAL WITHHOLDING RECONCILIATION STATEMENT"),
+                 Anchor(text="reconciliation period ending December")],
+        fields=[FieldSpec(name="a", labels={"en": ["Employer identification number"]}),
+                FieldSpec(name="a2", labels={"en": ["Quarterly deposit schedule"]}),
+                FieldSpec(name="a3", labels={"en": ["Third party designee election"]})],
+    )
+    rival_fields = [FieldSpec(name="b", labels={"en": ["Employer identification number"]})]
+    if not rival_shares_the_page_vocabulary:
+        rival_fields += [
+            FieldSpec(name="b8", labels={"en": ["Successor employer indicator"]}),
+            FieldSpec(name="b9", labels={"en": ["Seasonal filer exemption"]}),
+        ]
+    rival = DocTypeSpec(
+        doctype_id="rival", label="Rival Statement", country="US", category=Category.tax,
+        anchors=[Anchor(text="reconciliation period ending December")], fields=rival_fields,
+    )
+    chatter = DocTypeSpec(
+        doctype_id="chatter", label="Chatty Doctype", country="US", category=Category.other,
+        anchors=[Anchor(text="A STRING THAT IS NOWHERE ON THE PAGE")],
+        fields=[FieldSpec(name="c", labels={"en": ["Signature of authorised officer"]}),
+                FieldSpec(name="d", labels={"en": ["Notarised on the premises today"]}),
+                FieldSpec(name="e", labels={"en": ["Wharfage and demurrage schedule"]})],
+    )
+    return [target, rival, chatter]
+
+
+def _reconciliation_view() -> LayoutView:
+    return view_of([TextBlock(text=t, zone=Zone.body) for t in _RECONCILIATION_PAGE])
+
+
+def test_a_tier_topped_by_a_doctype_that_cannot_be_accepted_does_not_veto():
+    """Gate 1's opponent is the runner-up, not whatever tops a channel.
+
+    Gate 2 compares the candidate against exactly one doctype — ``B[2]``, the doctype the
+    accept is being made *over*. The predecessor of this gate compared argmaxes over the whole
+    registry, so the two gates asked about different opponents, and the lexical channel's
+    argmax is frequently a doctype that carries no anchor evidence, sits last on the combined
+    channel and could not be accepted under any circumstances. It could not be the answer and
+    it vetoed the answer anyway.
+
+    Here ``chatter`` is that doctype: zero anchor bits, bottom of the combined channel, top of
+    the lexical one. Both tiers prefer ``target`` to ``rival`` — the comparison the accept
+    actually makes — so the accept stands.
+    """
+    specs = _reconciliation_registry(rival_shares_the_page_vocabulary=False)
+    view = _reconciliation_view()
+    profiles = build_profiles(specs)
+    anchor = anchor_scores(view, specs, settings=SETTINGS)
+    lexical = lexical_scores(view, profiles, settings=SETTINGS)
+
+    # The fixture is only meaningful if it really is in the position described.
+    assert anchor.bits["chatter"] == 0.0
+    assert lexical.explained["chatter"] > lexical.explained["target"], "chatter tops lexical"
+    assert anchor.bits["target"] > anchor.bits["rival"]
+    assert lexical.explained["target"] > lexical.explained["rival"]
+
+    result = classify(view, specs, settings=SETTINGS, profiles=profiles)
+    assert result.doctype_id == "target", result.reason
+    assert not result.abstained
+    assert result.confidence >= 0.5
+
+
+def test_a_tier_that_prefers_the_runner_up_still_refuses():
+    """The half of gate 1 that buys the precision, and it is unchanged.
+
+    Widening gate 1's opponent from "the whole registry" to "the runner-up" must not widen it
+    to "nothing". A tier that positively prefers the doctype the accept would be made over is
+    contradicting the verdict, and it still refuses — which is what keeps
+    ``corpus/us/us_1099.pdf`` (anchors 7.20 bits for ``us_w9`` against 4.90 for the true
+    ``us_1099``, lexical channel preferring ``us_1099``) an abstention rather than a compliance
+    incident.
+    """
+    specs = _reconciliation_registry(rival_shares_the_page_vocabulary=True)
+    view = _reconciliation_view()
+    profiles = build_profiles(specs)
+    lexical = lexical_scores(view, profiles, settings=SETTINGS)
+    assert lexical.explained["rival"] > lexical.explained["target"]
+
+    result = classify(view, specs, settings=SETTINGS, profiles=profiles)
+    assert result.doctype_id == UNKNOWN
+    assert "does not support 'target' over 'rival'" in result.reason
+    assert result.confidence == 0.0
+
+
+def _sibling_masthead_registry(real: str, other: str) -> list[DocTypeSpec]:
+    """Two doctypes printing one masthead; only ``real``'s body vocabulary is on the page.
+
+    The anchor channel ties exactly. The lexical channel separates them by a wide margin.
+    """
+    return [
+        DocTypeSpec(
+            doctype_id=real, label="Real", country="US", category=Category.tax,
+            anchors=[Anchor(text="SHARED MASTHEAD OF TWO SIBLING FORMS")],
+            fields=[FieldSpec(name="a", labels={"en": ["Employer identification number"]}),
+                    FieldSpec(name="b", labels={"en": ["Quarterly deposit schedule"]}),
+                    FieldSpec(name="c", labels={"en": ["Third party designee election"]})],
+        ),
+        DocTypeSpec(
+            doctype_id=other, label="Other", country="US", category=Category.tax,
+            anchors=[Anchor(text="SHARED MASTHEAD OF TWO SIBLING FORMS")],
+            fields=[FieldSpec(name="d", labels={"en": ["Employer identification number"]}),
+                    FieldSpec(name="e", labels={"en": ["Vessel tonnage certificate"]}),
+                    FieldSpec(name="f", labels={"en": ["Bunker fuel surcharge"]})],
+        ),
+    ]
+
+
+def test_identification_does_not_turn_on_how_a_doctype_id_is_spelled():
+    """A tie is not a dissent, and it must not be resolved by the alphabet.
+
+    ``_ranked_channel`` breaks ties by doctype id so that the audit record is reproducible
+    across runs — a deliberate choice, and the right one for a *record*. Reading that tie-break
+    as a channel's *opinion* is not. Under the argmax form of this gate it was read as one:
+    when two doctypes printed the same masthead and tied on the anchor channel, the
+    alphabetically-first id was named "the anchor winner", and a candidate that lost the
+    coin-toss failed identification however decisively the lexical channel preferred it.
+
+    The consequence is this test: two registries identical in every number — same anchors, same
+    profiles, same document, same evidence, verified below — and differing only in whether the
+    true doctype's id sorts before or after its sibling's. The argmax form accepted the first
+    and abstained on the second. A rule that reads a tie as "this tier expressed no preference"
+    answers both the same way, which is the only defensible thing a tie can mean.
+
+    This is what recovers ``corpus/ca/ca_bn_letter.pdf`` on plain text: it ties ``in_form16``
+    on the anchor channel at 2.200 bits and was accepted purely because ``c`` sorts before
+    ``i``.
+    """
+    verdicts = {}
+    for real, other in (("aaa_form", "zzz_form"), ("zzz_form", "aaa_form")):
+        specs = _sibling_masthead_registry(real, other)
+        view = view_of([
+            TextBlock(text="SHARED MASTHEAD OF TWO SIBLING FORMS", zone=Zone.body),
+            TextBlock(text="Employer identification number", zone=Zone.body),
+            TextBlock(text="Quarterly deposit schedule", zone=Zone.body),
+            TextBlock(text="Third party designee election", zone=Zone.body),
+        ])
+        profiles = build_profiles(specs)
+        anchor = anchor_scores(view, specs, settings=SETTINGS)
+        lexical = lexical_scores(view, profiles, settings=SETTINGS)
+        assert anchor.bits[real] == anchor.bits[other], "the anchor channel must tie exactly"
+        assert lexical.explained[real] > lexical.explained[other]
+        result = classify(view, specs, settings=SETTINGS, profiles=profiles)
+        verdicts[real] = result.doctype_id
+
+    assert verdicts == {"aaa_form": "aaa_form", "zzz_form": "zzz_form"}, (
+        "the same evidence produced different verdicts depending on the doctype id's "
+        f"spelling: {verdicts}"
+    )
+
+
+def test_a_tier_with_no_evidence_for_the_candidate_cannot_concur():
+    """The silent-tier guard, stated per-candidate rather than per-registry.
+
+    A tier that scores the candidate at zero has nothing to say about it, and "does not prefer
+    the runner-up" is then vacuously true. Two indifferent tiers must not add up to
+    concurrence — that is the "least-wrong of a tiny registry" failure the whole design exists
+    to refuse, and the per-registry form of this guard (``a1 <= 0``) misses it whenever the
+    tier is loud about some *other* doctype and silent about this one.
+
+    Here no anchor of any doctype appears on the page, so the anchor tier is silent about
+    everything including the winner, and the lexical tier is left to decide alone. It may not.
+    """
+    lexical_only = DocTypeSpec(
+        doctype_id="lexical_only", label="Lexical Only", country="US", category=Category.other,
+        anchors=[Anchor(text="A MASTHEAD THAT IS NOT ON THIS PAGE")],
+        fields=[FieldSpec(name="a", labels={"en": ["Wharfage and demurrage schedule"]}),
+                FieldSpec(name="b", labels={"en": ["Bunker fuel surcharge"]}),
+                FieldSpec(name="c", labels={"en": ["Laytime commences on arrival"]})],
+    )
+    bystander = DocTypeSpec(
+        doctype_id="bystander", label="Bystander", country="US", category=Category.other,
+        anchors=[Anchor(text="SOMETHING ELSE ENTIRELY")],
+        fields=[FieldSpec(name="d", labels={"en": ["Vessel tonnage certificate"]}),
+                FieldSpec(name="e", labels={"en": ["Pilotage dues payable"]})],
+    )
+    view = view_of([
+        TextBlock(text="Wharfage and demurrage schedule", zone=Zone.body),
+        TextBlock(text="Bunker fuel surcharge", zone=Zone.body),
+        TextBlock(text="Laytime commences on arrival", zone=Zone.body),
+    ])
+    specs = [lexical_only, bystander]
+    profiles = build_profiles(specs)
+    anchor = anchor_scores(view, specs, settings=SETTINGS)
+    lexical = lexical_scores(view, profiles, settings=SETTINGS)
+    assert anchor.bits["lexical_only"] == 0.0, "the anchor tier is silent about the winner"
+    assert lexical.explained["lexical_only"] > lexical.explained["bystander"]
+
+    result = classify(view, specs, settings=SETTINGS, profiles=profiles)
+    fusion = next(e for e in result.evidence if e.tier == "fusion")
+    assert "route=concurrence" not in fusion.detail, fusion.detail
+    assert result.doctype_id == UNKNOWN

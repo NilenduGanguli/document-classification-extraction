@@ -18,10 +18,38 @@ This module must never be imported when ``bert_enabled`` is False — importing
 not need it. :mod:`dce.classify.cascade` imports it inside a function, behind the flag, and
 there is a test asserting it stays out of ``sys.modules``.
 
-The published ``bert_uncased_L-12_H-768_A-12`` checkpoint ships **TensorFlow and Flax weights
-and no PyTorch bin/safetensors**, so a plain ``from_pretrained`` fails on a base install. The
-loader tries the native path, then ``from_tf``, then ``from_flax``, and if all three fail it
-says which extra to install rather than emitting a stack trace about a missing file.
+WEIGHT FORMATS, PRECISELY
+-------------------------
+Two different copies of ``bert_uncased_L-12_H-768_A-12`` are in circulation and they do not
+contain the same files. Being vague about which one is in the mount is how an operator ends up
+chasing a fix that cannot work:
+
+* **The HuggingFace mirror.** It carries ``pytorch_model.bin`` *and* ``flax_model.msgpack``
+  *and* the TensorFlow checkpoint. ``from_pretrained`` reads the ``.bin`` natively and this
+  tier just works. (An earlier version of this docstring said the published checkpoint had
+  "TensorFlow and Flax weights and no PyTorch bin/safetensors". That is not true of the
+  mirror — it has a ``.bin``.)
+* **The original Google release, and any company-approved rebuild of it.** That is a
+  TensorFlow v1 checkpoint and nothing else::
+
+      bert_config.json  config.json  vocab.txt  README.md
+      bert_model.ckpt.data-00000-of-00001  bert_model.ckpt.index  bert_model.ckpt.meta
+
+  No ``pytorch_model.bin``, no ``model.safetensors``, no ``flax_model.msgpack``.
+
+``transformers`` **5.x cannot load the second one at all**, and no install fixes that.
+TensorFlow and Flax support were *removed* from the library: there is no ``TFBertModel``, no
+``modeling_tf_pytorch_utils``, no ``load_tf_weights_in_bert``, and
+``from_pretrained(..., from_tf=True)`` / ``from_flax=True`` are ignored — they fail with the
+*same* "no file named model.safetensors, or pytorch_model.bin" as a plain load. This loader
+used to try all three and report all three failures, and the message it produced named an
+install that would not have helped. The two dead branches are gone.
+
+The supported answer for a TF-only checkpoint is to convert it **once, offline**, with
+``tools/convert_bert_tf_checkpoint.py``. It reads the ``.index``/``.data-*`` pair directly —
+no TensorFlow needed, and the ``.meta`` graph is never read — and writes ``model.safetensors``
+beside them. The runtime then needs ``torch`` + ``transformers`` only, which is the point: one
+framework in the image, and no second one to get through an approval process.
 """
 from __future__ import annotations
 
@@ -188,8 +216,9 @@ class LocalBertEncoder:
     def load(cls, settings: Settings | None = None) -> LocalBertEncoder:
         """Load tokenizer + model from ``settings.bert_model_dir``.
 
-        Tries the native weights, then ``from_tf=True``, then ``from_flax=True``, because the
-        published checkpoint ships TF and Flax weights only.
+        There is exactly one weight path — ``from_pretrained`` on locally-present PyTorch or
+        safetensors weights — because on ``transformers`` 5.x there is exactly one that works.
+        See the module docstring.
 
         Args:
             settings: Settings override; defaults to :func:`dce.config.get_settings`.
@@ -198,9 +227,10 @@ class LocalBertEncoder:
             The loaded encoder.
 
         Raises:
-            BertUnavailable: If the directory is missing, ``transformers`` is not installed,
-                or none of the three weight formats can be read. The message names the extra
-                to install.
+            BertUnavailable: If the directory is missing, ``transformers``/``torch`` are not
+                installed, or the directory holds no loadable weights. When the mount looks
+                like a TensorFlow-only checkpoint the message says so and names the converter,
+                because that is the actual fix.
         """
         resolved = settings if settings is not None else get_settings()
         model_dir = Path(resolved.bert_model_dir)
@@ -222,9 +252,11 @@ class LocalBertEncoder:
             from transformers import AutoModel, AutoTokenizer
         except ImportError as exc:
             raise BertUnavailable(
-                "bert_enabled=true but `transformers` is not installed. Install the optional "
-                "extra deliberately: `pip install 'dce[bert-tf]'` (TensorFlow weights) or "
-                "`pip install 'dce[bert-flax]'` (Flax weights)."
+                "bert_enabled=true but `transformers` is not installed. L3 is optional and its "
+                "dependencies are deliberately not in the base install: "
+                "`pip install '.[bert]'` (torch + transformers). No other framework is needed "
+                "at runtime — a TensorFlow-only checkpoint is converted offline first, with "
+                "tools/convert_bert_tf_checkpoint.py."
             ) from exc
 
         tokenizer = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True)
@@ -234,31 +266,64 @@ class LocalBertEncoder:
             model.train(False)
         return cls(tokenizer=tokenizer, model=model, max_tokens=resolved.bert_max_tokens)
 
-    @staticmethod
-    def _load_weights(model_dir: Path, auto_model: Any) -> Any:
-        """Try native, then TensorFlow, then Flax weights."""
-        failures: list[str] = []
-        for label, kwargs in (
-            ("native (pytorch/safetensors)", {}),
-            ("from_tf", {"from_tf": True}),
-            ("from_flax", {"from_flax": True}),
-        ):
-            try:
-                return auto_model.from_pretrained(
-                    str(model_dir), local_files_only=True, **kwargs
-                )
-            except Exception as exc:  # noqa: BLE001 - each weight format fails in its own way
-                # (missing file, missing framework, bad config); we collect all three and
-                # report them together, which is the actionable message.
-                # pragma: no cover - depends on the mounted checkpoint
-                failures.append(f"{label}: {type(exc).__name__}: {exc}")
-        raise BertUnavailable(
-            f"could not load a BERT checkpoint from {model_dir}. The published "
-            "bert_uncased_L-12_H-768_A-12 checkpoint ships TensorFlow and Flax weights and no "
-            "PyTorch bin/safetensors, so `from_tf=True` needs `tensorflow` and `from_flax=True`"
-            " needs `jax`+`flax`. Install one extra deliberately: `pip install 'dce[bert-tf]'` "
-            "or `pip install 'dce[bert-flax]'`. Attempts:\n  - " + "\n  - ".join(failures)
-        )
+    #: Weight files ``transformers`` 5.x can actually read from a local directory.
+    LOADABLE_WEIGHTS = ("model.safetensors", "model.safetensors.index.json", "pytorch_model.bin",
+                        "pytorch_model.bin.index.json")
+    #: Files that mean "this is a TensorFlow v1 checkpoint" — readable by the offline
+    #: converter, and by nothing in this process.
+    TF_CHECKPOINT_GLOBS = ("*.ckpt.index", "*.ckpt.data-*", "*.ckpt.meta")
+
+    @classmethod
+    def _load_weights(cls, model_dir: Path, auto_model: Any) -> Any:
+        """Load PyTorch/safetensors weights, or explain precisely why there are none.
+
+        ``from_tf=True`` and ``from_flax=True`` used to be tried here as fallbacks. They are
+        not tried any more: ``transformers`` 5.x removed both frameworks, so the flags are
+        accepted and ignored and every attempt fails with the identical missing-file error.
+        Keeping them made the failure look like three independent problems and made the error
+        message recommend an install that changes nothing.
+
+        Args:
+            model_dir: The mounted checkpoint directory.
+            auto_model: ``transformers.AutoModel``.
+
+        Returns:
+            The loaded model.
+
+        Raises:
+            BertUnavailable: With a message that distinguishes "no weights at all" from "a
+                TensorFlow checkpoint that has not been converted yet", because those have
+                different fixes.
+        """
+        try:
+            return auto_model.from_pretrained(str(model_dir), local_files_only=True)
+        except Exception as exc:
+            # A missing file, an unreadable file and a bad config all surface here as different
+            # exception types; the operator needs the same diagnosis below either way, and it
+            # is re-raised as BertUnavailable rather than swallowed.
+            has_weights = any((model_dir / name).exists() for name in cls.LOADABLE_WEIGHTS)
+            is_tf_only = not has_weights and any(
+                any(model_dir.glob(pattern)) for pattern in cls.TF_CHECKPOINT_GLOBS
+            )
+            if is_tf_only:
+                raise BertUnavailable(
+                    f"{model_dir} holds a TensorFlow v1 checkpoint (bert_model.ckpt.*) and no "
+                    "PyTorch or safetensors weights. transformers 5.x cannot read it: TF and "
+                    "Flax support were REMOVED from the library, so `from_tf=True` and "
+                    "`from_flax=True` no longer do anything and installing tensorflow or "
+                    "jax/flax will NOT help. Convert it once, offline, then restart:\n"
+                    f"    python tools/convert_bert_tf_checkpoint.py convert {model_dir}\n"
+                    "That writes model.safetensors beside the checkpoint, needs no TensorFlow, "
+                    "and downloads nothing. Underlying error: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            raise BertUnavailable(
+                f"could not load a BERT model from {model_dir}. Expected one of "
+                f"{', '.join(cls.LOADABLE_WEIGHTS[:3])} in that directory; it has "
+                f"{', '.join(sorted(p.name for p in model_dir.iterdir())[:8]) or '(nothing)'}. "
+                "This service never downloads a checkpoint — mount a complete one. "
+                f"Underlying error: {type(exc).__name__}: {exc}"
+            ) from exc
 
     def encode(self, text: str) -> tuple[float, ...]:
         """Mean-pool the last hidden state over the first ``max_tokens`` tokens.

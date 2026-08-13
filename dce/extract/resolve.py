@@ -269,6 +269,39 @@ def _score(
     )
 
 
+#: What a ``type="bool"`` field may legitimately carry. ``mark`` already emits the first two;
+#: the rest is what an issuer prints when it states the fact in words, plus AAMVA element
+#: ``DDA``'s published ``F``/``N``. Anything else is not a boolean.
+_BOOL_TRUE = frozenset({"true", "yes", "y", "checked", "x", "f", "compliant"})
+_BOOL_FALSE = frozenset({"false", "no", "n", "unchecked", "not checked", "none"})
+
+
+def _coerce_bool(value: str) -> str | None:
+    """A boolean field's value, or ``None`` when the candidate is not a boolean at all.
+
+    The ``mark`` locator understands ``type="bool"`` and emits ``"true"``/``"false"`` from a
+    selection mark. ``label`` and ``regex`` do not — they return *the text following the
+    label*, which for a boolean caption is whatever the issuer happened to print next.
+
+    Measured on the Virginia DMV AAMVA calibration sheet, ``real_id_compliant`` (the
+    registry's only boolean field) came back as ``"Driver's License - Over 21"`` — a fragment
+    of the sheet's own title line — at confidence 0.697 with no validator complaint. A field
+    declared ``bool`` reported a string, and a reviewer reading it as a compliance
+    determination would have been reading the document's name.
+
+    Rejecting rather than guessing is the direction this service takes everywhere: an empty
+    field routes to a human, a wrong one gets acted on. It also keeps the promise the field's
+    own spec makes — *never report "not REAL ID" from a blank result* — because a rejected
+    candidate yields no value, not ``false``.
+    """
+    text = value.strip().lower().strip(".:;")
+    if text in _BOOL_TRUE:
+        return "true"
+    if text in _BOOL_FALSE:
+        return "false"
+    return None
+
+
 def _to_field(
     field: FieldSpec, scored: ScoredCandidate, *, rejected: bool = False
 ) -> ExtractedField:
@@ -276,6 +309,38 @@ def _to_field(
     confidence = min(scored.score, _MAX_CONFIDENCE)
     if scored.is_checksum_verified:
         confidence = max(confidence, _CHECKSUM_CONFIDENCE_FLOOR)
+    if field.type == "bool":
+        coerced = _coerce_bool(scored.candidate.value)
+        if coerced is None:
+            return ExtractedField(
+                name=field.name,
+                attribute_key=field.attribute_key,
+                value=None,
+                normalized=None,
+                confidence=0.0,
+                verification=VERIFICATION_UNVERIFIED,
+                locator=scored.candidate.locator,
+                page=scored.candidate.page,
+                bbox=scored.candidate.bbox,
+                pii=field.pii,
+                validator_error=(
+                    f"not a boolean: {scored.candidate.value[:60]!r} — a bool field "
+                    "reports true/false or nothing"
+                ),
+            )
+        return ExtractedField(
+            name=field.name,
+            attribute_key=field.attribute_key,
+            value=coerced,
+            normalized=coerced,
+            confidence=round(confidence, 4),
+            verification=VERIFICATION_UNVERIFIED if rejected else scored.verification,
+            locator=scored.candidate.locator,
+            page=scored.candidate.page,
+            bbox=scored.candidate.bbox,
+            pii=field.pii,
+            validator_error=scored.error,
+        )
     return ExtractedField(
         name=field.name,
         attribute_key=field.attribute_key,

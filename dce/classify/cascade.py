@@ -107,9 +107,12 @@ Let ``d = argmax B``. Acceptance of ``d`` requires **all four** of:
 1. **identification** — ``d`` is picked out by evidence, not merely by being the least-bad
    thing on the shelf. Two ways to satisfy this and no others:
 
-   *concurrence* — ``argmax(A) == argmax(L) == d``: the anchor tier and the lexical tier
-   independently arrived at the same class. (Note this implies ``d = argmax S``, since ``S``
-   is monotone in both.)
+   *concurrence* — let ``r`` be the runner-up, ``B[2]``'s doctype. Each tier must hold
+   evidence for ``d`` and must not prefer ``r`` to it: ``A_d > 0``, ``L_d > 0``,
+   ``A_d >= A_r`` and ``L_d >= L_r``. Since ``B = A_bits + L_bits`` and ``d`` leads ``B``, at
+   least one tier strictly prefers ``d``, so this cannot be satisfied by two indifferent
+   tiers. Read it as: **the two tiers independently agree about the comparison the accept is
+   actually making.** See round 4 below for why the opponent has to be ``r``.
 
    *conclusive L1* — exactly one doctype in the registry holds evidence of the kind that is
    near-proof on its own (a decisive anchor: an issuing-authority header or a form number; or
@@ -204,6 +207,108 @@ The zone-mode A/B is the number to read, because production always has roles. It
 because the two comparisons the rule makes are no longer taken on a saturating scale and are
 no longer taken on the provider's roles at all.
 
+**Round 4: gate 1 and gate 2 have to be about the same opponent.** Rounds 1-3 left gate 1 in
+its original form, ``argmax(A) == argmax(L) == d`` — a *global rank* statistic over the whole
+registry, while gate 2 compares ``d`` against exactly one doctype, the runner-up ``r``. The two
+gates therefore asked about different opponents, and gate 1's opponent was whichever doctype
+happened to top a channel, which for the lexical channel is routinely a doctype that carries no
+anchor evidence, sits far down ``B``, and could not be accepted under any circumstances. It
+could not be the answer, and it silently vetoed the answer anyway.
+
+Worse, that veto is **not a function of how much evidence the dissenter holds.** A channel that
+prefers a rival by a hair and a channel that prefers it by four bits are the same input to an
+argmax. Measured, on ``corpus/us/us_sec_20f.pdf``: the lexical channel scores
+``in_mca_aoc4_financial_statements`` at 0.2358 and the correct ``us_sec_20f`` at 0.2267 — a
+0.017-bit preference, on a document where the anchor channel holds 10.6 bits for ``us_sec_20f``
+and the combined lead is 2.60 bits. The rule could not tell a channel that *contradicts* ``d``
+from one that is merely *indifferent between ``d`` and a neighbour*, and refused on both.
+
+And it let a **tie-break** decide a classification. ``_ranked_channel`` breaks ties by doctype
+id so the audit record is reproducible across runs — right for a record, wrong for an opinion,
+and the argmax test read it as an opinion. Two doctypes printing the same masthead tie on the
+anchor channel; the alphabetically-first id was then named "the anchor winner", and the other
+failed identification however decisively the lexical channel preferred it. Two registries
+identical in every number — same anchors, same profiles, same document, same evidence — and
+differing only in whether the true doctype's id sorts before or after its sibling's got
+different verdicts: accept, then abstain. Pinned in
+``tests/test_classify.py::test_identification_does_not_turn_on_how_a_doctype_id_is_spelled``.
+``corpus/ca/ca_bn_letter.pdf`` sat on the lucky side of exactly that coin-toss: it ties
+``in_form16`` at 2.200 anchor bits and was accepted because ``c`` sorts before ``i``. A tie is
+the statement "this tier has no preference between these two", which is why the pairwise form
+reads it as neither concurrence nor dissent, and requires the tier to hold evidence for the
+candidate before its indifference counts for anything.
+
+Restated pairwise — each tier must hold evidence for ``d`` and must not prefer ``r`` to it —
+the gate asks the two tiers about the comparison the accept is actually making. It keeps
+exactly the property the whole design leans on and that the two rejected experiments below
+lost: **a tier that positively prefers the rival still refuses.** The rewrite is a strict
+*superset* of the old test (leading a channel outright implies both holding evidence on it and
+not losing ``r`` on it), so no answer the previous form found can be withdrawn by it; the only
+question a measurement has to settle is whether it admits a wrong one.
+
+Measured on the 158-document corpus (150 measured, 8 with no text layer), both arms run
+back-to-back in one process against one pinned registry of 181 doctypes, so the registry, the
+profiles and the corpus are byte-identical between them:
+
+=========================================  ==============  ==============
+                                           round 3         round 4
+=========================================  ==============  ==============
+correct / wrong / abstained (plain text)   119 / 0 / 31    129 / 0 / 21
+correct / wrong / abstained (zones)        117 / 0 / 33    128 / 0 / 22
+precision when it answered                 100%            100%
+abstention rate                            20.7%           14.0%
+answers inferred zones cost                2               1
+=========================================  ==============  ==============
+
+The registry was being edited by its own owner while this was measured, so the pair above is
+one snapshot (181 doctypes) with both arms run against it back-to-back and the corpus and
+registry files hashed identical before and after. The *delta* is the durable claim, and it
+reproduced unchanged on an earlier snapshot of the same registry: 118 -> 128 there, 119 -> 129
+here, the same ten documents both times, no loss and no wrong answer either time.
+
+Ten documents moved and every one of them moved from ``UNKNOWN`` to its correct doctype:
+``ca_ni_43_101_technical_report``, ``in_brsr``, ``in_partnership_reg_cert``,
+``mx_acta_asamblea``, ``us_birth_certificate``, ``us_sec_10q``, ``us_sec_20f`` (both the PDF and
+the EDGAR HTML), and ``us_secretary_certificate`` (both). No document changed in the other
+direction and no wrong answer was created.
+
+The documents that stayed refused are the reason to believe the gate still works, so they are
+named. On ``corpus/us/us_1099.pdf`` the anchor channel holds 7.20 bits for ``us_w9`` against
+4.90 for the correct ``us_1099`` — a registry defect, not a classifier one — and the lexical
+channel prefers ``us_1099``; the gate refuses. On
+``corpus/ca/ca_articles_incorporation_provincial.pdf`` — the document the top-k experiment
+below got *wrong* — the anchor channel leads with ``us_articles_incorporation`` and the lexical
+channel prefers the true Canadian class, so the gate refuses. Same for
+``corpus/ca/ca_sin_confirmation.pdf`` (anchors 5.48 bits for ``in_birth_certificate``),
+``corpus/us/us_operating_agreement.pdf``, ``corpus/us/us_paystub.pdf`` and
+``corpus/mx/mx_cif.pdf``. In every one of them a spuriously-firing anchor channel is caught by
+a lexical channel that prefers the rival — which is the independence the two-channel design is
+built on, now measured against the rival that matters instead of against a global argmax.
+
+Two properties were re-measured rather than argued. **Scale invariance**: with the term
+profiles rebuilt at registry sizes 5 / 10 / 25 / 50 / 181 and the padding restricted to
+doctypes provably irrelevant to each document (anchor score exactly 0.0, explained below 0.05),
+the ``(doctype, abstained)`` verdict is unchanged on 138 of 150 documents against 137 of 150
+for the previous rule, with the same largest confidence swing and a slightly smaller mean one
+(0.0697 against 0.0737). The rule reads only two doctypes' per-``(document, spec)`` quantities,
+so a doctype that carries no evidence for a document cannot enter the comparison at any
+registry size; the residual movement is the pre-existing idf drift inside ``lexical.explained``
+described above, and it is not made worse here. **Monotonicity**: supplying inferred zones cost
+the previous rule two answers (119 -> 117) and costs this one one (129 -> 128).
+
+That remaining one is named rather than netted off, because it is a real limit of a property
+this module states more strongly than it holds. ``corpus/ca/ca_bn_letter.pdf`` is correct on
+plain text and abstains with inferred zones, under *both* rules. The cause is not a weight:
+a ``zone``-restricted anchor belonging to ``in_form16`` becomes *audible* once a line carries a
+label, which is genuinely added evidence for a rival, and it narrows ``ca_bn_letter``'s anchor
+standing from a tie to a 0.120-bit deficit. So "labels can raise a verdict and cannot lower
+one" is exactly true of the zone *weights* — gate 1b levels those away — and is **not** true of
+zone *restrictions*, which are kept on purpose because they are registry claims about the
+document rather than opinions about layout. ``corpus/us/us_state_id.pdf`` moves the other way by
+the same mechanism and is recovered by zones. Both belong to whoever owns the zone-gated
+anchors; neither is a reason to move a threshold here. The document the previous rule *also*
+lost to zones, ``corpus/mx/xx_ubo_declaration_2.pdf``, is no longer lost.
+
 **Confidence is a distance to the binding constraint, not a posterior.** It is reported as::
 
     confidence = min( separation , strength , breadth )   when identification holds
@@ -269,6 +374,18 @@ true class ranked #3, so a top-2 test compared the winner against an irrelevant 
 and passed it. Channel *agreement* is what buys the precision here, not the scale-invariance:
 both of those failures had the winner leading on the saturated anchor channel while the
 lexical channel pointed somewhere else. Do not "optimise" the absolute bar into a top-k.
+
+Round 4's pairwise concurrence is **not** that idea wearing a different hat, and the difference
+is worth stating because both sentences contain the words "the runner-up". The top-k experiment
+changed how the decision *quantity* was normalised and, in doing so, dropped the agreement
+requirement — which is why it accepted documents where one channel led and the other pointed
+elsewhere. Round 4 changes neither the quantity nor the requirement: the channels are still
+absolute and per-``(document, spec)``, and a channel that prefers the rival still refuses. It
+changes only *which* opponent agreement is asked about, from "whatever tops this channel across
+the whole registry" to "the doctype the accept is actually being made over". The check is that
+``ca_articles_incorporation_provincial`` — the document the top-k form got wrong — is still
+refused under round 4, and refused for the substantive reason: the lexical channel prefers the
+true Canadian class to the ``us_articles_incorporation`` the anchor channel is leading with.
 
 *Standardising a shortlist with* :func:`~dce.classify.lexical.robust_z`. Over two or three
 values the MAD is degenerate and the result is ``z = ±1`` however close the inputs were —
@@ -780,10 +897,12 @@ def _conclusive_l1(
     green card at a hard-coded confidence of 0.90 with anchor coverage of 0.167.
 
     Why keep the route at all, rather than requiring concurrence of everything. Concurrence
-    asks the lexical tier to independently rank the class first, and a photo ID carries almost
-    no text: an Aadhaar card whose 12-digit number has one OCR-damaged digit has the UIDAI
-    header and little else, and there is no term profile that can outrank a chatty utility
-    bill on such a page. Deleting the route entirely was measured on the reference corpus by
+    asks the lexical tier to hold evidence for the class and to prefer it to the runner-up, and
+    a photo ID carries almost no text: an Aadhaar card whose 12-digit number has one
+    OCR-damaged digit has the UIDAI header and little else, and there is no term profile that
+    can beat a chatty utility bill's on such a page — the tier may well score it at zero, which
+    the positivity half of concurrence reads as "this tier has nothing to say", correctly.
+    Deleting the route entirely was measured on the reference corpus by
     stubbing this function to return nothing: it costs 3 of 37 accepted answers (36 correct
     down to 33) and changes the wrong-answer count not at all. The document's issuer printed a
     string that means "this is an Aadhaar"; refusing to read it because BM25 is unimpressed is
@@ -915,11 +1034,14 @@ class _Verdict:
     Attributes:
         candidate: The doctype leading the combined evidence channel, or ``None`` when no
             doctype carries any evidence at all.
-        route: How gate 1 (identification) was satisfied — ``"concurrence"`` when the anchor
-            and lexical channels independently agreed, ``"conclusive-l1"`` when exactly one
-            doctype held decisive-anchor or corroborated-checksum evidence, ``""`` when
-            neither did, or when gate 1b (the zone-free leader) refused, and the accept was
-            refused on identification.
+        route: How gate 1 (identification) was satisfied — ``"concurrence"`` when both the
+            anchor and the lexical channel independently preferred the candidate to the
+            runner-up, ``"conclusive-l1"`` when exactly one doctype held decisive-anchor or
+            corroborated-checksum evidence, ``""`` when neither did, or when gate 1b (the
+            zone-free leader) refused, and the accept was refused on identification.
+        runner_up: The second doctype on the combined channel — the rival gate 2 measures the
+            candidate against, and the one gate 1 asks the two channels about. Empty only when
+            the registry holds a single doctype.
         anchor_winner: The doctype leading the anchor channel.
         explained_winner: The doctype leading the lexical explained-mass channel.
         unpromoted_leader: The doctype leading the combined channel once every paragraph role
@@ -947,6 +1069,7 @@ class _Verdict:
 
     candidate: str | None
     route: str
+    runner_up: str
     anchor_winner: str
     explained_winner: str
     unpromoted_leader: str
@@ -973,8 +1096,8 @@ class _Verdict:
             detail=(
                 f"route={self.route or 'none'}; evidence leader "
                 f"{self.candidate or 'none'!r} at S={self.support:.3f}, "
-                f"separation {self.lead:.3f} ({self.lead_bits:.3f} bits) over the next "
-                f"doctype; zone-free leader "
+                f"separation {self.lead:.3f} ({self.lead_bits:.3f} bits) over "
+                f"{self.runner_up or 'no second doctype'!r}; zone-free leader "
                 f"{self.unpromoted_leader or 'n/a (payload carries no zone labels)'!r}; "
                 f"coverage={self.coverage:.3f}; component channels: anchor leader "
                 f"{self.anchor_winner or 'none'!r} (lead {self.anchor_lead:.3f} bits), "
@@ -1350,6 +1473,23 @@ def _verdict(
     decision quantity, one subtraction, one scale removes that class of defect rather than
     patching its instances.
 
+    **Gate 1: the two tiers must agree about the comparison the accept is making.** Not about
+    the whole registry — about ``runner_up``, the doctype gate 2 measures the candidate against
+    and the one it would be accepted over. Each tier must hold evidence for the candidate
+    (``> 0``, the silent-tier guard stated per-candidate rather than per-registry) and must not
+    prefer the runner-up to it. Since the candidate leads the combined channel and that channel
+    is the sum of the two, at least one tier strictly prefers it, so two indifferent tiers
+    cannot satisfy this between them.
+
+    The predecessor asked instead for ``argmax(A) == argmax(L) == candidate`` over the entire
+    registry, which made the two gates ask about different opponents and let a doctype that
+    could never be accepted — no anchor evidence, far down the combined channel — veto by
+    topping a channel. It was also insensitive to *how much* a dissenting tier dissented: on
+    ``corpus/us/us_sec_20f.pdf`` a 0.017-bit lexical preference for an unrelated doctype
+    refused an accept whose combined lead was 2.60 bits. See the module docstring's round 4 for
+    the measurement, and for why this is a superset of the old test and therefore cannot
+    withdraw an answer it used to find.
+
     **Gate 1b: zone labels may sharpen a decision, they may not make one.** The winner must
     also lead the same bits channel on the *zone-free* reading of the payload, where every
     paragraph role has been discarded and all text is read as ``body``
@@ -1377,9 +1517,11 @@ def _verdict(
     certainty for having no opposition.
 
     Confidence is zero, not merely small, when identification fails. There is no candidate in
-    that case: the channels disagree and no L1 evidence is conclusive, so there is nothing to
-    be confident *in*. How close it came is still on the record — in ``runners_up``, and in the
-    refusal reason, which prints the lead, the support and the coverage.
+    that case: a tier prefers the doctype the accept would be made over, or has nothing to say
+    about the candidate at all, and no L1 evidence is conclusive — so there is nothing to be
+    confident *in*. How close it came is still on the record — in ``runners_up``, and in the
+    refusal reason, which names the dissenting tier and the rival, and prints the lead, the
+    support and the coverage.
 
     Args:
         anchor: L1's outcome.
@@ -1430,7 +1572,7 @@ def _verdict(
     # ``supports`` then ties every saturated doctype, leaving the winner to be picked
     # alphabetically by the tie-break in _ranked_channel.
     candidate, b1 = bits_ranked[0]
-    b2 = bits_ranked[1][1] if len(bits_ranked) > 1 else 0.0
+    runner_up, b2 = bits_ranked[1] if len(bits_ranked) > 1 else ("", 0.0)
     lead = separation_of(b1 - b2)
 
     # A channel whose top score is zero has no winner. ``_ranked_channel`` still names one,
@@ -1452,10 +1594,32 @@ def _verdict(
     if l1 <= 0.0:
         explained_winner = ""
 
-    # Gate 1. Concurrence implies ``candidate == anchor_winner`` because S is monotone in both
-    # channels, but it is asserted rather than assumed: a future change to the combination
-    # function must fail loudly here rather than silently accept a doctype neither channel led.
-    concurred = bool(anchor_winner) and anchor_winner == explained_winner == candidate
+    # Gate 1. Concurrence asks whether both tiers agree that the candidate beats the doctype it
+    # is being accepted OVER — ``runner_up``, the second doctype on the combined channel, which
+    # is the rival gate 2 already measures it against. A tier concurs when it holds evidence
+    # for the candidate and does not prefer that rival; the positivity half is the silent-tier
+    # guard above restated per-candidate, which is the form that actually bites (a tier can be
+    # loud about some other doctype and still have nothing to say about this one). At least one
+    # tier must strictly prefer the candidate for it to lead the combined channel at all, so
+    # this cannot be satisfied by two indifferent tiers. See the docstring for why the opponent
+    # has to be the one gate 2 uses, and for what the global-argmax form cost.
+    #
+    # It is a superset of that global-argmax form: leading a channel outright implies both
+    # holding evidence on it and not losing the runner-up on it. So every answer the previous
+    # form identified is still identified, and this change can only add outcomes, never
+    # withdraw one.
+    dissenting = tuple(
+        name
+        for name, channel in (
+            ("anchor", deciding_anchor_bits),
+            ("lexical", deciding_explained),
+        )
+        if not (
+            channel.get(candidate, 0.0) > 0.0
+            and channel.get(candidate, 0.0) >= channel.get(runner_up, 0.0)
+        )
+    )
+    concurred = bool(runner_up) and not dissenting
     conclusive_here = conclusive is not None and conclusive == candidate
     route = "concurrence" if concurred else ("conclusive-l1" if conclusive_here else "")
 
@@ -1515,17 +1679,25 @@ def _verdict(
             for name, winner in (("anchor", anchor_winner), ("lexical", explained_winner))
             if not winner
         ]
-        detail = (
-            f"the {' and '.join(silent)} channel"
-            f"{'s are' if len(silent) > 1 else ' is'} silent — nothing scored above zero on "
-            f"{'them' if len(silent) > 1 else 'it'}, and a silent tier cannot concur with "
-            "anything"
-            if silent
-            else (
-                f"the two evidence channels disagree: anchors point at {anchor_winner!r}, "
-                f"the lexical profile at {explained_winner!r}"
+        if silent:
+            detail = (
+                f"the {' and '.join(silent)} channel"
+                f"{'s are' if len(silent) > 1 else ' is'} silent — nothing scored above zero on "
+                f"{'them' if len(silent) > 1 else 'it'}, and a silent tier cannot concur with "
+                "anything"
             )
-        )
+        elif not runner_up:
+            detail = (
+                "there is no second doctype to compare against, so no tier can be said to "
+                "prefer this one over anything"
+            )
+        else:
+            detail = (
+                f"the {' and '.join(dissenting)} channel"
+                f"{'s do' if len(dissenting) > 1 else ' does'} not support {candidate!r} over "
+                f"{runner_up!r}, the doctype it would be accepted over "
+                f"(channel leaders: anchors {anchor_winner!r}, lexical {explained_winner!r})"
+            )
         failures.append(
             f"no doctype was identified — {detail}; and no doctype holds a decisive anchor "
             "or a corroborated checksum that only it could hold, so neither tier may accept "
@@ -1556,6 +1728,7 @@ def _verdict(
     return _Verdict(
         candidate=candidate if support > 0.0 else None,
         route=route if identified else "",
+        runner_up=runner_up,
         anchor_winner=anchor_winner,
         explained_winner=explained_winner,
         unpromoted_leader=unpromoted_leader,

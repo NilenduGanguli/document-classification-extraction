@@ -712,12 +712,19 @@ Two things are deliberately **not** in the image:
   deployment that wants T2/T3/T4 gets one, and it is a visible, reviewable line in a build
   command rather than a dependency everybody inherits.
 
-One packaging wrinkle worth recording: the published `bert_uncased_L-12_H-768_A-12` checkpoint
-ships TensorFlow + Flax weights and **no** PyTorch `bin`/`safetensors`, so `transformers` needs
-`from_tf=True` (requires `tensorflow`) or `from_flax=True` (requires `jax`+`flax`). Neither is
-a declared dependency of the `bert` extra, because which one you want depends on your base
-image. Converting the checkpoint to `safetensors` once, offline, and mounting that is smaller
-and faster than shipping a second framework into a production image.
+One packaging wrinkle worth recording, because an earlier version of this paragraph was wrong in
+a way that would have cost an operator a day. There are two copies of
+`bert_uncased_L-12_H-768_A-12` in circulation: the **HuggingFace mirror**, which carries
+`pytorch_model.bin` *and* `flax_model.msgpack` *and* the TF checkpoint, and therefore loads
+natively; and the **original Google release**, which is `bert_config.json`, `config.json`,
+`vocab.txt` and `bert_model.ckpt.{index,data-*,meta}` and nothing else — the form a
+company-approved rebuild normally takes. `transformers` 5.x **removed** TensorFlow and Flax
+support, so the second form cannot be loaded at runtime by *any* install: `from_tf=True` and
+`from_flax=True` are accepted and ignored, and there is no `tensorflow` or `jax` extra that
+would change that. The design therefore converts once, offline
+(`tools/convert_bert_tf_checkpoint.py`), and the production image stays a single framework. The
+converter parses the checkpoint's LevelDB `.index` and raw `.data-*` files itself, so even the
+*build* host needs no TensorFlow, and the `.meta` graph is never read.
 
 If `BERT_ENABLED=true` and the directory is absent, `Settings` raises at startup. Loud, not
 silent: an operator who asked for BERT should find out in the first thirty seconds, not

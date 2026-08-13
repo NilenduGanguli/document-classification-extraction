@@ -81,6 +81,54 @@ What still applies, and what the guarantee then rests on:
 Run the zero-egress build unless you have a documented reason not to. Enabling a tier is a
 per-deployment decision with a per-page price and a data-flow consequence, not a default.
 
+### Reading an image: three answers, and only one of them is egress
+
+An image carries no text. Classifying one **requires** optical recognition, and recognition
+happens either on this host or on somebody else's — there is no third place. That is a genuine
+trade-off, not a bug to code around, so the service offers all three answers and makes it
+obvious which one a deployment has taken.
+
+| | Who calls Azure | Zone roles | Egress from DCE | Default |
+|---|---|---|---|---|
+| **(A) Caller-supplied** — post the result to `/classify` as `azure_analyze_result` (either product), `azure_read_result` or `des_ocr` | your upstream service, under its own authorisation | Layout: yes. Read: no | **none — no socket is opened** | recommended |
+| **(B) Local OCR** — `DCE_INGEST_LOCAL_OCR_ENABLED=true` plus the `ocr-rapidocr` / `ocr-tesseract` extra | nobody | no | none | off |
+| **(C) Remote OCR** — `DCE_INGEST_REMOTE_OCR_ENABLED=true` plus an endpoint plus `EXTRA_PACKAGES="httpx>=0.27"` | **this service, before the doctype is known** | Layout: yes. Read: no | **yes** | off |
+
+**Prefer (A).** It gives you Azure-quality text *and* leaves the invariant untouched, because
+the recognition happens where the document already legitimately is. All three feed the same
+adapters and the same cascade — the only difference is who dialled.
+
+**(C) is an auditable act, not a tuning knob.** It is off by default; the default image has no
+HTTP client, so it cannot be taken by accident; every request passes
+`dce.egress.assert_ocr_egress_permitted`, which names the provider and the endpoint and refuses
+inside a classification scope; configuring (B) and (C) together stops the process at boot
+rather than picking one silently; and a deployment that has taken it says so:
+
+```console
+$ curl -s localhost:8200/readyz | jq '{ocr, preclassification_ocr: .egress.preclassification_ocr}'
+{
+  "ocr": {
+    "provider": "azure_layout",
+    "enabled": true,
+    "network": true,
+    "endpoint_host": "contoso.cognitiveservices.azure.com",
+    "problem": "",
+    "summary": "THIS DEPLOYMENT TRANSMITS UNCLASSIFIED DOCUMENTS to contoso.cognitiveservices.azure.com — …"
+  },
+  "preclassification_ocr": true
+}
+```
+
+Per document, the same fact rides on every response: `X-Document-Source` on `/classify` and
+`/extract`, and a `source` block on `/process`.
+
+**Read v3.2 and Layout v4.0 are not interchangeable.** Read returns lines and words only — no
+`paragraphs[].role` — so every block lands in `body`, and the 30 registry anchors gated on
+`zone=title` (21 of them decisive) can never fire on a Read payload. The cascade records those
+as *unevaluable* rather than *failed*, so Read is a lower-**recall** provider and not a
+lower-precision one: it abstains where Layout accepts. Prefer `prebuilt-layout` where you have
+it, on either path.
+
 ---
 
 ## The cascade — deciding what a document is
@@ -489,15 +537,34 @@ docker run -v /srv/models:/models:ro -e BERT_ENABLED=true \
            -e BERT_MODEL_DIR=/models/bert_uncased_L-12_H-768_A-12 …
 ```
 
-Install the extra deliberately: `pip install '.[bert]'`. Note that the published
-`bert_uncased_L-12_H-768_A-12` checkpoint ships **TensorFlow + Flax** weights and no PyTorch
-`bin`/`safetensors`, so `transformers` needs `from_tf=True` (which requires `tensorflow`) or
-`from_flax=True` (which requires `jax`+`flax`). Converting the checkpoint to `safetensors` once,
-offline, and mounting that is smaller and faster than shipping a second framework.
+Install the extra deliberately: `pip install '.[bert]'` (torch + transformers). That is the only
+framework the runtime needs, and the only one it can use.
+
+### If your approved checkpoint is a TensorFlow checkpoint, convert it first
+
+The original Google release — and most company-approved rebuilds of it — is `bert_config.json`,
+`config.json`, `vocab.txt` and `bert_model.ckpt.{index,data-*,meta}`, with **no**
+`pytorch_model.bin` and **no** `model.safetensors`. `transformers` 5.x **removed** TensorFlow and
+Flax support, so `from_tf=True` / `from_flax=True` are ignored and installing `tensorflow` or
+`jax`+`flax` will not help. Convert it once, offline. The converter reads the checkpoint's
+`.index`/`.data-*` files directly and needs neither TensorFlow nor torch:
+
+```bash
+pip install '.[bert-convert]'                       # numpy + safetensors, nothing else
+python tools/convert_bert_tf_checkpoint.py convert /srv/models/bert_uncased_L-12_H-768_A-12
+# -> model.safetensors written beside the checkpoint; every tensor CRC32C-checked on the way in
+```
+
+Then mount the directory as above. Nothing is downloaded at any point, by the service or by the
+converter. If a known-good HuggingFace copy of the same checkpoint is available on a build host,
+`... verify <dir> --against <known-good-dir>` compares every tensor and the pooled embedding both
+models produce for the same text; on this repo's copies it reports a max absolute difference of
+exactly `0.000e+00`.
 
 If `BERT_ENABLED=true` and the directory is missing, the service refuses to start. An operator
 who asked for BERT should find out immediately, not discover degraded accuracy three weeks
-later.
+later. If the directory is present but holds only a TF checkpoint, the tier reports that
+specifically and names the converter — see `dce/classify/bert_knn.py`.
 
 ---
 
@@ -519,6 +586,27 @@ docker compose up --build          # http://localhost:8200/docs
 The image is `python:3.12-slim`, runs as a non-root user, exposes **8200**, has a healthcheck on
 `/health`, a read-only root filesystem and all capabilities dropped. The BERT volume is present
 but commented out with `BERT_ENABLED=false`, ready to uncomment.
+
+### The console
+
+A review console is served by this same process at `/` — four pages: `/analyze` (run a document
+and read the decision trail), `/registry`, `/review`, `/posture`. It is a React + TypeScript
+bundle under `frontend/`, and it is **entirely self-contained**: no CDN, no web font, no remote
+anything. A service whose whole argument is that documents do not leave must not ship a console
+that phones out, so everything is in the bundle.
+
+`docker compose up --build` needs no extra step — the Dockerfile's `ui` stage compiles it, and
+the runtime image carries the built assets and no JavaScript toolchain at all. From a checkout:
+
+```bash
+cd frontend && npm install && npm run build     # -> frontend/dist, which is committed
+npm run dev                                     # :5173, proxies /api and /readyz to :8200
+```
+
+`frontend/dist` is committed, so a plain `uvicorn dce.api.app:app` serves the console as well.
+If it is missing nothing breaks: the API, the probes and `/docs` all serve as normal, and `/`
+returns the service card with the build command in it. `DCE_FRONTEND_DIST` overrides where the
+bundle is read from.
 
 ### Configuration
 

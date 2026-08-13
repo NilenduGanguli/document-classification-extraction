@@ -69,7 +69,7 @@ bilingual Indian specimen is disproportionately valuable.
 **Aadhaar handling:** the UIDAI masking obligation is encoded in the registry — we persist
 only the last 4 digits. A masked specimen is *more* useful to us than a full one, not less.
 
-## United States — 9 IDs
+## United States — 8 IDs
 
 | Doctype | Card | Must show (decisive anchor) | Where | Pri |
 |---|---|---|---|---|
@@ -78,17 +78,30 @@ only the last 4 digits. A masked specimen is *more* useful to us than a full one
 | `us_drivers_license` | State DL | `DRIVER LICENSE` · `DRIVER'S LICENSE` | DMV "your new licence looks like this" pages. **Get 3–4 states** — no national format, highest US volume | ★★★ |
 | `us_passport_card` | Passport card | `PASSPORT CARD` · `I<USA` | State Dept specimen | ★★ |
 | `us_state_id` | Non-driver ID | `IDENTIFICATION CARD` | Same DMV pages | ★★ |
-| `us_real_id` | REAL ID | `REAL ID` · `REAL ID COMPLIANT` | Same. **See the collision note below** | ★★ |
 | `us_ead` | Employment Authorization (I-766) | `EMPLOYMENT AUTHORIZATION CARD` · `I-766` | USCIS specimen | ★★ |
 | `us_ssn_card` | Social Security Card | `SOCIAL SECURITY ADMINISTRATION` | SSA specimen. No photo, same sourcing problem | ★★ |
 | `us_military_id` | CAC / Uniformed Services | `COMMON ACCESS CARD` · `UNIFORMED SERVICES IDENTIFICATION CARD` | DoD/DMDC specimen | ★ |
 
-**Known risk — `us_real_id` vs `us_drivers_license`.** A REAL ID *is* a driver's licence
-with a star, so a real specimen will legitimately match both anchor sets. Our accept rule
-needs a 0.25 margin over the runner-up; two doctypes both firing decisive anchors may not
-clear it and will abstain. A REAL ID specimen is the test that tells us whether we need to
-merge these two into one doctype with a `real_id_compliant` boolean field. **Please
-prioritise getting one.**
+**RESOLVED — `us_real_id` vs `us_drivers_license`: merged, and there is nothing left to
+source.** This section used to ask for a REAL ID specimen as the test of whether the two
+doctypes had to be merged. The specimen arrived (Virginia DMV's AAMVA calibration sheet,
+`corpus/us/us_real_id.pdf`) and the answer was yes.
+
+The prediction above was right about the symptom and understated the cause. A REAL ID is not
+merely *similar* to a driver's licence — it **is** one. The REAL ID Act of 2005 and 6 CFR
+Part 37 set minimum standards for a state-issued licence or ID card; 6 CFR 37.17(n) adds the
+star marking and leaves the card's title alone. So the REAL ID set is a strict *subset* of
+`us_drivers_license` ∪ `us_state_id`, and no anchor can separate a subset from its own
+superset — the superset's issuer prints everything the subset does. The specimen confirmed
+even the programme name is shared: the sheet for the **non**-compliant Standard licence also
+prints "REAL ID", in the legend explaining AAMVA element `DDA` (`F` = fully compliant,
+`N` = non-compliant).
+
+`us_real_id` is therefore gone, and compliance survives as the `real_id_compliant` boolean
+field on both `us_drivers_license` and `us_state_id` — which is the fact a KYC reviewer
+actually needs. **Do not source a "REAL ID" specimen.** What is still worth sourcing is more
+state driver's licences and non-driver IDs (row 3 and row 5 above), a mix of compliant and
+non-compliant, so the field has something to extract from.
 
 ## Canada — 9 IDs (bilingual EN/FR — exercises 58 untested French anchors)
 

@@ -170,6 +170,86 @@ class FieldSpec(BaseModel):
     notes: str = ""
 
 
+class Controls(enum.StrEnum):
+    """*Why* an anchor's author believed the string identifies one document type.
+
+    Every ``decisive=True`` anchor must name one of these, and
+    :func:`dce.registry.loader._check_anchor` refuses the spec otherwise. The field exists
+    because the failure it prevents is a *silent* one: until it did, declaring
+    ``BIRTH CERTIFICATE`` decisive and declaring ``OMB No. 1545-0074`` decisive were the
+    same keystroke, and the registry could not tell them apart. Four false claims survived
+    review that way, each matching documents of two or more foreign jurisdictions, and the
+    two loader checks that existed could not see any of them: both compare the registry
+    against itself, so a *lone* false claim was invisible by construction.
+
+    The property a decisive anchor actually has to have is not "one issuer controls it" —
+    that is a proxy, and a measurably bad one in both directions (it would keep ``Form W-9``,
+    which the corpus finds printed on a 1099 and a 20-F, and demote ``RATION CARD``, which
+    nothing in the corpus contradicts). The property is:
+
+        **a decisive anchor must not appear on a document of another type — which includes
+        being CITED by one.**
+
+    That is what ``tests/test_registry_corpus_decisive.py`` enforces, against documents.
+    These values are the *author's stated grounds* for believing it, checkable by a reader
+    long before a corpus document exists to contradict them.
+
+    Six of the seven assert issuer control. The seventh does not, and says so.
+    """
+
+    #: A form / instrument designation the issuer assigns and prints on the form itself:
+    #: ``Form W-9``, ``FORM 51-102F5``, ``IMM 5292``, ``FORM NO. AOC-4``, ``CP 575``,
+    #: ``AFIL-01``, ``[411000-AR]``.
+    FORM_NUMBER = "form_number"
+
+    #: A paperwork-control number allocated by a body that allocates them uniquely across a
+    #: whole government: ``OMB No. 1545-0074``, ``OMB Number: 3235-0287``.
+    CONTROL_NUMBER = "control_number"
+
+    #: The title of a statute, rule or numbered regulatory instrument the document is issued
+    #: under: ``Companies (Accounts) Rules, 2014``, ``NATIONAL INSTRUMENT 62-103``,
+    #: ``Hindu Marriage Act, 1955``, ``Corporate Transparency Act``.
+    STATUTE_TITLE = "statute_title"
+
+    #: The name of the body that issues this document, or a proper name it coined and owns —
+    #: a programme, a trade name, or an identifier scheme it alone operates:
+    #: ``UNIQUE IDENTIFICATION AUTHORITY OF INDIA``, ``HYDRO-QUÉBEC``, ``TELMEX``, ``NEXUS``,
+    #: ``Udyam Registration Number``. Note what this value does **not** license: an issuer
+    #: name that heads *several* doctypes in this registry proves the issuer, not the
+    #: document, and :func:`dce.registry.loader._check_issuer_name_not_shared` rejects it.
+    ISSUER_NAME = "issuer_name"
+
+    #: Verbatim wording from this issuer's own template for this instrument — a prescribed
+    #: legend, a caption, or the statutory title of a *numbered* form issued by one authority:
+    #: ``We assigned you an Employer Identification Number``, ``Wage and Tax Statement``,
+    #: ``The regulations contained in Table F``, ``Sentido de la opinión``. The bright line
+    #: against :attr:`CLASS_NAME_UNCONTESTED` is authorship: some one issuer wrote this
+    #: sentence for this document. ``MARRIAGE CERTIFICATE`` has no author.
+    ISSUER_TEMPLATE = "issuer_template"
+
+    #: An ICAO 9303 machine-readable-zone prefix — document code plus issuing state, e.g.
+    #: ``P<CAN``. Issued by ICAO to one state, and appears only in a machine-readable zone.
+    MRZ_PREFIX = "mrz_prefix"
+
+    #: **A known-weak claim, kept deliberately.** "This is a document-CLASS name — a string
+    #: every issuer on earth chooses independently — and it is decisive only because nothing
+    #: in this registry and nothing in the corpus currently collides with it."
+    #:
+    #: It is a separate value rather than an absent one so that the weak claims are
+    #: greppable, countable and reportable instead of indistinguishable from real ones, and
+    #: so the loader can hold them to a rule the strong values do not need:
+    #: :func:`dce.registry.loader._check_class_name_uncontested` forbids *any* other doctype,
+    #: in any jurisdiction, decisive or not, from declaring the same string. The moment the
+    #: registry grows into one of these, the pack that grew into it fails to import.
+    #:
+    #: Do not read the tier as safe. It is the tier of *no evidence yet*: several members are
+    #: clean only because the corpus is thin where they live —
+    #: ``CERTIFICAT DE CITOYENNETÉ CANADIENNE`` is here while its English twin was demoted for
+    #: matching a Canadian SIN letter's list of acceptable ID, and the only difference is that
+    #: the corpus holds no French-language document that lists acceptable ID.
+    CLASS_NAME_UNCONTESTED = "class_name_uncontested"
+
+
 class Anchor(BaseModel):
     """A high-signal string that appears in this doctype's OCR dump."""
 
@@ -178,6 +258,13 @@ class Anchor(BaseModel):
     #: A decisive anchor alone is near-proof of the doctype (an issuing-authority header,
     #: a form number). Non-decisive anchors only contribute to the lexical score.
     decisive: bool = False
+    #: The grounds for the decisive claim. **Required when — and only when — ``decisive`` is
+    #: True**; the registry loader rejects a spec that omits it, and rejects one that supplies
+    #: it on a non-decisive anchor. See :class:`Controls`. Both halves matter: the first turns
+    #: an invisible false claim into a question the author has to answer at authoring time,
+    #: and the second keeps ``grep -c class_name_uncontested`` an honest count of the weak
+    #: claims rather than a mix of claims and decoration.
+    controls: Controls | None = None
     zone: Zone | None = None     # when set, only counts if found in that zone
 
 

@@ -16,7 +16,17 @@ import unicodedata
 import pytest
 
 import dce.extract.validate as validate_module
-from dce.models import UNKNOWN, Anchor, Category, DocTypeSpec, LayoutView, PageInfo, TextBlock, Zone
+from dce.models import (
+    UNKNOWN,
+    Anchor,
+    Category,
+    Controls,
+    DocTypeSpec,
+    LayoutView,
+    PageInfo,
+    TextBlock,
+    Zone,
+)
 from dce.normalize import fold, skeletonize, tokenize_unicode
 from dce.registry import (
     ATTRIBUTE_KEYS,
@@ -458,38 +468,36 @@ def test_shared_government_furniture_is_never_decisive() -> None:
         assert _decisive(spec).isdisjoint(furniture), spec.doctype_id
 
 
-def test_decisive_anchor_collisions_are_all_declared() -> None:
-    """Any decisive anchor shared by two doctypes must be declared confusable both ways.
+def test_no_decisive_anchor_is_shared_by_two_doctypes_at_all() -> None:
+    """No decisive anchor is claimed twice. The set is empty, and it used to have two members.
 
-    ``validate_registry`` already enforces this; asserting it here pins the *set* of
-    legitimate collisions so a new pack cannot quietly add one.
+    This test used to assert that a shared decisive anchor is *allowed* when both doctypes
+    declare each other — pinning ``MINISTRY OF CORPORATE AFFAIRS`` and its Hindi twin as
+    "the legitimate, declared, same-issuer case". Measurement against the corpus retired that
+    idea. The English string is printed on ``in_brsr`` and ``in_statutory_auditor_report``
+    documents as well, because the MCA heads every filing it receives rather than one of
+    them; declaring a two-doctype family therefore described the wrong relationship, and
+    ``confusable_with`` cannot make a false claim true (``us_green_card`` and ``ca_pr_card``
+    declared each other in both directions and a Canadian PR card was still classified
+    ``us_green_card``).
+
+    So the string is now an ``ISSUER_NAME`` held by nobody decisively, and
+    :func:`dce.registry.loader._check_issuer_name_not_shared` enforces exactly the rule
+    ``_check_decisive_asymmetry``'s own docstring had always stated and never applied: an
+    issuer name that heads several doctypes proves the issuer, not the document. Both MCA
+    doctypes keep their form numbers, statutes and identifier schemes; neither keeps the
+    letterhead.
+
+    ``_check_decisive_collisions`` is still the general rule and still permits a declared
+    family — a masked and an unmasked Aadhaar really do share the UIDAI header. This asserts
+    that no pack is currently relying on that permission.
     """
     owners: dict[str, list[str]] = {}
     for spec in all_specs():
         for text in _decisive(spec):
             owners.setdefault(text, []).append(spec.doctype_id)
     collisions = {t: sorted(ids) for t, ids in owners.items() if len(ids) > 1}
-    # "certificate of incorporation" was in this set and is no longer decisive for either
-    # doctype: it is the title a company registrar in Delaware, Ontario and England each chose
-    # independently, and both us_articles_incorporation and
-    # ca_articles_incorporation_provincial declare it here. What remains is the pair of
-    # strings the Indian Ministry of Corporate Affairs actually controls, shared between two
-    # of its own filings — the legitimate, declared, same-issuer case this test exists to pin.
-    assert collisions == {
-        "ministry of corporate affairs": ["in_certificate_incorporation", "in_llp_incorporation"],
-        "कॉर्पोरेट कार्य मंत्रालय".casefold(): [
-            "in_certificate_incorporation",
-            "in_llp_incorporation",
-        ],
-    }
-    for ids in collisions.values():
-        for did in ids:
-            spec = get(did)
-            assert spec is not None
-            for other in ids:
-                if other != did:
-                    assert other in spec.confusable_with
-                    assert spec.confusable_with[other].strip()
+    assert collisions == {}
 
 
 def test_crosscountry_anchors_are_never_decisive() -> None:
@@ -711,10 +719,46 @@ def _minimal(**overrides: object) -> DocTypeSpec:
     return DocTypeSpec(**base)  # type: ignore[arg-type]
 
 
+def test_loader_rejects_a_decisive_anchor_that_does_not_say_what_makes_it_decisive() -> None:
+    """The hole the ``controls`` field closes: an unjustified claim now cannot be registered.
+
+    Before this, declaring ``OMB No. 1545-0074`` decisive and declaring ``BIRTH CERTIFICATE``
+    decisive were the same keystroke, and neither cross-spec check could tell them apart —
+    both compare the registry against itself, so a *lone* false claim has no second claimant
+    to collide with and is invisible by construction. Whoever wrote ``BIRTH CERTIFICATE``
+    would now have to put something in this field, and there is nothing honest to put but
+    :attr:`~dce.models.Controls.CLASS_NAME_UNCONTESTED`, which is counted and reported as
+    weak and held to a stricter uniqueness rule.
+    """
+    from dce.registry.loader import _validate_spec
+
+    spec = _minimal(anchors=[Anchor(text="A DECISIVE HEADER", decisive=True)])
+    with pytest.raises(RegistryError, match="does not say what makes it decisive"):
+        _validate_spec(spec)
+
+
+def test_loader_rejects_controls_on_an_anchor_that_makes_no_decisive_claim() -> None:
+    """The other half, and it is what keeps the weak tier countable.
+
+    ``controls`` justifies a decisive claim. On a non-decisive anchor it is decoration, and
+    decoration is exactly what would stop ``grep -c class_name_uncontested`` from being an
+    honest count of the registry's known-weak claims.
+    """
+    from dce.registry.loader import _validate_spec
+
+    spec = _minimal(
+        anchors=[Anchor(text="A LEXICAL HEADER", controls=Controls.CLASS_NAME_UNCONTESTED)]
+    )
+    with pytest.raises(RegistryError, match="is not decisive but declares controls"):
+        _validate_spec(spec)
+
+
 def test_loader_rejects_a_short_decisive_anchor_with_no_zone() -> None:
     from dce.registry.loader import register
 
-    spec = _minimal(anchors=[Anchor(text="DL", decisive=True)])
+    spec = _minimal(
+        anchors=[Anchor(text="DL", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED)]
+    )
     with pytest.raises(RegistryError, match="single short word"):
         register(spec)
 
@@ -724,7 +768,17 @@ def test_loader_accepts_a_short_decisive_anchor_pinned_to_a_zone() -> None:
     from dce.registry.loader import _validate_spec
 
     _validate_spec(
-        _minimal(anchors=[Anchor(text="आधार", lang="hi", decisive=True, zone=Zone.title)])
+        _minimal(
+            anchors=[
+                Anchor(
+                    text="आधार",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                    zone=Zone.title,
+                )
+            ]
+        )
     )
 
 
@@ -734,7 +788,13 @@ def test_loader_rejects_a_decisive_anchor_on_a_crosscountry_spec() -> None:
     spec = _minimal(
         doctype_id="xx_test_only",
         country="XX",
-        anchors=[Anchor(text="A GENERIC HEADER", decisive=True)],
+        anchors=[
+            Anchor(
+                text="A GENERIC HEADER",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            )
+        ],
     )
     with pytest.raises(RegistryError, match="must not carry decisive anchors"):
         _validate_spec(spec)

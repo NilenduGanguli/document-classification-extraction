@@ -11,11 +11,27 @@ together. An OCR read of an Aadhaar letter contains ``भारतीय वि�
 reliably as it contains ``UNIQUE IDENTIFICATION AUTHORITY OF INDIA``, and on a poor scan the
 Devanagari header often survives when the English one does not. Anchors are declared in both.
 
-**Decisive means decisive.** A decisive anchor carries ``fuse_weight_anchor`` (3.0) on its
-own, so only issuing-authority headers and form numbers get the flag. Shared page furniture
+**Decisive means decisive, and it now has to say why.** A decisive anchor carries
+``fuse_weight_anchor`` (3.0) on its own, so every one of them names its grounds in
+:class:`dce.models.Controls` and the loader refuses the spec otherwise. Shared page furniture
 that appears on every government document — ``GOVERNMENT OF INDIA`` / ``भारत सरकार`` — is
 present as a *non-decisive* anchor on many specs, because it is real lexical evidence, and
 decisive on none, because it separates nothing.
+
+The same reasoning, taken one step further, is why ``MINISTRY OF CORPORATE AFFAIRS`` and its
+Hindi twin are no longer decisive for ``in_certificate_incorporation`` or
+``in_llp_incorporation``. The two used to declare each other and share the string as a
+"same-issuer family", but the MCA heads every filing it receives: the corpus finds the
+letterhead on ``in_brsr`` and ``in_statutory_auditor_report`` documents too. An issuer name
+that heads several doctypes proves the issuer, not the document —
+:func:`dce.registry.loader._check_issuer_name_not_shared` now enforces that, and each of the
+two doctypes carries its own form number, statute and identifier scheme instead.
+
+Many Indian anchors here are honest ``CLASS_NAME_UNCONTESTED`` claims — ``RATION CARD``,
+``PASSBOOK``, ``SALARY SLIP``, ``जन्म प्रमाण पत्र``. The value means "this is a document-class
+name, kept decisive only because nothing in the registry or the corpus currently collides with
+it". It is a real claim and a weak one, it is counted as weak, and it expires automatically:
+the moment a second doctype declares the string, the pack fails to import.
 
 **No invented regexes.** Where an identifier has a published check digit (Aadhaar/Verhoeff,
 GSTIN/mod-36, MRZ) the field names a validator that must enforce it. Where the format varies
@@ -28,7 +44,7 @@ to a human.
 
 from __future__ import annotations
 
-from dce.models import Anchor, Category, DocTypeSpec, FieldSpec, Zone
+from dce.models import Anchor, Category, Controls, DocTypeSpec, FieldSpec, Zone
 from dce.registry.loader import RegistryError, register_all
 
 # ---------------------------------------------------------------------------
@@ -361,10 +377,19 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=True,
             anchors=[
-                Anchor(text="UNIQUE IDENTIFICATION AUTHORITY OF INDIA", decisive=True),
-                Anchor(text="भारतीय विशिष्ट पहचान प्राधिकरण", lang="hi", decisive=True),
-                Anchor(text="AADHAAR", decisive=True, zone=Zone.title),
-                Anchor(text="आधार", lang="hi", decisive=True, zone=Zone.title),
+                Anchor(
+                    text="UNIQUE IDENTIFICATION AUTHORITY OF INDIA",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="भारतीय विशिष्ट पहचान प्राधिकरण",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(text="AADHAAR", zone=Zone.title),
+                Anchor(text="आधार", lang="hi", zone=Zone.title),
                 Anchor(text="आधार", lang="hi"),
                 Anchor(text="Aadhaar"),
                 Anchor(text="मेरा आधार, मेरी पहचान", lang="hi"),
@@ -496,7 +521,7 @@ _SPECS.extend(
                 # decisive was tried and changes nothing, because dce.classify.anchors
                 # saturates both doctypes at its confidence ceiling (see the note on
                 # id_patterns below).
-                Anchor(text="Masked Aadhaar", decisive=True),
+                Anchor(text="Masked Aadhaar", decisive=True, controls=Controls.ISSUER_NAME),
                 Anchor(text="UNIQUE IDENTIFICATION AUTHORITY OF INDIA"),
                 Anchor(text="भारतीय विशिष्ट पहचान प्राधिकरण", lang="hi"),
                 Anchor(text="AADHAAR", zone=Zone.title),
@@ -598,8 +623,17 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="PERMANENT ACCOUNT NUMBER CARD", decisive=True),
-                Anchor(text="स्थायी लेखा संख्या कार्ड", lang="hi", decisive=True),
+                Anchor(
+                    text="PERMANENT ACCOUNT NUMBER CARD",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="स्थायी लेखा संख्या कार्ड",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 # Both spellings of the issuer's name were decisive here, gated to the title
                 # zone. The Income Tax Department issues four doctypes in this registry —
                 # in_pan, in_form16, in_form60 and in_itr_acknowledgement — and prints its
@@ -702,8 +736,8 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=True,
             anchors=[
-                Anchor(text="REPUBLIC OF INDIA", decisive=True),
-                Anchor(text="भारत गणराज्य", lang="hi", decisive=True),
+                Anchor(text="REPUBLIC OF INDIA", decisive=True, controls=Controls.ISSUER_NAME),
+                Anchor(text="भारत गणराज्य", lang="hi", decisive=True, controls=Controls.ISSUER_NAME),
                 Anchor(text="PASSPORT"),
                 Anchor(text="पासपोर्ट", lang="hi"),
                 Anchor(text="Ministry of External Affairs"),
@@ -842,10 +876,28 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=True,
             anchors=[
-                Anchor(text="ELECTION COMMISSION OF INDIA", decisive=True),
-                Anchor(text="भारत निर्वाचन आयोग", lang="hi", decisive=True),
-                Anchor(text="ELECTOR PHOTO IDENTITY CARD", decisive=True),
-                Anchor(text="निर्वाचक फोटो पहचान पत्र", lang="hi", decisive=True),
+                Anchor(
+                    text="ELECTION COMMISSION OF INDIA",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="भारत निर्वाचन आयोग",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="ELECTOR PHOTO IDENTITY CARD",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="निर्वाचक फोटो पहचान पत्र",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="मतदाता पहचान पत्र", lang="hi"),
                 Anchor(text="Elector's Name"),
                 Anchor(text="निर्वाचक का नाम", lang="hi"),
@@ -950,11 +1002,25 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=True,
             anchors=[
-                Anchor(text="DRIVING LICENCE", decisive=True),
-                Anchor(text="DRIVING LICENSE", decisive=True),
-                Anchor(text="चालक अनुज्ञप्ति", lang="hi", decisive=True),
-                Anchor(text="ड्राइविंग लाइसेंस", lang="hi", decisive=True),
-                Anchor(text="AUTHORISATION TO DRIVE FOLLOWING CLASS OF VEHICLES", decisive=True),
+                Anchor(text="DRIVING LICENCE"),
+                Anchor(text="DRIVING LICENSE"),
+                Anchor(
+                    text="चालक अनुज्ञप्ति",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="ड्राइविंग लाइसेंस",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="AUTHORISATION TO DRIVE FOLLOWING CLASS OF VEHICLES",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
                 Anchor(text="THE UNION OF INDIA"),
                 Anchor(text="भारत संघ", lang="hi"),
                 Anchor(text="TRANSPORT DEPARTMENT"),
@@ -1058,14 +1124,34 @@ _SPECS.extend(
             officially_valid=True,
             anchors=[
                 Anchor(
-                    text="MAHATMA GANDHI NATIONAL RURAL EMPLOYMENT GUARANTEE ACT", decisive=True
+                    text="MAHATMA GANDHI NATIONAL RURAL EMPLOYMENT GUARANTEE ACT",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
                 ),
                 Anchor(
-                    text="महात्मा गांधी राष्ट्रीय ग्रामीण रोजगार गारंटी अधिनियम", lang="hi", decisive=True
+                    text="महात्मा गांधी राष्ट्रीय ग्रामीण रोजगार गारंटी अधिनियम",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
                 ),
-                Anchor(text="NATIONAL RURAL EMPLOYMENT GUARANTEE ACT", decisive=True),
-                Anchor(text="JOB CARD", decisive=True, zone=Zone.title),
-                Anchor(text="जॉब कार्ड", lang="hi", decisive=True, zone=Zone.title),
+                Anchor(
+                    text="NATIONAL RURAL EMPLOYMENT GUARANTEE ACT",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
+                Anchor(
+                    text="JOB CARD",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                    zone=Zone.title,
+                ),
+                Anchor(
+                    text="जॉब कार्ड",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                    zone=Zone.title,
+                ),
                 Anchor(text="JOB CARD"),
                 Anchor(text="जॉब कार्ड", lang="hi"),
                 Anchor(text="MGNREGA"),
@@ -1186,10 +1272,27 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=True,
             anchors=[
-                Anchor(text="NATIONAL POPULATION REGISTER", decisive=True),
-                Anchor(text="राष्ट्रीय जनसंख्या रजिस्टर", lang="hi", decisive=True),
-                Anchor(text="REGISTRAR GENERAL AND CENSUS COMMISSIONER", decisive=True),
-                Anchor(text="REGISTRAR GENERAL & CENSUS COMMISSIONER", decisive=True),
+                Anchor(
+                    text="NATIONAL POPULATION REGISTER",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="राष्ट्रीय जनसंख्या रजिस्टर",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="REGISTRAR GENERAL AND CENSUS COMMISSIONER",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="REGISTRAR GENERAL & CENSUS COMMISSIONER",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="भारत के महापंजीयक", lang="hi"),
                 Anchor(text="Office of the Registrar General"),
                 Anchor(text="Ministry of Home Affairs"),
@@ -1249,14 +1352,13 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="FORM NO. 60", decisive=True),
-                Anchor(text="FORM NO 60", decisive=True),
+                Anchor(text="FORM NO. 60", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="FORM NO 60", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(
-                    text=(
-                        "Form of declaration to be filed by a person who does not have a "
-                        "permanent account number"
-                    ),
+                    text="Form of declaration to be filed by a person who does not have a "
+                        "permanent account number",
                     decisive=True,
+                    controls=Controls.FORM_NUMBER,
                 ),
                 Anchor(text="second proviso to rule 114B"),
                 Anchor(text="rule 114B"),
@@ -1364,8 +1466,12 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="CENTRAL KYC REGISTRY", decisive=True),
-                Anchor(text="KYC Identification Number", decisive=True),
+                Anchor(text="CENTRAL KYC REGISTRY", decisive=True, controls=Controls.ISSUER_NAME),
+                Anchor(
+                    text="KYC Identification Number",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="CKYCR"),
                 Anchor(text="CKYC"),
                 Anchor(text="CERSAI"),
@@ -1486,9 +1592,25 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="PASSBOOK", decisive=True, zone=Zone.title),
-                Anchor(text="पासबुक", lang="hi", decisive=True, zone=Zone.title),
-                Anchor(text="PASS BOOK", decisive=True, zone=Zone.title),
+                Anchor(
+                    text="PASSBOOK",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                    zone=Zone.title,
+                ),
+                Anchor(
+                    text="पासबुक",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                    zone=Zone.title,
+                ),
+                Anchor(
+                    text="PASS BOOK",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                    zone=Zone.title,
+                ),
                 Anchor(text="PASSBOOK"),
                 Anchor(text="पासबुक", lang="hi"),
                 Anchor(text="Customer ID"),
@@ -1611,7 +1733,13 @@ _SPECS.extend(
                 # language — it was that losing the French line let another jurisdiction's
                 # generic English claim win by default, and the loader check plus the
                 # cascade's contested-claim rule are what close that.
-                Anchor(text="खाता विवरण", lang="hi", decisive=True, zone=Zone.title),
+                Anchor(
+                    text="खाता विवरण",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                    zone=Zone.title,
+                ),
                 Anchor(text="STATEMENT OF ACCOUNT"),
                 Anchor(text="ACCOUNT STATEMENT"),
                 Anchor(text="खाता विवरण", lang="hi"),
@@ -1707,10 +1835,14 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="VALID FOR THREE MONTHS FROM DATE OF ISSUE", decisive=True),
-                Anchor(text="PAYABLE AT PAR", decisive=True),
-                Anchor(text="OR BEARER", decisive=True),
-                Anchor(text="CTS-2010", decisive=True),
+                Anchor(
+                    text="VALID FOR THREE MONTHS FROM DATE OF ISSUE",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
+                Anchor(text="PAYABLE AT PAR", decisive=True, controls=Controls.ISSUER_TEMPLATE),
+                Anchor(text="OR BEARER"),
+                Anchor(text="CTS-2010", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(text="CANCELLED"),
                 Anchor(text="रद्द", lang="hi"),
                 Anchor(text="Please sign above"),
@@ -1885,10 +2017,20 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="ELECTRICITY BILL", decisive=True),
-                Anchor(text="विद्युत बिल", lang="hi", decisive=True),
-                Anchor(text="बिजली बिल", lang="hi", decisive=True),
-                Anchor(text="ENERGY BILL", decisive=True),
+                Anchor(text="ELECTRICITY BILL"),
+                Anchor(
+                    text="विद्युत बिल",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="बिजली बिल",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(text="ENERGY BILL", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
                 Anchor(text="Units Consumed"),
                 Anchor(text="यूनिट खपत", lang="hi"),
                 Anchor(text="Meter Reading"),
@@ -1974,10 +2116,24 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="WATER BILL", decisive=True),
-                Anchor(text="जल बिल", lang="hi", decisive=True),
-                Anchor(text="जल बोर्ड", lang="hi", decisive=True),
-                Anchor(text="WATER SUPPLY AND SEWERAGE BOARD", decisive=True),
+                Anchor(text="WATER BILL", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+                Anchor(
+                    text="जल बिल",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="जल बोर्ड",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="WATER SUPPLY AND SEWERAGE BOARD",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="Water Charges"),
                 Anchor(text="जल शुल्क", lang="hi"),
                 Anchor(text="Sewerage Charges"),
@@ -2044,9 +2200,14 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="PIPED NATURAL GAS", decisive=True),
-                Anchor(text="GAS BILL", decisive=True),
-                Anchor(text="पाइप्ड प्राकृतिक गैस", lang="hi", decisive=True),
+                Anchor(text="PIPED NATURAL GAS"),
+                Anchor(text="GAS BILL", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+                Anchor(
+                    text="पाइप्ड प्राकृतिक गैस",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="PNG"),
                 Anchor(text="SCM"),
                 Anchor(text="Standard Cubic Metre"),
@@ -2114,10 +2275,23 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="TELEPHONE BILL", decisive=True),
-                Anchor(text="LANDLINE BILL", decisive=True),
-                Anchor(text="दूरभाष बिल", lang="hi", decisive=True),
-                Anchor(text="BROADBAND BILL", decisive=True),
+                Anchor(text="TELEPHONE BILL"),
+                Anchor(
+                    text="LANDLINE BILL",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="दूरभाष बिल",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="BROADBAND BILL",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="Call Charges"),
                 Anchor(text="Monthly Rental"),
                 Anchor(text="Tariff Plan"),
@@ -2193,13 +2367,39 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="RENT AGREEMENT", decisive=True),
-                Anchor(text="LEAVE AND LICENCE AGREEMENT", decisive=True),
-                Anchor(text="LEAVE AND LICENSE AGREEMENT", decisive=True),
-                Anchor(text="LEASE DEED", decisive=True),
-                Anchor(text="DEED OF LEASE", decisive=True),
-                Anchor(text="किरायानामा", lang="hi", decisive=True),
-                Anchor(text="किराया अनुबंध", lang="hi", decisive=True),
+                Anchor(
+                    text="RENT AGREEMENT",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="LEAVE AND LICENCE AGREEMENT",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="LEAVE AND LICENSE AGREEMENT",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(text="LEASE DEED", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+                Anchor(
+                    text="DEED OF LEASE",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="किरायानामा",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="किराया अनुबंध",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="LESSOR"),
                 Anchor(text="LESSEE"),
                 Anchor(text="LICENSOR"),
@@ -2333,10 +2533,20 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="PROPERTY TAX", decisive=True),
-                Anchor(text="संपत्ति कर", lang="hi", decisive=True),
-                Anchor(text="HOUSE TAX", decisive=True),
-                Anchor(text="गृह कर", lang="hi", decisive=True),
+                Anchor(text="PROPERTY TAX"),
+                Anchor(
+                    text="संपत्ति कर",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(text="HOUSE TAX", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+                Anchor(
+                    text="गृह कर",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="Municipal Corporation"),
                 Anchor(text="नगर निगम", lang="hi"),
                 Anchor(text="नगर पालिका", lang="hi"),
@@ -2456,10 +2666,27 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=False,
             anchors=[
-                Anchor(text="LETTER OF ALLOTMENT OF ACCOMMODATION", decisive=True),
-                Anchor(text="ALLOTMENT OF ACCOMMODATION", decisive=True),
-                Anchor(text="ALLOTMENT LETTER", decisive=True),
-                Anchor(text="आवास आवंटन पत्र", lang="hi", decisive=True),
+                Anchor(
+                    text="LETTER OF ALLOTMENT OF ACCOMMODATION",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="ALLOTMENT OF ACCOMMODATION",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="ALLOTMENT LETTER",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="आवास आवंटन पत्र",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="Allottee"),
                 Anchor(text="Estate Office"),
                 Anchor(text="Quarter No"),
@@ -2544,9 +2771,22 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=False,
             anchors=[
-                Anchor(text="PENSION PAYMENT ORDER", decisive=True),
-                Anchor(text="पेंशन भुगतान आदेश", lang="hi", decisive=True),
-                Anchor(text="CENTRAL PENSION ACCOUNTING OFFICE", decisive=True),
+                Anchor(
+                    text="PENSION PAYMENT ORDER",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="पेंशन भुगतान आदेश",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="CENTRAL PENSION ACCOUNTING OFFICE",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="PPO No"),
                 Anchor(text="Basic Pension"),
                 Anchor(text="मूल पेंशन", lang="hi"),
@@ -2648,8 +2888,13 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=False,
             anchors=[
-                Anchor(text="RATION CARD", decisive=True),
-                Anchor(text="राशन कार्ड", lang="hi", decisive=True),
+                Anchor(text="RATION CARD"),
+                Anchor(
+                    text="राशन कार्ड",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="Food and Civil Supplies"),
                 Anchor(text="खाद्य एवं नागरिक आपूर्ति", lang="hi"),
                 Anchor(text="Public Distribution System"),
@@ -2760,9 +3005,18 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="FORM GST REG-06", decisive=True),
-                Anchor(text="GOODS AND SERVICES TAX IDENTIFICATION NUMBER", decisive=True),
-                Anchor(text="वस्तु एवं सेवा कर पहचान संख्या", lang="hi", decisive=True),
+                Anchor(text="FORM GST REG-06", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(
+                    text="GOODS AND SERVICES TAX IDENTIFICATION NUMBER",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="वस्तु एवं सेवा कर पहचान संख्या",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="Registration Certificate"),
                 Anchor(text="पंजीकरण प्रमाणपत्र", lang="hi"),
                 Anchor(text="GSTIN"),
@@ -2891,9 +3145,21 @@ _SPECS.extend(
             applies_to="both",
             officially_valid=False,
             anchors=[
-                Anchor(text="INDIAN INCOME TAX RETURN ACKNOWLEDGEMENT", decisive=True),
-                Anchor(text="INDIAN INCOME TAX RETURN VERIFICATION FORM", decisive=True),
-                Anchor(text="e-Filing Acknowledgement Number", decisive=True),
+                Anchor(
+                    text="INDIAN INCOME TAX RETURN ACKNOWLEDGEMENT",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
+                Anchor(
+                    text="INDIAN INCOME TAX RETURN VERIFICATION FORM",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
+                Anchor(
+                    text="e-Filing Acknowledgement Number",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
                 Anchor(text="ITR-V"),
                 Anchor(text="Acknowledgement Number"),
                 Anchor(text="Assessment Year"),
@@ -3023,17 +3289,32 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=False,
             anchors=[
-                Anchor(text="FORM NO. 16", decisive=True),
-                Anchor(text="FORM NO 16", decisive=True),
+                Anchor(text="FORM NO. 16", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="FORM NO 16", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(
                     text="Certificate under Section 203 of the Income-tax Act, 1961 for tax "
                     "deducted at source on salary",
                     decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
-                Anchor(text="TAN of the Deductor", decisive=True),
+                Anchor(
+                    text="TAN of the Deductor",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
                 Anchor(text="TRACES"),
-                Anchor(text="PART A"),
-                Anchor(text="PART B"),
+                # "PART A"/"PART B" are deliberately NOT anchors. Form 16 really is built as
+                # Part A (TRACES-generated TDS summary) and Part B (salary breakup), so the
+                # temptation to list them is genuine — but an anchor's job is to raise the
+                # posterior for ONE doctype, and an ordinal section divider is a string every
+                # form designer in every jurisdiction uses. The Income-tax Department does not
+                # control it. Measured against this corpus, "Part A"/"Part B" appear in CA and
+                # US documents with nothing to do with Indian TDS — CRA form RC1 alone prints
+                # "Part A" 20 times — and because section dividers are precisely what a layout
+                # provider labels `heading`, they collect a zone multiplier that body prose
+                # does not. So the better the layout information got, the more a generic
+                # divider outweighed this doctype's real evidence. Part A/B stay identifying
+                # for a human reading a Form 16; they are not evidence that a document IS one.
                 Anchor(text="Name and address of the Employer"),
                 Anchor(text="Name and address of the Employee"),
                 Anchor(text="Deductor"),
@@ -3191,11 +3472,25 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=False,
             anchors=[
-                Anchor(text="SALARY SLIP", decisive=True),
-                Anchor(text="PAY SLIP", decisive=True),
-                Anchor(text="PAYSLIP", decisive=True, zone=Zone.title),
-                Anchor(text="वेतन पर्ची", lang="hi", decisive=True),
-                Anchor(text="SALARY STATEMENT", decisive=True),
+                Anchor(text="SALARY SLIP", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+                Anchor(text="PAY SLIP", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+                Anchor(
+                    text="PAYSLIP",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                    zone=Zone.title,
+                ),
+                Anchor(
+                    text="वेतन पर्ची",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="SALARY STATEMENT",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 # The statutory variant. India's *prescribed* wage document is not called a
                 # salary slip: rule 78(1)(b) of the Contract Labour (Regulation and
                 # Abolition) Central Rules, 1971 requires a "Wage Slip" in Form XIX, and the
@@ -3206,7 +3501,7 @@ _SPECS.extend(
                 # Rule 26(2) of the Minimum Wages (Central) Rules, 1950 prescribes the same
                 # title for its Form XI. Without this, every contract-labour and
                 # daily-wage pay document in India is invisible to this doctype.
-                Anchor(text="WAGE SLIP", decisive=True),
+                Anchor(text="WAGE SLIP", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
                 # Form XIX's column headings, which the prescribed form prints whether or
                 # not it has been filled in. They are wage-period vocabulary that no other
                 # registered doctype uses: a corporate payslip says "Basic"/"HRA", a Form
@@ -3378,9 +3673,9 @@ _SPECS.extend(
                 # actual Indian signature and stays decisive; it is shared only with
                 # in_llp_incorporation, which is a declared, mutual, same-issuer overlap.
                 Anchor(text="CERTIFICATE OF INCORPORATION"),
-                Anchor(text="MINISTRY OF CORPORATE AFFAIRS", decisive=True),
-                Anchor(text="कॉर्पोरेट कार्य मंत्रालय", lang="hi", decisive=True),
-                Anchor(text="Corporate Identity Number", decisive=True),
+                Anchor(text="MINISTRY OF CORPORATE AFFAIRS"),
+                Anchor(text="कॉर्पोरेट कार्य मंत्रालय", lang="hi"),
+                Anchor(text="Corporate Identity Number"),
                 Anchor(text="Registrar of Companies"),
                 Anchor(text="कंपनी रजिस्ट्रार", lang="hi"),
                 Anchor(text="Companies Act, 2013"),
@@ -3509,10 +3804,18 @@ _SPECS.extend(
                 # Identification Number") are what separate this from a company certificate,
                 # and they are unaffected.
                 Anchor(text="CERTIFICATE OF INCORPORATION"),
-                Anchor(text="MINISTRY OF CORPORATE AFFAIRS", decisive=True),
-                Anchor(text="कॉर्पोरेट कार्य मंत्रालय", lang="hi", decisive=True),
-                Anchor(text="Limited Liability Partnership Act, 2008", decisive=True),
-                Anchor(text="LLP Identification Number", decisive=True),
+                Anchor(text="MINISTRY OF CORPORATE AFFAIRS"),
+                Anchor(text="कॉर्पोरेट कार्य मंत्रालय", lang="hi"),
+                Anchor(
+                    text="Limited Liability Partnership Act, 2008",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
+                Anchor(
+                    text="LLP Identification Number",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="LLPIN"),
                 Anchor(text="Limited Liability Partnership"),
                 Anchor(text="Form No. FiLLiP"),
@@ -3608,11 +3911,12 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="MEMORANDUM OF ASSOCIATION", decisive=True),
-                Anchor(text="The name of the Company is", decisive=True),
+                Anchor(text="MEMORANDUM OF ASSOCIATION"),
+                Anchor(text="The name of the Company is"),
                 Anchor(
                     text="The objects to be pursued by the Company on its incorporation are",
                     decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
                 Anchor(text="The Companies Act, 2013"),
                 Anchor(text="COMPANY LIMITED BY SHARES"),
@@ -3718,9 +4022,13 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="ARTICLES OF ASSOCIATION", decisive=True),
-                Anchor(text="Table F", decisive=True),
-                Anchor(text="The regulations contained in Table F", decisive=True),
+                Anchor(text="ARTICLES OF ASSOCIATION"),
+                Anchor(text="Table F"),
+                Anchor(
+                    text="The regulations contained in Table F",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
                 Anchor(text="The Companies Act, 2013"),
                 Anchor(text="COMPANY LIMITED BY SHARES"),
                 Anchor(text="Interpretation"),
@@ -3807,9 +4115,22 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="PARTNERSHIP DEED", decisive=True),
-                Anchor(text="DEED OF PARTNERSHIP", decisive=True),
-                Anchor(text="साझेदारी विलेख", lang="hi", decisive=True),
+                Anchor(
+                    text="PARTNERSHIP DEED",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="DEED OF PARTNERSHIP",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="साझेदारी विलेख",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="Indian Partnership Act, 1932"),
                 Anchor(text="profit sharing ratio"),
                 Anchor(text="Profit and Loss Sharing Ratio"),
@@ -3916,9 +4237,18 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="CERTIFICATE OF REGISTRATION OF FIRM", decisive=True),
-                Anchor(text="REGISTRAR OF FIRMS", decisive=True),
-                Anchor(text="फर्म पंजीकरण प्रमाण पत्र", lang="hi", decisive=True),
+                Anchor(
+                    text="CERTIFICATE OF REGISTRATION OF FIRM",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(text="REGISTRAR OF FIRMS", decisive=True, controls=Controls.ISSUER_NAME),
+                Anchor(
+                    text="फर्म पंजीकरण प्रमाण पत्र",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="Indian Partnership Act, 1932"),
                 Anchor(text="Section 59"),
                 Anchor(text="Form A"),
@@ -4006,10 +4336,22 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="CERTIFIED TRUE COPY OF THE RESOLUTION", decisive=True),
-                Anchor(text="BOARD RESOLUTION", decisive=True),
-                Anchor(text="RESOLVED FURTHER THAT", decisive=True),
-                Anchor(text="CERTIFIED TRUE COPY", decisive=True),
+                Anchor(
+                    text="CERTIFIED TRUE COPY OF THE RESOLUTION",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(text="BOARD RESOLUTION"),
+                Anchor(
+                    text="RESOLVED FURTHER THAT",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="CERTIFIED TRUE COPY",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="RESOLVED THAT"),
                 Anchor(text="meeting of the Board of Directors"),
                 Anchor(text="duly convened"),
@@ -4127,11 +4469,25 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=False,
             anchors=[
-                Anchor(text="BIRTH CERTIFICATE", decisive=True),
-                Anchor(text="CERTIFICATE OF BIRTH", decisive=True),
-                Anchor(text="जन्म प्रमाण पत्र", lang="hi", decisive=True),
-                Anchor(text="REGISTRATION OF BIRTHS AND DEATHS ACT", decisive=True),
-                Anchor(text="जन्म एवं मृत्यु पंजीकरण अधिनियम", lang="hi", decisive=True),
+                Anchor(text="BIRTH CERTIFICATE"),
+                Anchor(text="CERTIFICATE OF BIRTH"),
+                Anchor(
+                    text="जन्म प्रमाण पत्र",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="REGISTRATION OF BIRTHS AND DEATHS ACT",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
+                Anchor(
+                    text="जन्म एवं मृत्यु पंजीकरण अधिनियम",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
                 Anchor(text="Registrar of Births and Deaths"),
                 Anchor(text="Date of Registration"),
                 Anchor(text="पंजीकरण तिथि", lang="hi"),
@@ -4225,11 +4581,28 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=False,
             anchors=[
-                Anchor(text="MARRIAGE CERTIFICATE", decisive=True),
-                Anchor(text="CERTIFICATE OF MARRIAGE", decisive=True),
-                Anchor(text="विवाह प्रमाण पत्र", lang="hi", decisive=True),
-                Anchor(text="Hindu Marriage Act, 1955", decisive=True),
-                Anchor(text="Special Marriage Act, 1954", decisive=True),
+                Anchor(
+                    text="MARRIAGE CERTIFICATE",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(text="CERTIFICATE OF MARRIAGE"),
+                Anchor(
+                    text="विवाह प्रमाण पत्र",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="Hindu Marriage Act, 1955",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
+                Anchor(
+                    text="Special Marriage Act, 1954",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
                 Anchor(text="Registrar of Marriages"),
                 Anchor(text="विवाह अधिकारी", lang="hi"),
                 Anchor(text="solemnized"),
@@ -4336,9 +4709,22 @@ _SPECS.extend(
             applies_to="individual",
             officially_valid=False,
             anchors=[
-                Anchor(text="CASTE CERTIFICATE", decisive=True),
-                Anchor(text="जाति प्रमाण पत्र", lang="hi", decisive=True),
-                Anchor(text="COMMUNITY CERTIFICATE", decisive=True),
+                Anchor(
+                    text="CASTE CERTIFICATE",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="जाति प्रमाण पत्र",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
+                Anchor(
+                    text="COMMUNITY CERTIFICATE",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
+                ),
                 Anchor(text="Scheduled Caste"),
                 Anchor(text="अनुसूचित जाति", lang="hi"),
                 Anchor(text="Scheduled Tribe"),
@@ -4638,12 +5024,16 @@ _SPECS.extend(
                 # strings, so all three are declared. MGT-7A is the abridged return for
                 # OPCs and small companies — the same document under a different threshold,
                 # so it lives here rather than in a doctype of its own.
-                Anchor(text="FORM NO. MGT-7", decisive=True),
-                Anchor(text="Form MGT-7", decisive=True),
-                Anchor(text="FORM NO. MGT-7A", decisive=True),
-                Anchor(text="Form MGT-7A", decisive=True),
+                Anchor(text="FORM NO. MGT-7", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form MGT-7", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="FORM NO. MGT-7A", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form MGT-7A", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(text="eForm MGT-7"),
-                Anchor(text="Companies (Management and Administration) Rules, 2014", decisive=True),
+                Anchor(
+                    text="Companies (Management and Administration) Rules, 2014",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
                 Anchor(text="sub-Section(1) of section 92 of the Companies Act"),
                 # The bare string "Annual Return" is printed on MGT-7, directly under the
                 # form number, and this spec would ordinarily claim it. It is deliberately
@@ -4808,14 +5198,19 @@ _SPECS.extend(
                 # Companies (Accounts) Rules, 2014]". The long title line is decisive too:
                 # it is MCA's sentence, not the filer's, and it survives an OCR read that
                 # loses the small-print form number in the corner.
-                Anchor(text="FORM NO. AOC-4", decisive=True),
-                Anchor(text="Form AOC-4", decisive=True),
+                Anchor(text="FORM NO. AOC-4", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form AOC-4", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(
                     text="Form for filing financial statement and other documents with the "
                     "Registrar",
                     decisive=True,
+                    controls=Controls.FORM_NUMBER,
                 ),
-                Anchor(text="Companies (Accounts) Rules, 2014", decisive=True),
+                Anchor(
+                    text="Companies (Accounts) Rules, 2014",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
                 Anchor(text="AOC-4 XBRL"),
                 Anchor(text="AOC-4 CFS"),
                 Anchor(text="section 137 of the Companies Act"),
@@ -4965,16 +5360,18 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="FORM NO. DIR-12", decisive=True),
-                Anchor(text="Form DIR-12", decisive=True),
+                Anchor(text="FORM NO. DIR-12", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form DIR-12", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(
                     text="Particulars of appointment of directors and the key managerial "
                     "personnel and the changes among them",
                     decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
                 Anchor(
                     text="Companies (Appointment and Qualification of Directors) Rules, 2014",
                     decisive=True,
+                    controls=Controls.STATUTE_TITLE,
                 ),
                 Anchor(text="section 170(2) of the Companies Act"),
                 Anchor(text="Number of directors or key managerial personnel"),
@@ -5107,11 +5504,12 @@ _SPECS.extend(
                 # shared UK-descended company-law vocabulary and a registrar in any
                 # Commonwealth jurisdiction could print it. The form number and the Indian
                 # rule citation are what one issuer controls.
-                Anchor(text="FORM NO. PAS-3", decisive=True),
-                Anchor(text="Form PAS-3", decisive=True),
+                Anchor(text="FORM NO. PAS-3", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form PAS-3", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(
                     text="Companies (Prospectus and Allotment of Securities) Rules, 2014",
                     decisive=True,
+                    controls=Controls.STATUTE_TITLE,
                 ),
                 Anchor(text="Return of Allotment"),
                 Anchor(text="section 39(4) and 42(9) of the Companies Act"),
@@ -5242,13 +5640,17 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="FORM NO. SH-7", decisive=True),
-                Anchor(text="Form SH-7", decisive=True),
+                Anchor(text="FORM NO. SH-7", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form SH-7", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(
-                    text="Notice to Registrar of any alteration of share capital", decisive=True
+                    text="Notice to Registrar of any alteration of share capital",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
                 Anchor(
-                    text="Companies (Share Capital and Debentures) Rules, 2014", decisive=True
+                    text="Companies (Share Capital and Debentures) Rules, 2014",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
                 ),
                 Anchor(text="section 64(1) of the Companies Act"),
                 Anchor(text="Increase in authorised capital"),
@@ -5349,17 +5751,22 @@ _SPECS.extend(
             anchors=[
                 # Header read verbatim off the MCA e-form, including the SARFAESI clause that
                 # MCA folded into the title in the 2015 revision.
-                Anchor(text="FORM NO. CHG-1", decisive=True),
-                Anchor(text="Form CHG-1", decisive=True),
+                Anchor(text="FORM NO. CHG-1", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form CHG-1", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(
                     text="Application for registration of creation, modification of charge",
                     decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
                 # MCA's own e-form prints "Rules 2014" without the comma while every
                 # secondary source prints "Rules, 2014". Anchor matching is on tokens, so one
                 # declaration covers both spellings — declaring the second would be a
                 # duplicate claim, not extra coverage.
-                Anchor(text="Companies (Registration of Charges) Rules 2014", decisive=True),
+                Anchor(
+                    text="Companies (Registration of Charges) Rules 2014",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
                 Anchor(text="other than those related to debentures"),
                 Anchor(text="Securitization and Reconstruction of Financial Assets and "
                        "Enforcement of Securities Interest Act, 2002"),
@@ -5473,10 +5880,18 @@ _SPECS.extend(
             applies_to="corporate",
             officially_valid=False,
             anchors=[
-                Anchor(text="FORM NO. INC-20A", decisive=True),
-                Anchor(text="Form INC-20A", decisive=True),
-                Anchor(text="Declaration for commencement of business", decisive=True),
-                Anchor(text="Rule 23A of the Companies (Incorporation) Rules, 2014", decisive=True),
+                Anchor(text="FORM NO. INC-20A", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form INC-20A", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(
+                    text="Declaration for commencement of business",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
+                Anchor(
+                    text="Rule 23A of the Companies (Incorporation) Rules, 2014",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
                 Anchor(text="section 10A(1)(a) of the Companies Act"),
                 Anchor(text="section 10A of the Companies Act"),
                 Anchor(text="every subscriber to the memorandum has paid the value of the shares"),
@@ -5633,14 +6048,21 @@ _SPECS.extend(
                 # Contracts (Regulation) Rules — an Indian instrument no other regulator
                 # names. Five unrelated issuers' filings carry the title line character for
                 # character, which is what a prescribed format looks like from outside.
-                Anchor(text="Shareholding Pattern under Regulation 31 of SEBI", decisive=True),
                 Anchor(
-                    text="Summary Statement holding of specified securities", decisive=True
+                    text="Shareholding Pattern under Regulation 31 of SEBI",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
+                Anchor(
+                    text="Summary Statement holding of specified securities",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
                 Anchor(
                     text="Share Holding Pattern Filed under: Reg. 31(1)(a)/Reg. 31(1)(b)/"
                     "Reg.31(1)(c)",
                     decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
                 Anchor(text="calculated as per SCRR, 1957"),
                 Anchor(text="format of holding of specified securities"),
@@ -5794,8 +6216,13 @@ _SPECS.extend(
                 Anchor(
                     text="Regulation 27(2) of Securities and Exchange Board of India",
                     decisive=True,
+                    controls=Controls.STATUTE_TITLE,
                 ),
-                Anchor(text="Regulation 27(2) of SEBI", decisive=True),
+                Anchor(
+                    text="Regulation 27(2) of SEBI",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
                 Anchor(text="COMPLIANCE REPORT ON CORPORATE GOVERNANCE"),
                 Anchor(text="Composition of Board of Directors"),
                 Anchor(text="Composition of Committees"),
@@ -5935,10 +6362,14 @@ _SPECS.extend(
                 # (GRI, TCFD, Scope 1 and 2 emissions) is not: it belongs to every
                 # sustainability report in the world.
                 Anchor(
-                    text="BUSINESS RESPONSIBILITY AND SUSTAINABILITY REPORT", decisive=True
+                    text="BUSINESS RESPONSIBILITY AND SUSTAINABILITY REPORT",
+                    decisive=True,
+                    controls=Controls.CLASS_NAME_UNCONTESTED,
                 ),
                 Anchor(
-                    text="National Guidelines on Responsible Business Conduct", decisive=True
+                    text="National Guidelines on Responsible Business Conduct",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
                 ),
                 Anchor(text="BRSR Core"),
                 Anchor(text="NGRBC"),
@@ -6051,15 +6482,21 @@ _SPECS.extend(
                 # are not among them: those are document-class names used from Mumbai to New
                 # York, and a US registration statement claiming the same string would make
                 # this doctype a cross-jurisdiction hazard.
-                Anchor(text="Please read Section 32 of the Companies Act, 2013", decisive=True),
+                Anchor(
+                    text="Please read Section 32 of the Companies Act, 2013",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
                 Anchor(
                     text="Please read Section 26 and 32 of the Companies Act, 2013",
                     decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
                 Anchor(
                     text="This Draft Red Herring Prospectus will be updated upon filing with "
                     "the RoC",
                     decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
                 ),
                 Anchor(text="DRAFT RED HERRING PROSPECTUS"),
                 Anchor(text="RED HERRING PROSPECTUS"),
@@ -6219,9 +6656,21 @@ _SPECS.extend(
                 # required to cite: CARO is an MCA order made under section 143(11), and
                 # Rule 11 of the Companies (Audit and Auditors) Rules is the source of the
                 # "Other Legal and Regulatory Requirements" paragraph.
-                Anchor(text="Companies (Auditor's Report) Order, 2020", decisive=True),
-                Anchor(text="Companies (Auditor's Report) Order, 2016", decisive=True),
-                Anchor(text="Companies (Audit and Auditors) Rules, 2014", decisive=True),
+                Anchor(
+                    text="Companies (Auditor's Report) Order, 2020",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
+                Anchor(
+                    text="Companies (Auditor's Report) Order, 2016",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
+                Anchor(
+                    text="Companies (Audit and Auditors) Rules, 2014",
+                    decisive=True,
+                    controls=Controls.STATUTE_TITLE,
+                ),
                 Anchor(text="INDEPENDENT AUDITOR'S REPORT"),
                 Anchor(text="Report on the Audit of the Standalone Financial Statements"),
                 Anchor(text="Report on the Audit of the Consolidated Financial Statements"),
@@ -6366,12 +6815,13 @@ _SPECS.extend(
                 # secretarial audit is an Indian institution with no direct analogue: the form
                 # number and the rule citation already carry the doctype, and a title made of
                 # three ordinary English words does not need to be the thing that proves it.
-                Anchor(text="FORM NO. MR-3", decisive=True),
-                Anchor(text="Form MR-3", decisive=True),
+                Anchor(text="FORM NO. MR-3", decisive=True, controls=Controls.FORM_NUMBER),
+                Anchor(text="Form MR-3", decisive=True, controls=Controls.FORM_NUMBER),
                 Anchor(
                     text="Companies (Appointment and Remuneration of Managerial Personnel) "
                     "Rules, 2014",
                     decisive=True,
+                    controls=Controls.STATUTE_TITLE,
                 ),
                 Anchor(text="SECRETARIAL AUDIT REPORT"),
                 Anchor(text="Section 204(1) of the Companies Act"),
@@ -6506,10 +6956,14 @@ _SPECS.extend(
                 # decisive. The FEMA instruments are supporting rather than decisive because
                 # a secretarial audit report and a statutory auditor's report both recite
                 # FEMA by name.
-                Anchor(text="Form FC-GPR", decisive=True),
+                Anchor(text="Form FC-GPR", decisive=True, controls=Controls.FORM_NUMBER),
                 # RBI prints the expansion with a hyphen, secondary sources with a space.
                 # Anchor matching splits on both, so one declaration covers the pair.
-                Anchor(text="Foreign Currency-Gross Provisional Return", decisive=True),
+                Anchor(
+                    text="Foreign Currency-Gross Provisional Return",
+                    decisive=True,
+                    controls=Controls.ISSUER_TEMPLATE,
+                ),
                 Anchor(text="Foreign Exchange Management Act, 1999"),
                 Anchor(text="Foreign Exchange Management (Non-debt Instruments) Rules"),
                 Anchor(text="FIRMS"),
@@ -6630,9 +7084,14 @@ _SPECS.extend(
                 # controlled by one issuer. "DIRECTORATE GENERAL OF FOREIGN TRADE" is NOT
                 # decisive: DGFT issues advance authorisations, RoDTEP scrips and RCMCs under
                 # the same header, so it proves the issuer and not the document.
-                Anchor(text="Importer-Exporter Code", decisive=True),
-                Anchor(text="Importer Exporter Code", decisive=True),
-                Anchor(text="आयातक-निर्यातक कोड", lang="hi", decisive=True),
+                Anchor(text="Importer-Exporter Code", decisive=True, controls=Controls.ISSUER_NAME),
+                Anchor(text="Importer Exporter Code", decisive=True, controls=Controls.ISSUER_NAME),
+                Anchor(
+                    text="आयातक-निर्यातक कोड",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="DIRECTORATE GENERAL OF FOREIGN TRADE"),
                 Anchor(text="विदेश व्यापार महानिदेशालय", lang="hi"),
                 Anchor(text="Ministry of Commerce and Industry"),
@@ -6739,9 +7198,22 @@ _SPECS.extend(
                 # for a scheme that exists only in India, and the certificate and the number
                 # both carry it. Decisive on the strength of the coinage, not of the English
                 # words around it.
-                Anchor(text="UDYAM REGISTRATION CERTIFICATE", decisive=True),
-                Anchor(text="Udyam Registration Number", decisive=True),
-                Anchor(text="उद्यम रजिस्ट्रेशन प्रमाणपत्र", lang="hi", decisive=True),
+                Anchor(
+                    text="UDYAM REGISTRATION CERTIFICATE",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="Udyam Registration Number",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
+                Anchor(
+                    text="उद्यम रजिस्ट्रेशन प्रमाणपत्र",
+                    lang="hi",
+                    decisive=True,
+                    controls=Controls.ISSUER_NAME,
+                ),
                 Anchor(text="MINISTRY OF MICRO, SMALL AND MEDIUM ENTERPRISES"),
                 Anchor(text="सूक्ष्म, लघु और मध्यम उद्यम मंत्रालय", lang="hi"),
                 Anchor(text="Micro, Small and Medium Enterprises Development Act, 2006"),

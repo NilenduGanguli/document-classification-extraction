@@ -608,7 +608,8 @@ def test_photo_identity_documents_are_flagged_officially_valid() -> None:
         "us_passport_card",
         "us_drivers_license",
         "us_state_id",
-        "us_real_id",
+        # "us_real_id" is deliberately absent: it was merged into the two doctypes above as
+        # the ``real_id_compliant`` field. See test_real_id_is_a_field_not_a_doctype.
         "us_green_card",
         "us_ead",
         "us_military_id",
@@ -711,12 +712,37 @@ def test_bilingual_canadian_doctypes_have_french_anchors() -> None:
 
 
 def test_canadian_drivers_licence_uses_the_canadian_spelling() -> None:
-    """LICENCE versus LICENSE is the cheapest US/Canada discriminator there is."""
+    """LICENCE versus LICENSE is the cheapest US/Canada discriminator there is.
+
+    It is still the discriminator; it is no longer a *decisive* one, and the demotion is
+    measured rather than cautious. ``corpus/ca/ca_sin_confirmation.pdf`` lists the ID Service
+    Canada accepts and prints ``DRIVER'S LICENSE`` in that list, and the AAMVA specimen in
+    ``corpus/us`` prints ``DRIVER'S LICENCE`` — so each spelling appears on a document of the
+    other country, and a decisive claim on either was false. This is the acceptable-document
+    list hazard in its purest form: KYC onboarding paperwork enumerates the document classes
+    it collects, and a classifier anchored on class names reads the list as the thing.
+
+    What survives is what an issuer actually controls: the French title on the Canadian side
+    (Canada is the only issuer of a bilingual EN/FR licence) and the un-apostrophised AAMVA
+    card title on the US side.
+    """
+    ca_anchors = {a.text for a in BY_ID["ca_drivers_license"].anchors}
+    us_anchors = {a.text for a in BY_ID["us_drivers_license"].anchors}
     ca_decisive = {a.text for a in BY_ID["ca_drivers_license"].anchors if a.decisive}
     us_decisive = {a.text for a in BY_ID["us_drivers_license"].anchors if a.decisive}
-    assert any("LICENCE" in text for text in ca_decisive)
+
+    assert any("LICENCE" in text for text in ca_anchors)
     assert all("LICENCE" not in text for text in us_decisive)
+    assert all("LICENSE" not in text for text in ca_decisive)
     assert "PERMIS DE CONDUIRE" in ca_decisive
+    assert "DRIVER LICENSE" in us_decisive
+    # And the reason neither spelling may be decisive, stated as data rather than as prose.
+    assert "DRIVER'S LICENCE" in ca_anchors
+    assert "DRIVER'S LICENSE" in us_anchors
+    assert not any(a.decisive for a in BY_ID["ca_drivers_license"].anchors
+                   if a.text == "DRIVER'S LICENCE")
+    assert not any(a.decisive for a in BY_ID["us_drivers_license"].anchors
+                   if a.text == "DRIVER'S LICENSE")
 
 
 @pytest.mark.parametrize(
@@ -742,12 +768,24 @@ def test_canadian_drivers_licence_uses_the_canadian_spelling() -> None:
 def test_accented_anchors_match_unaccented_ocr(
     doctype_id: str, accented: str, unaccented: str
 ) -> None:
-    """The accented anchor is declared, and it still fires when OCR drops the accents."""
+    """The accented anchor is declared, and it still fires when OCR drops the accents.
+
+    The subject here is accent folding, not decisiveness, so the hit is asserted at the
+    anchor level and the decisive assertion is made only where the anchor is *still* decisive.
+    Two of these no longer are: ``CÉDULA DE IDENTIFICACIÓN FISCAL`` and
+    ``CONSTANCIA DE SITUACIÓN FISCAL`` were demoted because the SAT prints the cédula as page
+    one of the constancia, so each title is printed on the other's document — see
+    ``test_cedula_and_constancia_stay_separate_and_page_one_is_declared_ambiguous``. Folding
+    has to keep working for them regardless: a demoted anchor still feeds the lexical channel,
+    and it is the lexical channel that carries these two now.
+    """
     spec = BY_ID[doctype_id]
-    declared = {a.text for a in spec.anchors}
+    declared = {a.text: a for a in spec.anchors}
     assert accented in declared, f"{doctype_id} does not declare {accented!r}"
     assert phrase_in(accented, tokens(unaccented))
-    assert anchor_hits(spec, unaccented, decisive_only=True)
+    assert anchor_hits(spec, unaccented)
+    if declared[accented].decisive:
+        assert anchor_hits(spec, unaccented, decisive_only=True)
 
 
 def test_folding_preserves_token_structure() -> None:
@@ -793,3 +831,293 @@ def test_normalize_collapses_accented_and_unaccented_anchors_together() -> None:
         assert accented_skeleton
         assert accented_skeleton == unaccented_skeleton, accented
         assert len(_WORD_RE.findall(accented_skeleton)) == len(tokens(accented))
+
+
+# ---------------------------------------------------------------------------
+# Registry-design decisions that eliminated a wrong answer each
+#
+# These three tests are not about scoring. Each one pins a *structural* claim about the
+# data that a future edit could quietly undo, and each corresponds to a document the
+# classifier used to get wrong or to refuse for a reason nobody could explain.
+# ---------------------------------------------------------------------------
+
+#: A REAL-ID-compliant licence. The compliance marking is a star, which is a figure and not
+#: text, so the only compliance evidence in an OCR dump is the AAMVA payload's DDA element.
+REAL_ID_LICENCE_TEXT = """Real ID Driver's License - Over 21
+Barcode Reader Calibration Sheet - 2020 AAMVA Standard Version: 10
+ANSI 636000100202DL00410422ZV04630096DL
+Vehicle class DCA D, M2  Restriction DCB NONE  Endorsement DCD S
+Compliance type DDA F  "F" Fully Compliant (including all REAL ID DLs and IDs
+and eDLs and eIDs)  "N" Non-Compliant (for all State Issued (non-Real ID) Documents
+"""
+
+#: The *same* AAMVA sheet for the standard, NON-compliant licence. The point of carrying it
+#: here is that it prints the words "REAL ID" too, in the legend explaining DDA.
+STANDARD_LICENCE_TEXT = """Standard Driver's License Card - Under 21
+Barcode Reader Calibration Sheet - 2020 AAMVA Standard Version: 10
+ANSI 636000100202DL00410422ZV04630096DL
+Vehicle class DCA D  Restriction DCB NONE  Endorsement DCD NONE
+Compliance type DDA N  "F" Fully Compliant (including all REAL ID DLs and IDs
+and eDLs and eIDs)  "N" Non-Compliant (for all State Issued (non-Real ID) Documents
+"""
+
+
+def test_real_id_is_a_field_not_a_doctype() -> None:
+    """REAL ID compliance is an attribute of a licence or ID card, never a document type.
+
+    The REAL ID Act of 2005 and 6 CFR Part 37 set minimum standards for a *state-issued
+    driver licence or identification card*; 6 CFR 37.17(n) adds the star marking and leaves
+    the card's title alone. The set of REAL ID cards is therefore a strict subset of
+    ``us_drivers_license`` united with ``us_state_id``, and no anchor can separate a subset
+    from its own superset — the superset's issuer prints everything the subset does. A
+    doctype that cannot be distinguished from its parent can only ever take answers away
+    from it, which is exactly what it did.
+    """
+    assert "us_real_id" not in BY_ID, (
+        "us_real_id was merged into the real_id_compliant field; re-adding it re-adds a "
+        "doctype that is a strict subset of us_drivers_license / us_state_id"
+    )
+    for doctype_id in ("us_drivers_license", "us_state_id"):
+        field = next(
+            (f for f in BY_ID[doctype_id].fields if f.name == "real_id_compliant"), None
+        )
+        assert field is not None, f"{doctype_id} lost the real_id_compliant field"
+        assert field.type == "bool"
+        assert field.attribute_key == "doc.real_id_compliant"
+        assert not field.required, (
+            f"{doctype_id}.real_id_compliant must not be required: the marking is a star, "
+            "a figure rather than text, so a compliant card routinely yields no value"
+        )
+        assert field.notes.strip(), f"{doctype_id}.real_id_compliant has no caveat recorded"
+
+
+def test_real_id_wording_is_not_an_anchor_anywhere() -> None:
+    """"REAL ID" is not a discriminator, in any zone, for any doctype.
+
+    The words appear on the *non*-compliant licence too — AAMVA prints them in the legend
+    that explains what element DDA means — so a doctype anchored on them would fire on the
+    documents it is supposed to exclude. This is the concrete instance of the general rule
+    that a decisive anchor must be a string one issuer controls AND that picks out exactly
+    one document type.
+    """
+    for spec in ALL_SPECS:
+        for anchor in spec.anchors:
+            assert "real id" not in anchor.text.casefold(), (
+                f"{spec.doctype_id} anchors on {anchor.text!r}; the standard "
+                "non-compliant AAMVA licence prints those words too"
+            )
+    # And the corroborating fact, asserted rather than asserted-about: the two AAMVA sheets
+    # are separated by DDA, not by the programme name, which both of them print.
+    assert "REAL ID" in REAL_ID_LICENCE_TEXT
+    assert "REAL ID" in STANDARD_LICENCE_TEXT
+    licence = BY_ID["us_drivers_license"]
+    # Both sheets are still identified, and no longer by a decisive anchor: they print
+    # "Driver's License", and that spelling was demoted because corpus/ca/ca_sin_confirmation
+    # prints it too, in its list of acceptable ID. The doctype's remaining decisive anchor is
+    # the AAMVA card title "DRIVER LICENSE", which these AAMVA *calibration sheets* do not
+    # carry. That is the honest state: on a document that only says "Driver's License", this
+    # doctype has lexical evidence and no proof, which is what an abstention is for.
+    assert anchor_hits(licence, REAL_ID_LICENCE_TEXT)
+    assert anchor_hits(licence, STANDARD_LICENCE_TEXT)
+
+
+#: An oil-and-gas issuer's AIF. NI 51-101 s.2.1 obliges the issuer to file Forms 51-101F1,
+#: F2 and F3, and they are routinely bound into the AIF as schedules — so an AIF legitimately
+#: carries all three form numbers. What it also carries, and a reserves statement never does,
+#: is Form 51-102F2's own item headings.
+AIF_WITH_RESERVES_TEXT = """ANNUAL INFORMATION FORM
+For the year ended December 31, 2025
+Corporate Structure - Intercorporate Relationships
+General Development of the Business
+Description of Capital Structure
+Market for Securities - Trading Price and Volume
+Legal Proceedings and Regulatory Actions
+Interest of Management and Others in Material Transactions
+Transfer Agents and Registrars
+Interests of Experts
+Audit Committee Information
+Schedule "A" Form 51-101F2 Report on Reserves Data by Independent Qualified
+Reserves Evaluator or Auditor
+Schedule "B" Form 51-101F3 Report of Management and Directors on Oil and Gas Disclosure
+Form 51-101F1 Statement of Reserves Data and Other Oil and Gas Information
+disclosed in accordance with National Instrument 51-101 Standards of Disclosure for
+Oil and Gas Activities
+"""
+
+#: A standalone reserves statement — the document ``ca_ni_51_101_oil_gas`` is actually for.
+STANDALONE_51_101_TEXT = """FORM 51-101F1
+STATEMENT OF RESERVES DATA AND OTHER OIL AND GAS INFORMATION
+The information contained in this Form 51-101F1 is required to be included pursuant to
+National Instrument 51-101 Standards of Disclosure for Oil and Gas Activities.
+Readers should also refer to the Form 51-101F2 Report on Reserves Data by Independent
+Qualified Reserves Evaluator and the Form 51-101F3 Report of Management and Directors
+on Oil and Gas Disclosure. Future net revenue, COGE Handbook.
+"""
+
+
+def test_aif_and_reserves_statement_declare_the_containment_both_ways() -> None:
+    """The relationship is containment, and both specs have to say so.
+
+    ``confusable_with`` is read in both directions by the cascade's audibility guard, so a
+    one-sided declaration leaves half the guard inoperative.
+    """
+    assert "ca_ni_51_101_oil_gas" in BY_ID["ca_aif"].confusable_with
+    assert "ca_aif" in BY_ID["ca_ni_51_101_oil_gas"].confusable_with
+
+
+def test_reserves_form_numbers_do_not_identify_a_document_that_encloses_them() -> None:
+    """An AIF carrying bound-in 51-101 schedules must not read as a reserves statement.
+
+    This test's own premise is what retired the form numbers' decisive status. It used to say
+    "both doctypes' decisive anchors fire on this text and that is *correct* — the form
+    numbers really are printed", and treat the separation as the negative anchors' job alone.
+    The corpus then produced the document rather than the fixture:
+    ``corpus/ca/ca_aif__oilgas_issuer.pdf`` prints ``FORM 51-101F1``, ``F2``, ``F3`` and
+    ``NATIONAL INSTRUMENT 51-101``, and it is an AIF. A decisive anchor is a claim that the
+    string appears on this doctype's documents and no others, so on the corpus's own evidence
+    those four claims were false — perfectly issuer-controlled strings, defeated by citation.
+
+    The form numbers are still declared, still fire, and still feed the lexical channel. What
+    they no longer do is short-circuit L1 on a document that merely *encloses* them, which is
+    a strictly better outcome than relying on the negative anchors to undo a decisive hit.
+    """
+    reserves = BY_ID["ca_ni_51_101_oil_gas"]
+    aif = BY_ID["ca_aif"]
+
+    assert anchor_hits(reserves, AIF_WITH_RESERVES_TEXT), (
+        "the form numbers are genuinely present; a test that pretended otherwise would be "
+        "testing a document nobody files"
+    )
+    assert not anchor_hits(reserves, AIF_WITH_RESERVES_TEXT, decisive_only=True), (
+        "a form number an AIF is obliged to print cannot be near-proof of a reserves "
+        "statement; that is the citation failure mode, measured on a real filing"
+    )
+    # The separation is now carried entirely by POSITIVE evidence on the AIF's side. The ten
+    # Form 51-102F2 item headings used to sit here as negative anchors on the reserves
+    # statement; ca_ni_51_101_oil_gas explains at its own definition why they are gone
+    # (ca_aif declares the whole item list and wins the anchor channel outright, so the
+    # penalty could not change any outcome). Both halves of the containment are asserted:
+    # the AIF must fire, and the reserves statement must not fire decisively.
+    assert negative_hits(reserves, AIF_WITH_RESERVES_TEXT) == []
+    aif_fired = anchor_hits(aif, AIF_WITH_RESERVES_TEXT)
+    assert len(aif_fired) >= 5, (
+        f"only {aif_fired} of ca_aif's Form 51-102F2 item headings fired on an AIF; the "
+        "containment discriminator has moved to positive evidence and has been weakened"
+    )
+
+
+def test_reserves_statement_negatives_never_fire_on_a_real_reserves_statement() -> None:
+    """The guard against fixing one document by breaking the other.
+
+    A negative anchor can only lower this doctype's score. Every string in the set must
+    therefore be one that a genuine standalone Form 51-101F1/F2/F3 filing cannot contain —
+    otherwise the containment fix would be paid for by the documents the doctype exists for.
+    """
+    reserves = BY_ID["ca_ni_51_101_oil_gas"]
+    assert negative_hits(reserves, STANDALONE_51_101_TEXT) == []
+    # The cost of demoting the form numbers, stated rather than hidden: on a genuine
+    # standalone filing this doctype now has lexical evidence and no decisive anchor at all —
+    # nothing in the 51-101 family distinguishes a reserves statement from the AIF that is
+    # obliged to bind it in, so there is no string left to be near-proof. That is a real
+    # coverage loss and it was
+    # accepted, because the alternative is a claim the corpus shows to be false.
+    assert anchor_hits(reserves, STANDALONE_51_101_TEXT)
+    assert not anchor_hits(reserves, STANDALONE_51_101_TEXT, decisive_only=True)
+
+
+#: Page 1 of a Constancia de Situación Fiscal. The SAT reproduces the cédula, QR code and
+#: all, as the constancia's first sheet — so this text carries both titles and cannot be
+#: told apart from a standalone cédula by anything printed on it.
+CSF_PAGE_ONE_TEXT = """Página [1] de [3]
+CÉDULA DE IDENTIFICACIÓN FISCAL
+Registro Federal de Contribuyentes
+idCIF: 14091470816
+CONSTANCIA DE SITUACIÓN FISCAL
+Lugar y Fecha de Emisión
+Datos de Identificación del Contribuyente
+Régimen Capital: SIN TIPO DE SOCIEDAD
+Datos del domicilio registrado
+"""
+
+
+def test_cedula_and_constancia_stay_separate_and_page_one_is_declared_ambiguous() -> None:
+    """Two documents, not one — and a page-1 extract is undecidable *by construction*.
+
+    Merging them would lose a real distinction: a cédula identifies the taxpayer, a
+    constancia additionally publishes the regimes and standing obligations, which is a
+    larger disclosure with a different retention profile. Keeping them costs an abstention
+    on any page-1-only extract, and that abstention is the right answer rather than a gap:
+    the information needed to decide is on pages 2-3, which the caller did not send.
+
+    The registry states this itself. The cédula's negative anchor fires on the constancia's
+    title, so the data declares "this is not a standalone cédula" without any anchor having
+    to be invented to make a truncated file classify.
+    """
+    cedula, constancia = BY_ID["mx_cif"], BY_ID["mx_rfc_csf"]
+    # Both titles fire, and NEITHER fires decisively any more. That is the same fact this
+    # test has always asserted, finally expressed in the anchors instead of only in prose:
+    # each doctype's title is printed on the other's document, so neither title can be
+    # near-proof of either. The previous state — both decisive, both correct, separated
+    # afterwards by a negative anchor — meant the L1 short-circuit had to be walked back
+    # rather than never taken. Measured on the corpus: mx_cif's title matches
+    # corpus/mx/mx_rfc_csf.pdf and mx_rfc_csf's matches corpus/mx/mx_cif.pdf.
+    assert anchor_hits(cedula, CSF_PAGE_ONE_TEXT)
+    assert anchor_hits(constancia, CSF_PAGE_ONE_TEXT)
+    assert not anchor_hits(cedula, CSF_PAGE_ONE_TEXT, decisive_only=True)
+    assert not anchor_hits(constancia, CSF_PAGE_ONE_TEXT, decisive_only=True)
+    assert "CONSTANCIA DE SITUACIÓN FISCAL" in negative_hits(cedula, CSF_PAGE_ONE_TEXT)
+    assert "mx_rfc_csf" in cedula.confusable_with
+    assert "mx_cif" in constancia.confusable_with
+    # The discriminating sections live past page 1 and are declared on the constancia.
+    for section in ("Regímenes", "Obligaciones"):
+        assert any(a.text == section for a in constancia.anchors), section
+        assert section not in CSF_PAGE_ONE_TEXT
+
+
+#: The Virginia DMV's AAMVA specimen for a Standard Identification Card. A US non-driver ID:
+#: its barcode encodes the AAMVA country element ``DCG USA`` and jurisdiction ``DAJ VA``.
+US_STATE_ID_AAMVA_TEXT = """Standard Identification Card - Over 21
+Barcode Reader Calibration Sheet - 2020 AAMVA Standard Version: 10
+ANSI 636000100202ID00410422ZV04630096ID
+Jurisdiction DAJ VA   Country DCG USA
+Compliance type DDA N
+"""
+
+
+def test_a_shared_document_class_name_is_equally_audible_to_both_claimants() -> None:
+    """Two doctypes claiming one string must gate it to the same zone, or to none.
+
+    ``IDENTIFICATION CARD`` is a document-class name — every jurisdiction's ID card prints
+    it — so neither ``us_state_id`` nor ``ca_provincial_photo_id`` may treat it as decisive,
+    and neither does. The subtler failure is *audibility*: while the US claim was pinned to
+    ``zone=title`` and the Canadian claim was not, any payload without a title zone (which
+    is every plain-text extraction) could hear only one of them. The zone gate then settled
+    a cross-border question that the evidence never got to answer, and a Virginia DMV
+    specimen scored the Canadian card above the American one.
+
+    This is the audibility analogue of the asymmetry
+    ``dce.registry.loader._check_decisive_asymmetry`` rejects — there the two packs disagreed
+    about exclusivity, here about where the string counts — and the remedy is the same: make
+    the claim symmetric and let the rest of the evidence decide.
+    """
+    us_anchor = next(
+        a for a in BY_ID["us_state_id"].anchors if fold(a.text) == fold("IDENTIFICATION CARD")
+    )
+    ca_anchor = next(
+        a
+        for a in BY_ID["ca_provincial_photo_id"].anchors
+        if fold(a.text) == fold("Identification Card")
+    )
+    assert not us_anchor.decisive and not ca_anchor.decisive
+    assert us_anchor.zone == ca_anchor.zone, (
+        "us_state_id and ca_provincial_photo_id claim the same document-class name with "
+        f"different zone gates ({us_anchor.zone} vs {ca_anchor.zone}); whichever claim the "
+        "payload can hear then decides the jurisdiction"
+    )
+    # And the consequence the symmetry buys: on a US specimen, the US-specific evidence is
+    # now what separates them rather than a zone label.
+    assert anchor_hits(BY_ID["us_state_id"], US_STATE_ID_AAMVA_TEXT)
+    assert "DMV" not in US_STATE_ID_AAMVA_TEXT, (
+        "this specimen deliberately lacks the DMV token, so the separation cannot come from "
+        "ca_provincial_photo_id's negative anchor"
+    )

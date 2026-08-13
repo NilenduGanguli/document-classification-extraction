@@ -41,13 +41,29 @@ company, so no string on them is controlled by a single issuer, and the Ley Gene
 Sociedades Mercantiles vocabulary they reuse belongs to every Mexican company at once.
 ``mx_informe_comisario`` gets one only because the statute citation it must contain
 (LGSM art. 166, fracción IV) is controlled by the legislature rather than by the author.
+
+**The SAT pair is a third case, and it went the other way.** ``mx_cif`` and ``mx_rfc_csf``
+each anchored decisively on their own title and declared each other confusable, because the
+SAT reproduces the cédula as page one of the constancia. The declaration described the
+relationship correctly and still left both claims false: measured on the corpus,
+``CÉDULA DE IDENTIFICACIÓN FISCAL`` is printed on ``corpus/mx/mx_rfc_csf.pdf`` and
+``CONSTANCIA DE SITUACIÓN FISCAL`` on ``corpus/mx/mx_cif.pdf``. A decisive anchor asserts the
+string appears on one document type and no other, so neither title qualifies, and
+``confusable_with`` cannot repair a false claim — it suppresses one of the two routes that
+act on it and leaves the other. Both are demoted. The pair is separated where it always was,
+by the constancia's ``Regímenes`` and ``Obligaciones`` sections on pages 2-3, and a
+page-1-only extract abstains, which is the right answer to a question the caller did not send
+the evidence for.
+
+Every decisive anchor in this pack states its grounds in :class:`dce.models.Controls`; the
+loader rejects one that does not.
 """
 
 from __future__ import annotations
 
 from importlib import import_module
 
-from dce.models import Anchor, Category, DocTypeSpec, FieldSpec, Zone
+from dce.models import Anchor, Category, Controls, DocTypeSpec, FieldSpec, Zone
 
 try:  # pragma: no cover - the loader is authored alongside this pack
     from dce.registry import loader as _loader
@@ -170,15 +186,27 @@ def _a(
     *,
     lang: str = "es",
     decisive: bool = False,
+    controls: Controls | None = None,
     zone: Zone | None = None,
 ) -> Anchor:
-    """Build a Spanish :class:`~dce.models.Anchor` (the default language of this pack)."""
-    return Anchor(text=text, lang=lang, decisive=decisive, zone=zone)
+    """Build a Spanish :class:`~dce.models.Anchor` (the default language of this pack).
+
+    ``controls`` is mandatory when ``decisive`` is set and forbidden otherwise — see
+    :class:`dce.models.Controls`. It has no default here on purpose: a builder that supplied
+    one would re-create the invisible claim the field exists to prevent.
+    """
+    return Anchor(text=text, lang=lang, decisive=decisive, controls=controls, zone=zone)
 
 
-def _en(text: str, *, decisive: bool = False, zone: Zone | None = None) -> Anchor:
+def _en(
+    text: str,
+    *,
+    decisive: bool = False,
+    controls: Controls | None = None,
+    zone: Zone | None = None,
+) -> Anchor:
     """Build an English anchor — only for text the document itself prints in English."""
-    return Anchor(text=text, lang="en", decisive=decisive, zone=zone)
+    return Anchor(text=text, lang="en", decisive=decisive, controls=controls, zone=zone)
 
 
 def _labels(es: list[str], en: list[str] | None = None) -> dict[str, list[str]]:
@@ -365,9 +393,9 @@ SPECS: tuple[DocTypeSpec, ...] = (
         "Federal Electoral (IFE)",
         officially_valid=True,
         anchors=[
-            _a("INSTITUTO NACIONAL ELECTORAL", decisive=True),
-            _a("CREDENCIAL PARA VOTAR", decisive=True),
-            _a("INSTITUTO FEDERAL ELECTORAL", decisive=True),
+            _a("INSTITUTO NACIONAL ELECTORAL", decisive=True, controls=Controls.ISSUER_NAME),
+            _a("CREDENCIAL PARA VOTAR", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a("INSTITUTO FEDERAL ELECTORAL", decisive=True, controls=Controls.ISSUER_NAME),
             _a("CLAVE DE ELECTOR"),
             _a("SECCIÓN"),
             _a("VIGENCIA"),
@@ -451,7 +479,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # one issuer, on exactly one document, and adjacent to four check digits. That is
             # what a decisive anchor is meant to be, and it is the model for the rest of this
             # pack.
-            _a("P<MEX", decisive=True),
+            _a("P<MEX", decisive=True, controls=Controls.MRZ_PREFIX),
             # "PASAPORTE" was decisive, gated to the title zone. Every Spanish-language
             # passport on earth is titled that way, and xx_passport_generic claims the string
             # too — a title zone cannot turn a document-class name into proof of a
@@ -540,9 +568,9 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="Registro Nacional de Población (RENAPO), Secretaría de Gobernación",
         anchors=[
-            _a("CLAVE ÚNICA DE REGISTRO DE POBLACIÓN", decisive=True),
-            _a("CONSTANCIA DE LA CURP", decisive=True),
-            _a("REGISTRO NACIONAL DE POBLACIÓN", decisive=True),
+            _a("CLAVE ÚNICA DE REGISTRO DE POBLACIÓN"),
+            _a("CONSTANCIA DE LA CURP", decisive=True, controls=Controls.ISSUER_NAME),
+            _a("REGISTRO NACIONAL DE POBLACIÓN", decisive=True, controls=Controls.ISSUER_NAME),
             _a("RENAPO"),
             _a("Entidad de registro"),
             _a("Folio"),
@@ -585,7 +613,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="Registro Civil of the state of registration",
         anchors=[
-            _a("ACTA DE NACIMIENTO", decisive=True),
+            _a("ACTA DE NACIMIENTO", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("REGISTRO CIVIL"),
             _a("Oficialía"),
             _a("Libro"),
@@ -653,8 +681,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Acceptable as identificación oficial. It evidences a professional licence — not "
         "nationality, and not address.",
         anchors=[
-            _a("CÉDULA PROFESIONAL", decisive=True),
-            _a("DIRECCIÓN GENERAL DE PROFESIONES", decisive=True),
+            _a("CÉDULA PROFESIONAL", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a("DIRECCIÓN GENERAL DE PROFESIONES", decisive=True, controls=Controls.ISSUER_NAME),
             _a("SECRETARÍA DE EDUCACIÓN PÚBLICA"),
             _a("Profesión"),
             _a("Número de cédula"),
@@ -695,9 +723,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Acceptable as identificación oficial. It is issued only to men of conscription "
         "age, so its absence carries no signal.",
         anchors=[
-            _a("CARTILLA DEL SERVICIO MILITAR NACIONAL", decisive=True),
-            _a("SERVICIO MILITAR NACIONAL", decisive=True),
-            _a("SECRETARÍA DE LA DEFENSA NACIONAL", decisive=True),
+            _a(
+                "CARTILLA DEL SERVICIO MILITAR NACIONAL",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("SERVICIO MILITAR NACIONAL", decisive=True, controls=Controls.ISSUER_NAME),
+            _a("SECRETARÍA DE LA DEFENSA NACIONAL", decisive=True, controls=Controls.ISSUER_NAME),
             _a("SEDENA"),
             _a("Matrícula"),
             _a("Clase"),
@@ -739,8 +771,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Personal data under the LFPDPPP. The address shown is a residence abroad, which "
         "is the point of the document — do not treat it as a Mexican address.",
         anchors=[
-            _a("MATRÍCULA CONSULAR DE ALTA SEGURIDAD", decisive=True),
-            _a("MATRÍCULA CONSULAR", decisive=True),
+            _a(
+                "MATRÍCULA CONSULAR DE ALTA SEGURIDAD",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("MATRÍCULA CONSULAR", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("CONSULADO GENERAL DE MÉXICO"),
             _a("SECRETARÍA DE RELACIONES EXTERIORES"),
             _en("CONSULAR IDENTIFICATION"),
@@ -798,9 +834,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         officially_valid=True,
         handling="Immigration status lapses with the card; record the expiry and re-verify at it.",
         anchors=[
-            _a("TARJETA DE RESIDENTE PERMANENTE", decisive=True),
-            _a("TARJETA DE RESIDENTE TEMPORAL", decisive=True),
-            _a("INSTITUTO NACIONAL DE MIGRACIÓN", decisive=True),
+            _a(
+                "TARJETA DE RESIDENTE PERMANENTE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "TARJETA DE RESIDENTE TEMPORAL",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("INSTITUTO NACIONAL DE MIGRACIÓN", decisive=True, controls=Controls.ISSUER_NAME),
             _a("Condición de estancia"),
             _a("Número único de trámite"),
             _a("NUT"),
@@ -851,7 +895,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Servicio de Administración Tributaria (SAT)",
         applies_to="both",
         anchors=[
-            _a("CONSTANCIA DE SITUACIÓN FISCAL", decisive=True),
+            _a("CONSTANCIA DE SITUACIÓN FISCAL"),
             _a("SERVICIO DE ADMINISTRACIÓN TRIBUTARIA"),
             _a("REGISTRO FEDERAL DE CONTRIBUYENTES"),
             _a("Datos de identificación del contribuyente"),
@@ -935,7 +979,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Servicio de Administración Tributaria (SAT)",
         applies_to="both",
         anchors=[
-            _a("CÉDULA DE IDENTIFICACIÓN FISCAL", decisive=True),
+            _a("CÉDULA DE IDENTIFICACIÓN FISCAL"),
             _a("SERVICIO DE ADMINISTRACIÓN TRIBUTARIA"),
             _a("REGISTRO FEDERAL DE CONTRIBUYENTES"),
             _a("idCIF"),
@@ -943,7 +987,11 @@ SPECS: tuple[DocTypeSpec, ...] = (
         id_patterns=[RFC_PATTERN],
         confusable_with={
             "mx_rfc_csf": "the CIF is a single page with the QR code; the constancia runs "
-            "to several pages and lists regimes and obligations",
+            "to several pages and lists regimes and obligations. Page 1 of a "
+            "constancia IS the cédula, reproduced — so a page-1-only extract of "
+            "a CSF carries both titles and is genuinely undecidable from its "
+            "text. Abstaining on it is the correct answer, not a gap; see this "
+            "doctype's notes",
         },
         negative_anchors=[
             # A standalone cédula does not carry the constancia's title, so this one is
@@ -969,6 +1017,31 @@ SPECS: tuple[DocTypeSpec, ...] = (
             ),
             _issue_date_field(),
         ],
+        notes="**Kept as its own doctype, and the reason is worth stating, because the "
+        "alternative was to merge it into mx_rfc_csf.** The two are not the same document: a "
+        "cédula answers 'who is this taxpayer, and what is the RFC' and is the thing a "
+        "counterparty is asked for; a constancia additionally publishes the regimes and the "
+        "standing tax obligations, which is a materially larger disclosure with a different "
+        "retention profile. Merging them would make DCE unable to say which of those two "
+        "things it was handed.\n\n"
+        "What is true — and what the abstention people keep asking about actually is — is "
+        "that **page 1 of a constancia IS a cédula**. The SAT reproduces the cédula, QR code "
+        "and all, as the CSF's first sheet. So a page-1-only extract carries "
+        "'CÉDULA DE IDENTIFICACIÓN FISCAL' and 'CONSTANCIA DE SITUACIÓN FISCAL' together, "
+        "and nothing in its text distinguishes 'a cédula' from 'the first page of a "
+        "constancia'. That is not a registry defect and no anchor can repair it: the "
+        "information required to decide is on pages 2-3, which the caller did not send. The "
+        "correct behaviour is to abstain and route to a human, and that is what happens.\n\n"
+        "The corpus makes the point sharply and the file is mislabelled rather than "
+        "instructive: ``corpus/mx/mx_cif.pdf`` is byte-for-byte page 1 of "
+        "``corpus/mx/mx_rfc_csf.pdf`` — identical extracted text, the same seven embedded "
+        "images, and its own header reads 'Página [1] de [3]'. It is a truncated constancia, "
+        "not a cédula, and the registry is right to refuse it. Do not add anchors to make "
+        "that file classify: every string that would do it appears on genuine constancias "
+        "too, so the coverage would be bought by turning a safe abstention into a wrong "
+        "answer on the more common document. A real standalone cédula — one page, the QR "
+        "code, no constancia title — classifies here on the decisive anchor already present; "
+        "the corpus simply has no specimen of one.",
     ),
     DocTypeSpec(
         doctype_id="mx_efirma_certificado",
@@ -978,8 +1051,16 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Servicio de Administración Tributaria (SAT)",
         applies_to="both",
         anchors=[
-            _a("CERTIFICADO DE FIRMA ELECTRÓNICA AVANZADA", decisive=True),
-            _a("FIRMA ELECTRÓNICA AVANZADA", decisive=True),
+            _a(
+                "CERTIFICADO DE FIRMA ELECTRÓNICA AVANZADA",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "FIRMA ELECTRÓNICA AVANZADA",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("e.firma"),
             _a("Número de serie del certificado"),
             _a("SERVICIO DE ADMINISTRACIÓN TRIBUTARIA"),
@@ -1021,8 +1102,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Servicio de Administración Tributaria (SAT)",
         applies_to="both",
         anchors=[
-            _a("OPINIÓN DEL CUMPLIMIENTO DE OBLIGACIONES FISCALES", decisive=True),
-            _a("Sentido de la opinión", decisive=True),
+            _a(
+                "OPINIÓN DEL CUMPLIMIENTO DE OBLIGACIONES FISCALES",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("Sentido de la opinión", decisive=True, controls=Controls.ISSUER_TEMPLATE),
             _a("SERVICIO DE ADMINISTRACIÓN TRIBUTARIA"),
             _a("Positivo"),
             _a("Negativo"),
@@ -1067,8 +1152,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Notario público; registered with the Registro Público de Comercio",
         applies_to="corporate",
         anchors=[
-            _a("ACTA CONSTITUTIVA", decisive=True),
-            _a("CONSTITUCIÓN DE SOCIEDAD", decisive=True),
+            _a("ACTA CONSTITUTIVA"),
+            _a("CONSTITUCIÓN DE SOCIEDAD", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("ESCRITURA PÚBLICA"),
             _a("NOTARIO PÚBLICO"),
             _a("FOLIO MERCANTIL"),
@@ -1172,10 +1257,22 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Notario público",
         applies_to="corporate",
         anchors=[
-            _a("PODER GENERAL PARA PLEITOS Y COBRANZAS", decisive=True),
-            _a("PODER GENERAL PARA ACTOS DE ADMINISTRACIÓN", decisive=True),
-            _a("PODER GENERAL PARA ACTOS DE DOMINIO", decisive=True),
-            _a("PODER NOTARIAL", decisive=True),
+            _a(
+                "PODER GENERAL PARA PLEITOS Y COBRANZAS",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "PODER GENERAL PARA ACTOS DE ADMINISTRACIÓN",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "PODER GENERAL PARA ACTOS DE DOMINIO",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("PODER NOTARIAL", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("APODERADO"),
             _a("MANDANTE"),
             _a("NOTARIO PÚBLICO"),
@@ -1380,6 +1477,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a(
                 "artículo 166 fracción IV de la Ley General de Sociedades Mercantiles",
                 decisive=True,
+                controls=Controls.STATUTE_TITLE,
             ),
             #
             # The supporting set is deliberately short, and four candidates were measured
@@ -1467,9 +1565,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # controls. AFIL-01 splits into two words ("AFIL", "01") so it clears the
             # short-decisive-anchor rule without a zone gate, and a form number is the
             # canonical shape of a safe decisive anchor.
-            _a("AVISO DE INSCRIPCIÓN PATRONAL O DE MODIFICACIÓN EN SU REGISTRO", decisive=True),
-            _a("TARJETA DE IDENTIFICACIÓN PATRONAL", decisive=True),
-            _a("AFIL-01", decisive=True),
+            _a(
+                "AVISO DE INSCRIPCIÓN PATRONAL O DE MODIFICACIÓN EN SU REGISTRO",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "TARJETA DE IDENTIFICACIÓN PATRONAL",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("AFIL-01", decisive=True, controls=Controls.FORM_NUMBER),
             _a("INSTITUTO MEXICANO DEL SEGURO SOCIAL"),
             _a("Registro Patronal"),
             _a("INFONAVIT"),
@@ -1554,13 +1660,18 @@ SPECS: tuple[DocTypeSpec, ...] = (
         "Valores and the Bolsa Mexicana de Valores under the Circular Única de Emisoras",
         applies_to="corporate",
         anchors=[
-            _a("[411000-AR] Datos generales - Reporte Anual", decisive=True),
-            _a("[412000-N] Portada reporte anual", decisive=True),
+            _a(
+                "[411000-AR] Datos generales - Reporte Anual",
+                decisive=True,
+                controls=Controls.FORM_NUMBER,
+            ),
+            _a("[412000-N] Portada reporte anual", decisive=True, controls=Controls.FORM_NUMBER),
             _a(
                 "Reporte Anual que se presenta de acuerdo con las disposiciones de carácter "
                 "general aplicables a las emisoras de valores y a otros participantes del "
                 "mercado de valores",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             _a("[413000-N] Información general"),
             _a("[417000-N] La emisora"),
@@ -1704,10 +1815,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # NIC 34 is the IFRS interim-reporting standard; the BMV's template emits this
             # note only on an interim filing, and the bracketed number is the exchange's own
             # taxonomy role. Nothing else in the registry can print it.
-            _a(
-                "[813000] Notas - Información financiera intermedia de conformidad con la NIC 34",
-                decisive=True,
-            ),
+            _a("[813000] Notas - Información financiera intermedia de conformidad con la NIC 34"),
             _a("Información Financiera Trimestral"),
             _a("[105000] Comentarios y Análisis de la Administración"),
             _a("[700003] Datos informativos- Estado de resultados 12 meses"),
@@ -1812,11 +1920,11 @@ SPECS: tuple[DocTypeSpec, ...] = (
                 "no podrán ser ofrecidos ni vendidos fuera de los Estados Unidos Mexicanos, "
                 "a menos que sea permitido por las leyes de otros países",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             _a(
                 "ni convalida los actos que, en su caso, hubieren sido realizados en "
                 "contravención de las leyes",
-                decisive=True,
             ),
             _a("PROSPECTO DEFINITIVO"),
             _a("PROSPECTO PRELIMINAR"),
@@ -1907,7 +2015,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Institución de banca múltiple",
         applies_to="both",
         anchors=[
-            _a("ESTADO DE CUENTA", decisive=True),
+            _a("ESTADO DE CUENTA", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("CLABE"),
             _a("Saldo"),
             _a("Periodo"),
@@ -1990,8 +2098,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Comisión Federal de Electricidad (CFE)",
         applies_to="both",
         anchors=[
-            _a("COMISIÓN FEDERAL DE ELECTRICIDAD", decisive=True),
-            _a("AVISO-RECIBO", decisive=True),
+            _a("COMISIÓN FEDERAL DE ELECTRICIDAD", decisive=True, controls=Controls.ISSUER_NAME),
+            _a("AVISO-RECIBO", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("CFE"),
             _a("Número de servicio"),
             _a("Tarifa"),
@@ -2059,8 +2167,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Municipal or state water utility",
         applies_to="both",
         anchors=[
-            _a("SISTEMA DE AGUAS DE LA CIUDAD DE MÉXICO", decisive=True),
-            _a("SACMEX", decisive=True, zone=Zone.title),
+            _a(
+                "SISTEMA DE AGUAS DE LA CIUDAD DE MÉXICO",
+                decisive=True,
+                controls=Controls.ISSUER_NAME,
+            ),
+            _a("SACMEX", decisive=True, controls=Controls.ISSUER_NAME, zone=Zone.title),
             _a("Agua potable"),
             _a("Drenaje"),
             _a("Toma"),
@@ -2123,8 +2235,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Teléfonos de México (TELMEX)",
         applies_to="both",
         anchors=[
-            _a("TELÉFONOS DE MÉXICO", decisive=True),
-            _a("TELMEX", decisive=True, zone=Zone.title),
+            _a("TELÉFONOS DE MÉXICO"),
+            _a("TELMEX", zone=Zone.title),
             _a("Línea telefónica"),
             _a("Número telefónico"),
             _a("Cargos"),
@@ -2181,7 +2293,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Municipal treasury (Tesorería municipal)",
         applies_to="both",
         anchors=[
-            _a("IMPUESTO PREDIAL", decisive=True),
+            _a("IMPUESTO PREDIAL"),
             _a("Cuenta catastral"),
             _a("Valor catastral"),
             _a("Tesorería"),
@@ -2298,6 +2410,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a(
                 "Ley Federal de Protección de Datos Personales en Posesión de los Particulares",
                 decisive=True,
+                controls=Controls.STATUTE_TITLE,
             ),
             _a("AVISO DE PRIVACIDAD"),
             _a("derechos ARCO"),

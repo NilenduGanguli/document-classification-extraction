@@ -10,7 +10,19 @@ The conventions are the ones documented in :mod:`dce.registry.usa`:
 * decisive anchors stay unique across the registry — a shared issuing header such as
   "Canada Revenue Agency / Agence du revenu du Canada" appears on the notice of assessment,
   the T4, the T1 and the business-number letter alike, so it is deliberately **not**
-  decisive; the form's own bilingual title is;
+  decisive; the form's own bilingual title is. Uniqueness in the registry is necessary and
+  **not sufficient**: every decisive anchor here also names its grounds in
+  :class:`dce.models.Controls`, and the property that matters — *it must not appear on a
+  document of another type, including by being cited by one* — is checked against ``corpus/``
+  by ``tests/test_registry_corpus_decisive.py``. That check is what demoted the English
+  ID titles in this pack: ``corpus/ca/ca_sin_confirmation.pdf`` lists the identity documents
+  Service Canada accepts, and thereby prints ``CERTIFICATE OF CANADIAN CITIZENSHIP``,
+  ``CONFIRMATION OF PERMANENT RESIDENCE``, ``BIRTH CERTIFICATE``, ``CERTIFICATE OF BIRTH``,
+  ``CERTIFICATE OF MARRIAGE`` and ``DRIVER'S LICENSE`` on a document that is none of them.
+  The French halves survive, which is the same point the paragraph above makes about
+  ``CARTE DE RÉSIDENT PERMANENT`` — and they survive as ``CLASS_NAME_UNCONTESTED``, not as
+  proof, because the only thing separating them from their English twins is that the corpus
+  holds no French-language list of acceptable ID;
 * validators are declared before they are used, and an identifier without a published
   checksum (a PR card number, a provincial licence number) gets a note rather than an
   invented regex;
@@ -28,7 +40,7 @@ from __future__ import annotations
 
 from importlib import import_module
 
-from dce.models import Anchor, Category, DocTypeSpec, FieldSpec, Zone
+from dce.models import Anchor, Category, Controls, DocTypeSpec, FieldSpec, Zone
 
 try:  # pragma: no cover - the loader is authored alongside this pack
     from dce.registry import loader as _loader
@@ -163,15 +175,27 @@ def _a(
     *,
     lang: str = "en",
     decisive: bool = False,
+    controls: Controls | None = None,
     zone: Zone | None = None,
 ) -> Anchor:
-    """Build an :class:`~dce.models.Anchor` (``lang`` is "en" or "fr" in this pack)."""
-    return Anchor(text=text, lang=lang, decisive=decisive, zone=zone)
+    """Build an :class:`~dce.models.Anchor` (``lang`` is "en" or "fr" in this pack).
+
+    ``controls`` is mandatory when ``decisive`` is set and forbidden otherwise — see
+    :class:`dce.models.Controls`. It has no default here on purpose: a builder that supplied
+    one would re-create the invisible claim the field exists to prevent.
+    """
+    return Anchor(text=text, lang=lang, decisive=decisive, controls=controls, zone=zone)
 
 
-def _fr(text: str, *, decisive: bool = False, zone: Zone | None = None) -> Anchor:
+def _fr(
+    text: str,
+    *,
+    decisive: bool = False,
+    controls: Controls | None = None,
+    zone: Zone | None = None,
+) -> Anchor:
     """Build a French anchor — the half of a bilingual header OCR often reads best."""
-    return Anchor(text=text, lang="fr", decisive=decisive, zone=zone)
+    return Anchor(text=text, lang="fr", decisive=decisive, controls=controls, zone=zone)
 
 
 def _bilingual(en: list[str], fr: list[str]) -> dict[str, list[str]]:
@@ -608,7 +632,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Under PIPEDA collect only the identity fields the verification needs; do not "
         "retain the data page image by default.",
         anchors=[
-            _a("P<CAN", decisive=True),
+            _a("P<CAN", decisive=True, controls=Controls.MRZ_PREFIX),
             _a("PASSPORT", zone=Zone.title),
             _fr("PASSEPORT", zone=Zone.title),
             _a("Government of Canada"),
@@ -679,8 +703,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # title of the French, Belgian and Swiss licences too, none of which this
             # registry models, so as unpinned near-proof it was claiming three jurisdictions
             # it knows nothing about.
-            _a("DRIVER'S LICENCE", decisive=True, zone=Zone.title),
-            _fr("PERMIS DE CONDUIRE", decisive=True, zone=Zone.title),
+            _a("DRIVER'S LICENCE", zone=Zone.title),
+            _fr(
+                "PERMIS DE CONDUIRE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+                zone=Zone.title,
+            ),
             _a("Class"),
             _fr("Classe"),
             _a("Restrictions"),
@@ -731,9 +760,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Same provincial retention limits as a driver's licence: keep the fields, not the "
         "scan.",
         anchors=[
-            _a("ONTARIO PHOTO CARD", decisive=True),
-            _a("ALBERTA IDENTIFICATION CARD", decisive=True),
-            _a("MANITOBA IDENTIFICATION CARD", decisive=True),
+            _a("ONTARIO PHOTO CARD", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a(
+                "ALBERTA IDENTIFICATION CARD",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "MANITOBA IDENTIFICATION CARD",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _fr("CARTE PHOTO"),
             _a("Photo Card"),
             _a("Identification Card"),
@@ -772,8 +809,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         "does not mean status was lost, so never derive a status decision from the expiry "
         "alone.",
         anchors=[
-            _fr("CARTE DE RÉSIDENT PERMANENT", decisive=True),
-            _fr("RÉSIDENT PERMANENT", decisive=True),
+            _fr(
+                "CARTE DE RÉSIDENT PERMANENT",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _fr("RÉSIDENT PERMANENT", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("PERMANENT RESIDENT CARD"),
             _a("IRCC"),
             _a("Citizenship and Immigration Canada"),
@@ -829,10 +870,14 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="Immigration, Refugees and Citizenship Canada (IRCC)",
         anchors=[
-            _a("CONFIRMATION OF PERMANENT RESIDENCE", decisive=True),
-            _fr("CONFIRMATION DE RÉSIDENCE PERMANENTE", decisive=True),
-            _a("IMM 5292", decisive=True),
-            _a("IMM 5688", decisive=True),
+            _a("CONFIRMATION OF PERMANENT RESIDENCE"),
+            _fr(
+                "CONFIRMATION DE RÉSIDENCE PERMANENTE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("IMM 5292", decisive=True, controls=Controls.FORM_NUMBER),
+            _a("IMM 5688", decisive=True, controls=Controls.FORM_NUMBER),
             _a("Client ID"),
             _a("Date of landing"),
         ],
@@ -881,8 +926,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="A citizenship certificate does not expire; do not derive a re-verification date "
         "from any date printed on it.",
         anchors=[
-            _a("CERTIFICATE OF CANADIAN CITIZENSHIP", decisive=True),
-            _fr("CERTIFICAT DE CITOYENNETÉ CANADIENNE", decisive=True),
+            _a("CERTIFICATE OF CANADIAN CITIZENSHIP"),
+            _fr(
+                "CERTIFICAT DE CITOYENNETÉ CANADIENNE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Citizenship certificate"),
             _fr("Certificat de citoyenneté"),
             _a("IRCC"),
@@ -936,8 +985,16 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Indigenous Services Canada",
         officially_valid=True,
         anchors=[
-            _a("SECURE CERTIFICATE OF INDIAN STATUS", decisive=True),
-            _fr("CERTIFICAT SÉCURISÉ DE STATUT D'INDIEN", decisive=True),
+            _a(
+                "SECURE CERTIFICATE OF INDIAN STATUS",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _fr(
+                "CERTIFICAT SÉCURISÉ DE STATUT D'INDIEN",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Indigenous Services Canada"),
             _fr("Services aux Autochtones Canada"),
             _a("Registry Number"),
@@ -975,9 +1032,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="Immigration, Refugees and Citizenship Canada (IRCC) / CBSA",
         anchors=[
-            _a("REFUGEE PROTECTION CLAIMANT DOCUMENT", decisive=True),
-            _fr("DOCUMENT DU DEMANDEUR D'ASILE", decisive=True),
-            _a("IMM 1442", decisive=True),
+            _a(
+                "REFUGEE PROTECTION CLAIMANT DOCUMENT",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _fr(
+                "DOCUMENT DU DEMANDEUR D'ASILE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("IMM 1442", decisive=True, controls=Controls.FORM_NUMBER),
             _a("Client ID"),
             _a("Conditions"),
         ],
@@ -1012,9 +1077,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="Provincial health insurance plan",
         anchors=[
-            _fr("CARTE D'ASSURANCE MALADIE", decisive=True),
-            _fr("RÉGIE DE L'ASSURANCE MALADIE DU QUÉBEC", decisive=True),
-            _a("ONTARIO HEALTH CARD", decisive=True),
+            _fr(
+                "CARTE D'ASSURANCE MALADIE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _fr(
+                "RÉGIE DE L'ASSURANCE MALADIE DU QUÉBEC",
+                decisive=True,
+                controls=Controls.ISSUER_NAME,
+            ),
+            _a("ONTARIO HEALTH CARD", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Health Card"),
             _fr("Carte santé"),
             _a("OHIP"),
@@ -1063,7 +1136,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Acceptable as government-issued photo identification, but it evidences programme "
         "membership only — not status, and not address.",
         anchors=[
-            _a("NEXUS", decisive=True, zone=Zone.title),
+            _a("NEXUS", decisive=True, controls=Controls.ISSUER_NAME, zone=Zone.title),
             _a("Trusted Traveler"),
             _a("CBSA"),
             _fr("ASFC"),
@@ -1095,8 +1168,16 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="Service Canada (Employment and Social Development Canada)",
         anchors=[
-            _a("CONFIRMATION OF SOCIAL INSURANCE NUMBER", decisive=True),
-            _fr("CONFIRMATION DU NUMÉRO D'ASSURANCE SOCIALE", decisive=True),
+            _a(
+                "CONFIRMATION OF SOCIAL INSURANCE NUMBER",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _fr(
+                "CONFIRMATION DU NUMÉRO D'ASSURANCE SOCIALE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Service Canada"),
             _a("Social Insurance Number"),
             _fr("Numéro d'assurance sociale"),
@@ -1127,8 +1208,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Canada Revenue Agency / Agence du revenu du Canada",
         applies_to="both",
         anchors=[
-            _a("NOTICE OF ASSESSMENT", decisive=True),
-            _fr("AVIS DE COTISATION", decisive=True),
+            _a("NOTICE OF ASSESSMENT", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _fr("AVIS DE COTISATION", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Canada Revenue Agency"),
             _fr("Agence du revenu du Canada"),
             _a("Tax year"),
@@ -1186,8 +1267,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.tax,
         issuing_authority="Employer; filed with the Canada Revenue Agency",
         anchors=[
-            _a("STATEMENT OF REMUNERATION PAID", decisive=True),
-            _fr("ÉTAT DE LA RÉMUNÉRATION PAYÉE", decisive=True),
+            _a("STATEMENT OF REMUNERATION PAID", decisive=True, controls=Controls.ISSUER_TEMPLATE),
+            _fr("ÉTAT DE LA RÉMUNÉRATION PAYÉE", decisive=True, controls=Controls.ISSUER_TEMPLATE),
             _a("Employment income"),
             _fr("Revenus d'emploi"),
             _a("Canada Revenue Agency"),
@@ -1247,9 +1328,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.tax,
         issuing_authority="Canada Revenue Agency / Agence du revenu du Canada",
         anchors=[
-            _a("INCOME TAX AND BENEFIT RETURN", decisive=True),
-            _fr("DÉCLARATION DE REVENUS ET DE PRESTATIONS", decisive=True),
-            _a("T1 GENERAL", decisive=True),
+            _a("INCOME TAX AND BENEFIT RETURN"),
+            _fr(
+                "DÉCLARATION DE REVENUS ET DE PRESTATIONS",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("T1 GENERAL", decisive=True, controls=Controls.FORM_NUMBER),
             _a("Canada Revenue Agency"),
             _a("Marital status"),
             _fr("État civil"),
@@ -1296,7 +1381,11 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Canada Revenue Agency / Agence du revenu du Canada",
         applies_to="corporate",
         anchors=[
-            _a("BUSINESS NUMBER (BN) REGISTRATION", decisive=True),
+            _a(
+                "BUSINESS NUMBER (BN) REGISTRATION",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a("Business Number"),
             _fr("Numéro d'entreprise"),
             _a("Program account"),
@@ -1343,9 +1432,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Corporations Canada (Innovation, Science and Economic Development)",
         applies_to="corporate",
         anchors=[
-            _a("CANADA BUSINESS CORPORATIONS ACT", decisive=True),
-            _fr("LOI CANADIENNE SUR LES SOCIÉTÉS PAR ACTIONS", decisive=True),
-            _fr("STATUTS CONSTITUTIFS", decisive=True),
+            _a("CANADA BUSINESS CORPORATIONS ACT"),
+            _fr(
+                "LOI CANADIENNE SUR LES SOCIÉTÉS PAR ACTIONS",
+                decisive=True,
+                controls=Controls.STATUTE_TITLE,
+            ),
+            _fr("STATUTS CONSTITUTIFS", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Articles of Incorporation"),
             _a("Corporations Canada"),
             _a("Corporation number"),
@@ -1428,10 +1521,18 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Provincial corporate registry",
         applies_to="corporate",
         anchors=[
-            _a("BUSINESS CORPORATIONS ACT (ONTARIO)", decisive=True),
-            _a("BUSINESS CORPORATIONS ACT (BRITISH COLUMBIA)", decisive=True),
-            _a("ALBERTA BUSINESS CORPORATIONS ACT", decisive=True),
-            _fr("LOI SUR LES SOCIÉTÉS PAR ACTIONS (QUÉBEC)", decisive=True),
+            _a(
+                "BUSINESS CORPORATIONS ACT (ONTARIO)",
+                decisive=True,
+                controls=Controls.STATUTE_TITLE,
+            ),
+            _a("BUSINESS CORPORATIONS ACT (BRITISH COLUMBIA)"),
+            _a("ALBERTA BUSINESS CORPORATIONS ACT", decisive=True, controls=Controls.STATUTE_TITLE),
+            _fr(
+                "LOI SUR LES SOCIÉTÉS PAR ACTIONS (QUÉBEC)",
+                decisive=True,
+                controls=Controls.STATUTE_TITLE,
+            ),
             _a("Certificate of Incorporation"),
             _a("Articles of Incorporation"),
             _fr("Registraire des entreprises"),
@@ -1490,9 +1591,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Corporations Canada or a provincial corporate registry",
         applies_to="corporate",
         anchors=[
-            _a("CERTIFICATE OF COMPLIANCE", decisive=True),
-            _a("CERTIFICATE OF STATUS", decisive=True),
-            _fr("CERTIFICAT DE CONFORMITÉ", decisive=True),
+            _a(
+                "CERTIFICATE OF COMPLIANCE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("CERTIFICATE OF STATUS"),
+            _fr(
+                "CERTIFICAT DE CONFORMITÉ",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Corporations Canada"),
             _a("has not been dissolved"),
             _fr("n'a pas été dissoute"),
@@ -1532,8 +1641,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Corporations Canada or a provincial corporate registry",
         applies_to="corporate",
         anchors=[
-            _a("ANNUAL RETURN", decisive=True),
-            _fr("DÉCLARATION ANNUELLE", decisive=True),
+            _a("ANNUAL RETURN"),
+            _fr("DÉCLARATION ANNUELLE", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Anniversary date"),
             _fr("Date anniversaire"),
             _a("Corporations Canada"),
@@ -1588,8 +1697,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Private instrument executed by the partners",
         applies_to="corporate",
         anchors=[
-            _a("PARTNERSHIP AGREEMENT", decisive=True),
-            _fr("CONTRAT DE SOCIÉTÉ", decisive=True),
+            _a("PARTNERSHIP AGREEMENT"),
+            _fr("CONTRAT DE SOCIÉTÉ", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("General Partner"),
             _a("Limited Partner"),
             _fr("Associés"),
@@ -1646,9 +1755,9 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Private instrument executed by the settlor and trustee",
         applies_to="corporate",
         anchors=[
-            _a("DEED OF TRUST", decisive=True),
-            _a("TRUST DEED", decisive=True),
-            _fr("ACTE DE FIDUCIE", decisive=True),
+            _a("DEED OF TRUST", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a("TRUST DEED", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _fr("ACTE DE FIDUCIE", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Settlor"),
             _fr("Constituant"),
             _a("Trustee"),
@@ -1754,14 +1863,91 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 (CSA)",
         applies_to="corporate",
         anchors=[
-            _a("FORM 51-102F2", decisive=True),
-            _fr("ANNEXE 51-102A2", decisive=True),
+            _a("FORM 51-102F2", decisive=True, controls=Controls.FORM_NUMBER),
+            _fr("ANNEXE 51-102A2", decisive=True, controls=Controls.FORM_NUMBER),
             _a("ANNUAL INFORMATION FORM"),
             _fr("NOTICE ANNUELLE"),
             _a("National Instrument 51-102"),
             _fr("Règlement 51-102"),
+            # ---------------------------------------------------------------
+            # The form's own prescribed structure, as *supporting* anchors.
+            #
+            # An AIF that omits its form number used to be unclassifiable: the class name
+            # is shared (``ANNUAL INFORMATION FORM`` is printed on this corpus's
+            # information circular, its prospectus and its standalone reserves statement
+            # too) and ``National Instrument 51-102`` is declared by five doctypes on
+            # purpose, so it cancels out of every margin between them. What is left has to
+            # be the thing the CSA actually prescribes about an AIF, which is its ITEM LIST.
+            #
+            # These are the Part 2 item headings of Form 51-102F2, verbatim from the CSA
+            # unofficial consolidation effective 30 June 2015, Items 3 to 18. Two rules
+            # govern the set, and both are properties of the form rather than of any
+            # document:
+            #
+            # *Item granularity, not sub-item granularity.* The form numbers Item 12
+            # ``Legal Proceedings and Regulatory Actions`` and then sub-numbers 12.1
+            # ``Legal Proceedings``. The item heading is the form's name for the item; the
+            # sub-heading is a fragment of it, and the fragments are exactly the strings
+            # that mean something else elsewhere — ``Risk Factors`` (5.2), ``Constraints``
+            # (7.2), ``Ratings`` (7.3), ``Trading Price and Volume`` (8.1), ``Prior Sales``
+            # (8.2), ``Legal Proceedings`` (12.1), ``Conflicts of Interest`` (10.3). Every
+            # one of those is printed by a US Form 10-K, 20-F or proxy statement in this
+            # corpus. Taking the list at the granularity the form numbers it drops all of
+            # them without anyone having to judge them one at a time.
+            #
+            # That granularity was chosen by measurement, not by taste. Declaring the item
+            # headings AND all nineteen sub-item headings — same source, one level deeper —
+            # was run over the whole corpus: precision-when-answered falls from 100.0% to
+            # 99.2%, it produces a wrong answer (``us_operating_agreement`` returned as
+            # ``us_articles_incorporation``) and it additionally costs both information
+            # circulars and the prospectus, which the shared fragments pull toward this
+            # doctype. Item granularity: 133 correct, 0 wrong. Sub-item granularity: 130
+            # correct, 1 wrong. A wrong doctype is a compliance incident and an abstention
+            # is not, so the deeper list is refused even though it is just as faithful to
+            # the published form.
+            #
+            # *Items 1 and 2 are excluded.* ``Cover Page`` and ``Table of Contents`` are
+            # instructions about the document's front matter, not disclosure items; every
+            # long filing has both.
+            #
+            # None is decisive and none could be: Form 41-101F1 (long form prospectus)
+            # prescribes several of the same headings. What separates this doctype from
+            # ca_prospectus is the regulator's no-opinion legend, which only the prospectus
+            # carries. What the item list separates it from is a standalone Form
+            # 51-101F1/F2/F3 reserves statement, which carries none of it — see the
+            # containment note on ca_ni_51_101_oil_gas.
+            #
+            # The point of taking the WHOLE list is that no single heading has to carry the
+            # doctype. A genuine AIF prints most of the list and accumulates; a document
+            # that prints one or two of them accumulates one or two anchors' worth, which
+            # is what one or two headings are worth. That is what makes this a property of
+            # the form and not a patch for one specimen.
+            _a("Corporate Structure"),
             _a("General Development of the Business"),
+            _a("Describe the Business"),
+            _a("Dividends and Distributions"),
             _a("Description of Capital Structure"),
+            _a("Market for Securities"),
+            _a(
+                "Escrowed Securities and Securities Subject to Contractual Restriction "
+                "on Transfer"
+            ),
+            _a("Directors and Officers"),
+            _a("Promoters"),
+            _a("Legal Proceedings and Regulatory Actions"),
+            _a("Interest of Management and Others in Material Transactions"),
+            _a("Transfer Agents and Registrars"),
+            _a("Material Contracts"),
+            _a("Interests of Experts"),
+            _a("Additional Information"),
+            _a("Additional Disclosure for Companies Not Sending Information Circulars"),
+            # Not a Form 51-102F2 item, and listed apart because its provenance is a
+            # different instrument: NI 52-110 s.5.1 requires a non-venture issuer's AIF to
+            # include the disclosure of Form 52-110F1 *Audit Committee Information Required
+            # in an AIF*, and the heading travels with it. It qualifies for the same reason
+            # as the items above — prescribed content of this document type by an
+            # instrument, not a string one specimen happened to print.
+            _a("Audit Committee Information"),
         ],
         confusable_with={
             "ca_mda": "the AIF describes the business and its risks; the MD&A explains the "
@@ -1770,6 +1956,14 @@ SPECS: tuple[DocTypeSpec, ...] = (
             "securities; the AIF offers nothing",
             "ca_information_circular": "the circular solicits proxies for a meeting and is "
             "Form 51-102F5",
+            "ca_ni_51_101_oil_gas": "CONTAINMENT, not confusion. NI 51-101 s.2.1 requires an "
+            "issuer with oil and gas activities to file Forms 51-101F1, "
+            "F2 and F3 annually, and issuers routinely bind them into "
+            "the AIF as schedules — so those form numbers inside an AIF "
+            "identify an *enclosure*, not the enclosing document. The "
+            "AIF is separated from a standalone reserves statement by "
+            "its own Form 51-102F2 item headings, which the reserves "
+            "statement never carries",
         },
         negative_anchors=[
             "FORM 10-K",
@@ -1815,9 +2009,14 @@ SPECS: tuple[DocTypeSpec, ...] = (
                 locators=["table", "label", "kv"],
             ),
         ],
-        notes="An AIF that does not print its form number is common; the class name alone is "
-        "supporting evidence and the classifier will abstain rather than guess between the "
-        "AIF and the other 51-102 filings.",
+        notes="An AIF that does not print its form number is common, and the class name alone "
+        "is shared with three other doctypes here, so identification rests on the Form "
+        "51-102F2 item list above and on how much of it the document prints. That is a "
+        "property of the form: an AIF carries most of the list by construction, a standalone "
+        "Form 51-101F1/F2/F3 reserves statement carries none of it, and no single heading has "
+        "to be right. Where the item evidence and the reserves vocabulary genuinely disagree "
+        "— an oil-and-gas AIF whose text is mostly reserves tables — the two tiers dissent and "
+        "the classifier abstains, which routes to a human and is safe.",
     ),
     DocTypeSpec(
         doctype_id="ca_mda",
@@ -1827,8 +2026,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 (CSA)",
         applies_to="corporate",
         anchors=[
-            _a("FORM 51-102F1", decisive=True),
-            _fr("ANNEXE 51-102A1", decisive=True),
+            _a("FORM 51-102F1", decisive=True, controls=Controls.FORM_NUMBER),
+            _fr("ANNEXE 51-102A1", decisive=True, controls=Controls.FORM_NUMBER),
             _a("MANAGEMENT'S DISCUSSION AND ANALYSIS"),
             _fr("RAPPORT DE GESTION"),
             _a("National Instrument 51-102"),
@@ -1864,9 +2063,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 Part 7 (CSA)",
         applies_to="corporate",
         anchors=[
-            _a("FORM 51-102F3", decisive=True),
-            _fr("ANNEXE 51-102A3", decisive=True),
-            _a("FULL DESCRIPTION OF MATERIAL CHANGE", decisive=True),
+            _a("FORM 51-102F3", decisive=True, controls=Controls.FORM_NUMBER),
+            _fr("ANNEXE 51-102A3", decisive=True, controls=Controls.FORM_NUMBER),
+            _a(
+                "FULL DESCRIPTION OF MATERIAL CHANGE",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a("MATERIAL CHANGE REPORT"),
             _fr("DÉCLARATION DE CHANGEMENT IMPORTANT"),
             _a("Date of Material Change"),
@@ -1925,8 +2128,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 Part 8 (CSA)",
         applies_to="corporate",
         anchors=[
-            _a("FORM 51-102F4", decisive=True),
-            _fr("ANNEXE 51-102A4", decisive=True),
+            _a("FORM 51-102F4", decisive=True, controls=Controls.FORM_NUMBER),
+            _fr("ANNEXE 51-102A4", decisive=True, controls=Controls.FORM_NUMBER),
             _a("BUSINESS ACQUISITION REPORT"),
             _fr("DÉCLARATION D'ACQUISITION D'ENTREPRISE"),
             _a("significant acquisition"),
@@ -1983,8 +2186,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Reporting issuer, filed on SEDAR+ under NI 51-102 Part 9 (CSA)",
         applies_to="corporate",
         anchors=[
-            _a("FORM 51-102F5", decisive=True),
-            _fr("ANNEXE 51-102A5", decisive=True),
+            _a("FORM 51-102F5"),
+            _fr("ANNEXE 51-102A5", decisive=True, controls=Controls.FORM_NUMBER),
             _a("MANAGEMENT INFORMATION CIRCULAR"),
             _fr("CIRCULAIRE DE SOLLICITATION DE PROCURATIONS"),
             _a("Statement of Executive Compensation"),
@@ -2061,10 +2264,10 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Certifying officer of a reporting issuer, under NI 52-109 (CSA)",
         applies_to="corporate",
         anchors=[
-            _a("FORM 52-109F1", decisive=True),
-            _a("FORM 52-109F2", decisive=True),
-            _fr("ANNEXE 52-109A1", decisive=True),
-            _fr("ANNEXE 52-109A2", decisive=True),
+            _a("FORM 52-109F1", decisive=True, controls=Controls.FORM_NUMBER),
+            _a("FORM 52-109F2", decisive=True, controls=Controls.FORM_NUMBER),
+            _fr("ANNEXE 52-109A1", decisive=True, controls=Controls.FORM_NUMBER),
+            _fr("ANNEXE 52-109A2", decisive=True, controls=Controls.FORM_NUMBER),
             _a("CERTIFICATION OF ANNUAL FILINGS"),
             _a("CERTIFICATION OF INTERIM FILINGS"),
             _fr("ATTESTATION DES DOCUMENTS ANNUELS"),
@@ -2103,10 +2306,10 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Qualified person, filed by a reporting issuer under NI 43-101 (CSA)",
         applies_to="corporate",
         anchors=[
-            _a("FORM 43-101F1", decisive=True),
-            _a("NATIONAL INSTRUMENT 43-101", decisive=True),
-            _a("NI 43-101", decisive=True),
-            _fr("RÈGLEMENT 43-101", decisive=True),
+            _a("FORM 43-101F1", decisive=True, controls=Controls.FORM_NUMBER),
+            _a("NATIONAL INSTRUMENT 43-101"),
+            _a("NI 43-101", decisive=True, controls=Controls.STATUTE_TITLE),
+            _fr("RÈGLEMENT 43-101", decisive=True, controls=Controls.STATUTE_TITLE),
             _a("Standards of Disclosure for Mineral Projects"),
             _a("qualified person"),
             _fr("personne qualifiée"),
@@ -2171,12 +2374,59 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Reporting issuer and its independent qualified reserves evaluator, "
         "under NI 51-101 (CSA)",
         applies_to="corporate",
+        # ------------------------------------------------------------------
+        # THIS DOCTYPE HAS NO DECISIVE ANCHOR, AND CANNOT HAVE ONE.
+        #
+        # It held five: ``FORM 51-101F1``, ``FORM 51-101F2``, ``FORM 51-101F3``,
+        # ``NATIONAL INSTRUMENT 51-101`` and ``RÈGLEMENT 51-101``. Each is a CSA form or
+        # instrument number, which is the strongest ground a decisive claim can have
+        # (:attr:`dce.models.Controls.FORM_NUMBER`) — and every one of them is wrong here,
+        # for a reason that is about the regulation rather than about any document.
+        #
+        # NI 51-101 s.2.1 requires a reporting issuer with oil and gas activities to file
+        # Forms 51-101F1, F2 and F3 *annually*, and Form 51-102F2 Item 5.5 ("Companies with
+        # Oil and Gas Activities") is where the AIF is told to carry that disclosure. So an
+        # oil-and-gas issuer's ANNUAL INFORMATION FORM prints all three form numbers, the
+        # instrument number, the form titles, ``future net revenue``, the ``COGE Handbook``
+        # citation and the evaluator's name — not by coincidence but because the CSA
+        # requires it to. This is CONTAINMENT: the 51-101 material is an enclosure, and
+        # every string that identifies the enclosure appears in the enclosing document too.
+        # Measured on this corpus, all five former decisive anchors match
+        # ``corpus/ca/ca_aif__oilgas_issuer.pdf``, which is a ``ca_aif``; and
+        # ``NATIONAL INSTRUMENT 51-101`` also matches the blank Form 51-102F3, whose
+        # instructions cite it.
+        #
+        # The obvious repair — anchor on the standalone form's own TITLE instead of its
+        # number — was tried and does not work, and the measurement is recorded here so
+        # that nobody tries it again. Of the three titles NI 51-101 prescribes:
+        # "Statement of Reserves Data and Other Oil and Gas Information" (F1) matches only
+        # the standalone report; "Report on Reserves Data by Independent Qualified Reserves
+        # Evaluator or Auditor" (F2) matches only the *AIF*; "Report of Management and
+        # Directors on Oil and Gas Disclosure" (F3) matches both. That is containment one
+        # level down — the AIF binds F2 and F3 in verbatim, titles included. There is no
+        # string in the 51-101 family that a compliant oil-and-gas AIF does not also print.
+        #
+        # So the honest conclusion is the one at the top: this doctype owns no string that
+        # only it prints, and therefore has no decisive anchor. All five are kept as
+        # supporting anchors — the evidence is real, it is simply not exclusive — and this
+        # doctype is now identified the ordinary way, by both channels concurring. On a
+        # standalone reserves statement that is easy and stays easy: it holds every anchor
+        # below and the AIF holds two or three. Inside an AIF it is correctly hard, because
+        # inside an AIF this material is a schedule.
         anchors=[
-            _a("FORM 51-101F1", decisive=True),
-            _a("FORM 51-101F2", decisive=True),
-            _a("FORM 51-101F3", decisive=True),
-            _a("NATIONAL INSTRUMENT 51-101", decisive=True),
-            _fr("RÈGLEMENT 51-101", decisive=True),
+            _a("FORM 51-101F1"),
+            _a("FORM 51-101F2"),
+            _a("FORM 51-101F3"),
+            _a("NATIONAL INSTRUMENT 51-101"),
+            _fr("RÈGLEMENT 51-101"),
+            # The three form titles, for what they are worth as supporting evidence. They
+            # are NOT a discriminator; the note above says why, with the measurement.
+            _a("Statement of Reserves Data and Other Oil and Gas Information"),
+            _a(
+                "Report on Reserves Data by Independent Qualified Reserves Evaluator or "
+                "Auditor"
+            ),
+            _a("Report of Management and Directors on Oil and Gas Disclosure"),
             _a("Statement of Reserves Data"),
             _a("Independent Qualified Reserves Evaluator"),
             _a("Standards of Disclosure for Oil and Gas Activities"),
@@ -2186,7 +2436,34 @@ SPECS: tuple[DocTypeSpec, ...] = (
         confusable_with={
             "ca_ni_43_101_technical_report": "NI 51-101 covers oil and gas; NI 43-101 covers "
             "mineral projects and excludes petroleum",
+            "ca_aif": "CONTAINMENT, not confusion. An oil-and-gas issuer's AIF "
+            "legitimately carries all three 51-101 form numbers and all three "
+            "51-101 form titles, because NI 51-101 s.2.1 obliges the issuer to "
+            "file F1/F2/F3 and Form 51-102F2 Item 5.5 is where they get bound "
+            "in. Nothing in the 51-101 family distinguishes the two, which is "
+            "why this doctype has no decisive anchor — see the note above its "
+            "anchors. What distinguishes them is on the OTHER side: ca_aif "
+            "declares the whole Form 51-102F2 item list, a genuine AIF prints "
+            "most of it, and a standalone reserves statement prints none of it",
         },
+        # There is deliberately no ``negative_anchors`` entry here any more.
+        #
+        # There was one: the ten Form 51-102F2 item headings, declared as evidence AGAINST
+        # this doctype so that an AIF with the reserves disclosure bound in would be pushed
+        # off it. That was compensation for evidence missing on the other side — ca_aif
+        # declared four item headings, so the AIF could not win on its own merits and this
+        # doctype had to be pushed down instead. ca_aif now declares the form's whole item
+        # list and wins the anchor channel outright on both corpus AIFs on its own evidence
+        # — 18.0 bits to 1.3 on ``ca_aif.htm``, 12.6 to 9.4 on the oil-and-gas one, with no
+        # penalty applied to either — so the penalty has nothing left to do.
+        #
+        # Measured, not assumed: removing the ten negative anchors changes the outcome of
+        # none of the four documents in this cluster — both AIFs and both standalone
+        # reserves statements land exactly where they land with them. A control that cannot
+        # change an outcome is a control that misinforms a reviewer about what is protecting
+        # them, so it is gone rather than kept for comfort. The protection is now positive
+        # evidence for the enclosing document, which is the thing that actually generalises:
+        # it works on an AIF whatever subset of the item list that AIF happens to print.
         fields=[
             _issuer_name_field(),
             _fiscal_year_end_field(),
@@ -2239,10 +2516,10 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Acquiror of securities, filed on SEDAR+ under NI 62-103 (CSA)",
         applies_to="both",
         anchors=[
-            _a("FORM 62-103F1", decisive=True),
-            _a("NATIONAL INSTRUMENT 62-103", decisive=True),
-            _fr("ANNEXE 62-103A1", decisive=True),
-            _fr("RÈGLEMENT 62-103", decisive=True),
+            _a("FORM 62-103F1", decisive=True, controls=Controls.FORM_NUMBER),
+            _a("NATIONAL INSTRUMENT 62-103", decisive=True, controls=Controls.STATUTE_TITLE),
+            _fr("ANNEXE 62-103A1", decisive=True, controls=Controls.FORM_NUMBER),
+            _fr("RÈGLEMENT 62-103", decisive=True, controls=Controls.STATUTE_TITLE),
             _a("EARLY WARNING REPORT"),
             _a("early warning requirements"),
             _fr("système d'alerte"),
@@ -2326,10 +2603,18 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Insider of a reporting issuer, filed through SEDI under NI 55-102 (CSA)",
         applies_to="individual",
         anchors=[
-            _a("FORM 55-102F2", decisive=True),
-            _a("SYSTEM FOR ELECTRONIC DISCLOSURE BY INSIDERS", decisive=True),
-            _a("NATIONAL INSTRUMENT 55-102", decisive=True),
-            _fr("SYSTÈME ÉLECTRONIQUE DE DÉCLARATION DES INITIÉS", decisive=True),
+            _a("FORM 55-102F2", decisive=True, controls=Controls.FORM_NUMBER),
+            _a(
+                "SYSTEM FOR ELECTRONIC DISCLOSURE BY INSIDERS",
+                decisive=True,
+                controls=Controls.ISSUER_NAME,
+            ),
+            _a("NATIONAL INSTRUMENT 55-102", decisive=True, controls=Controls.STATUTE_TITLE),
+            _fr(
+                "SYSTÈME ÉLECTRONIQUE DE DÉCLARATION DES INITIÉS",
+                decisive=True,
+                controls=Controls.ISSUER_NAME,
+            ),
             _a("Insider Report"),
             _fr("Déclaration d'initié"),
             _a("Nature of transaction"),
@@ -2405,14 +2690,15 @@ SPECS: tuple[DocTypeSpec, ...] = (
         "authority under NI 41-101 / NI 44-101",
         applies_to="corporate",
         anchors=[
-            _a("FORM 41-101F1", decisive=True),
-            _a("FORM 44-101F1", decisive=True),
-            _a("NATIONAL INSTRUMENT 41-101", decisive=True),
-            _a("NATIONAL INSTRUMENT 44-101", decisive=True),
+            _a("FORM 41-101F1", decisive=True, controls=Controls.FORM_NUMBER),
+            _a("FORM 44-101F1", decisive=True, controls=Controls.FORM_NUMBER),
+            _a("NATIONAL INSTRUMENT 41-101", decisive=True, controls=Controls.STATUTE_TITLE),
+            _a("NATIONAL INSTRUMENT 44-101", decisive=True, controls=Controls.STATUTE_TITLE),
             _a(
                 "No securities regulatory authority has expressed an opinion about these "
                 "securities and it is an offence to claim otherwise",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             _a("PRELIMINARY PROSPECTUS"),
             _a("SHORT FORM PROSPECTUS"),
@@ -2484,8 +2770,16 @@ SPECS: tuple[DocTypeSpec, ...] = (
         "transparency register",
         applies_to="corporate",
         anchors=[
-            _a("REGISTER OF INDIVIDUALS WITH SIGNIFICANT CONTROL", decisive=True),
-            _fr("REGISTRE DES PARTICULIERS AYANT UN CONTRÔLE IMPORTANT", decisive=True),
+            _a(
+                "REGISTER OF INDIVIDUALS WITH SIGNIFICANT CONTROL",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _fr(
+                "REGISTRE DES PARTICULIERS AYANT UN CONTRÔLE IMPORTANT",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("individual with significant control"),
             _fr("particulier ayant un contrôle important"),
             _a("significant number of shares"),
@@ -2648,9 +2942,9 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Provincial utility or telecommunications provider",
         applies_to="both",
         anchors=[
-            _fr("HYDRO-QUÉBEC", decisive=True),
-            _a("HYDRO ONE", decisive=True),
-            _a("BC HYDRO", decisive=True),
+            _fr("HYDRO-QUÉBEC", decisive=True, controls=Controls.ISSUER_NAME),
+            _a("HYDRO ONE", decisive=True, controls=Controls.ISSUER_NAME),
+            _a("BC HYDRO", decisive=True, controls=Controls.ISSUER_NAME),
             _a("Service Address"),
             _fr("Adresse de service"),
             _a("Amount Due"),
@@ -2718,10 +3012,22 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Provincial assessment authority or municipality",
         applies_to="both",
         anchors=[
-            _a("PROPERTY ASSESSMENT NOTICE", decisive=True),
-            _a("MUNICIPAL PROPERTY ASSESSMENT CORPORATION", decisive=True),
-            _a("BC ASSESSMENT", decisive=True),
-            _fr("AVIS D'ÉVALUATION FONCIÈRE", decisive=True),
+            _a(
+                "PROPERTY ASSESSMENT NOTICE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "MUNICIPAL PROPERTY ASSESSMENT CORPORATION",
+                decisive=True,
+                controls=Controls.ISSUER_NAME,
+            ),
+            _a("BC ASSESSMENT", decisive=True, controls=Controls.ISSUER_NAME),
+            _fr(
+                "AVIS D'ÉVALUATION FONCIÈRE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Roll Number"),
             _fr("Numéro de matricule"),
             _a("Assessed Value"),
@@ -2776,9 +3082,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Private instrument between landlord and tenant",
         applies_to="both",
         anchors=[
-            _a("RESIDENTIAL TENANCY AGREEMENT", decisive=True),
-            _a("STANDARD FORM OF LEASE", decisive=True),
-            _fr("BAIL DE LOGEMENT", decisive=True),
+            _a(
+                "RESIDENTIAL TENANCY AGREEMENT",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("STANDARD FORM OF LEASE", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _fr("BAIL DE LOGEMENT", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Landlord"),
             _fr("Locateur"),
             _a("Tenant"),

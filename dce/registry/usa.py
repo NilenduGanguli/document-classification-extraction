@@ -23,10 +23,32 @@ Conventions honoured by this pack (and by its siblings ``canada`` / ``mexico``):
   one doctype held a decisive anchor, L1 short-circuited, and a Canadian permanent resident
   was classified ``us_green_card`` at 0.900 with ``country="US"``. A *document-class name*
   ("Identification Card", "Permanent Resident Card", "Articles of Incorporation",
-  "Account Statement", "Pasaporte") is chosen independently by every issuer in the world and
-  is never decisive, in any zone. What is decisive is a string one issuer controls: a form
-  number, an OMB control number, a statute title, an MRZ document-code prefix.
-  :func:`dce.registry.loader._check_decisive_asymmetry` enforces this at import time.
+  "Account Statement", "Pasaporte") is chosen independently by every issuer in the world, and
+  a zone does not fix that.
+
+  The rule that followed — *what is decisive is a string one issuer controls: a form number,
+  an OMB control number, a statute title, an MRZ prefix* — was a **proxy**, and measuring it
+  against ``corpus/`` retired it. It is wrong in both directions. It keeps ``Form W-9``
+  (which the corpus prints on a 1099 and on a 20-F), ``I-766`` (printed on a Canadian
+  technical report) and ``SOCIAL SECURITY ADMINISTRATION`` (printed on a W-2 and a W-9) —
+  all impeccably issuer-controlled. And it demotes ``VOIDED CHECK`` and
+  ``MORTGAGE STATEMENT``, which nothing in the registry or the corpus contradicts. The
+  property that is actually load-bearing is
+
+      **a decisive anchor must not appear on a document of another type — WHICH INCLUDES
+      BEING CITED BY ONE.**
+
+  Citation is not incidental in this domain: filings quote each other's form numbers ("Give
+  Form W-9 to the requester"), and KYC onboarding paperwork enumerates the ID classes it
+  accepts, which is how one Canadian SIN letter falsified six anchors at once.
+
+  So the claim is now **typed** rather than forbidden. Every decisive anchor names its
+  grounds in :class:`dce.models.Controls`; a document-class name is permitted only under
+  ``CLASS_NAME_UNCONTESTED``, which states out loud that the claim is weak and subjects it to
+  a stricter uniqueness rule than the strong values; and the real property is enforced
+  against documents by ``tests/test_registry_corpus_decisive.py``.
+  :func:`dce.registry.loader._check_decisive_asymmetry` still enforces the registry-internal
+  half at import time.
 * **Validators come from a declared contract.** :data:`_VALIDATOR_EXTENSIONS` states what
   each North-American validator must enforce; ``dce.extract.validate`` implements them. A
   field never names a validator that is not declared, and where no checksum exists for an
@@ -48,7 +70,7 @@ from __future__ import annotations
 
 from importlib import import_module
 
-from dce.models import Anchor, Category, DocTypeSpec, FieldSpec, Zone
+from dce.models import Anchor, Category, Controls, DocTypeSpec, FieldSpec, Zone
 
 try:  # pragma: no cover - the loader is authored alongside this pack
     from dce.registry import loader as _loader
@@ -241,6 +263,7 @@ def _a(
     *,
     lang: str = "en",
     decisive: bool = False,
+    controls: Controls | None = None,
     zone: Zone | None = None,
 ) -> Anchor:
     """Build an :class:`~dce.models.Anchor`.
@@ -249,12 +272,16 @@ def _a(
         text: Verbatim string as it is printed on the document.
         lang: Language tag of the string ("en" throughout this pack).
         decisive: True only when the string alone is near-proof of the doctype.
+        controls: What makes the decisive claim true — mandatory when ``decisive`` is
+            set, and forbidden otherwise. See :class:`dce.models.Controls`. Deliberately
+            without a default: a builder that supplied one would re-create the invisible
+            claim the field exists to prevent.
         zone: Restrict the match to a layout zone (used for generic titles).
 
     Returns:
         The anchor.
     """
-    return Anchor(text=text, lang=lang, decisive=decisive, zone=zone)
+    return Anchor(text=text, lang=lang, decisive=decisive, controls=controls, zone=zone)
 
 
 def _name_field(
@@ -341,6 +368,67 @@ def _expiry_date_field(*, required: bool = False) -> FieldSpec:
         required=required,
         labels={"en": ["Expiration Date", "Expires", "EXP", "Valid Until", "Date of Expiry"]},
         validator="generic_date",
+    )
+
+
+def _real_id_compliant_field() -> FieldSpec:
+    """Whether a state-issued licence or ID card meets the federal REAL ID standard.
+
+    This is a **property of a licence or an ID card**, not a document type of its own, and
+    saying so here is the whole point. The REAL ID Act of 2005 (Pub. L. 109-13, Div. B,
+    Title II) and its implementing rule, 6 CFR Part 37, set *minimum standards* that a
+    state-issued driver licence or identification card must meet before a federal agency
+    may accept it. They create no new credential: 6 CFR 37.17 lists the data the card must
+    carry on its face and 6 CFR 37.17(n) requires the DHS-approved security marking — the
+    star — while the card's title stays ``DRIVER LICENSE`` / ``DRIVER'S LICENSE`` or
+    ``IDENTIFICATION CARD``. There is no issuer anywhere that prints a document whose type
+    is "REAL ID".
+
+    The consequence for the registry is structural, not a matter of anchor tuning. The set
+    of REAL ID cards is a strict *subset* of ``us_drivers_license`` united with
+    ``us_state_id``: every REAL ID legitimately matches a superset doctype's anchors in
+    full, because the superset's issuer prints everything the subset does. No string can
+    separate a subset from its own superset, so any anchor asserted as decisive for a
+    "REAL ID" doctype would violate the rule that a decisive anchor picks out exactly one
+    document type. ``docs/PHOTO-ID-SOURCING.md`` predicted this before a specimen existed;
+    the specimen confirmed it, and the doctype was merged away rather than propped up.
+
+    Two facts make the same point from the issuer's side:
+
+    * The AAMVA DL/ID Card Design Standard (2020, version 10) carries compliance in element
+      ``DDA`` — "Compliance Type" — whose published values are ``F`` (fully compliant,
+      covering all REAL ID licences and ID cards) and ``N`` (non-compliant). A one-character
+      *field* in the PDF417 payload is the issuer's own answer to how this fact is recorded.
+    * The words "REAL ID" are not exclusive to a compliant card. The Virginia DMV's AAMVA
+      calibration sheet for the *standard, non-REAL-ID* licence prints them too, in the
+      legend that explains what ``DDA`` means. A string that appears on the very documents
+      it is supposed to exclude is not a discriminator in any zone.
+
+    A negative result here is **not** proof of non-compliance: the marking is usually a gold
+    or black star, which is a figure rather than text or a selection mark, and an OCR dump of
+    a compliant card routinely contains neither. ``FEDERAL LIMITS APPLY`` is the reliable
+    signal, and it is a *negative* one — it is the legend a state prints on a
+    non-compliant card.
+    """
+    return FieldSpec(
+        name="real_id_compliant",
+        attribute_key="doc.real_id_compliant",
+        type="bool",
+        labels={
+            "en": [
+                "REAL ID",
+                "REAL ID COMPLIANT",
+                "Federally compliant",
+                "Compliance Type",
+                "FEDERAL LIMITS APPLY",
+            ]
+        },
+        locators=["mark", "label", "regex"],
+        notes="Compliance is signalled by a star that is a figure, not text — absence here "
+        "is absence of evidence, not evidence of non-compliance. 'FEDERAL LIMITS "
+        "APPLY' is the reliable negative, and AAMVA element DDA ('F'/'N') is the "
+        "authoritative value when the PDF417 payload is available. Never report "
+        "'not REAL ID' from a blank result.",
     )
 
 
@@ -680,7 +768,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="U.S. Department of State",
         officially_valid=True,
         anchors=[
-            _a("P<USA", decisive=True),
+            _a("P<USA", decisive=True, controls=Controls.MRZ_PREFIX),
             _a("United States of America", zone=Zone.title),
             _a("PASSPORT", zone=Zone.title),
             _a("Department of State"),
@@ -736,8 +824,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="A travel document: retain the extracted fields rather than the card image unless "
         "retention is required.",
         anchors=[
-            _a("PASSPORT CARD", decisive=True),
-            _a("I<USA", decisive=True),
+            _a("PASSPORT CARD", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a("I<USA", decisive=True, controls=Controls.MRZ_PREFIX),
             _a("United States of America"),
             _a("Department of State"),
         ],
@@ -773,8 +861,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         "scanned PDF417 barcode payload. Keep the fields the CIP requires, not the swipe "
         "data.",
         anchors=[
-            _a("DRIVER LICENSE", decisive=True, zone=Zone.title),
-            _a("DRIVER'S LICENSE", decisive=True, zone=Zone.title),
+            _a(
+                "DRIVER LICENSE",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+                zone=Zone.title,
+            ),
+            _a("DRIVER'S LICENSE", zone=Zone.title),
             _a("Endorsements"),
             _a("Restrictions"),
             _a("Class"),
@@ -786,8 +879,6 @@ SPECS: tuple[DocTypeSpec, ...] = (
             "us_state_id": "a licence grants driving privileges and prints CLASS / "
             "ENDORSEMENTS / RESTRICTIONS; a non-driver card is titled "
             "IDENTIFICATION CARD and often says NOT FOR DRIVING",
-            "us_real_id": "REAL ID is a star marking on a licence or ID card, not a "
-            "separate credential",
             "ca_drivers_license": "Canadian cards spell LICENCE, name a province, and "
             "carry PERMIS DE CONDUIRE where they are bilingual",
         },
@@ -825,6 +916,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
                 type="string",
                 labels={"en": ["State", "Issued By"]},
             ),
+            _real_id_compliant_field(),
         ],
     ),
     DocTypeSpec(
@@ -847,7 +939,25 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # combinations. "ANSI 636" is the AAMVA issuer-identification prefix and comes
             # closest, but it lives in the PDF417 barcode payload rather than the printed
             # face, so it is not reliably in an OCR dump either.
-            _a("IDENTIFICATION CARD", zone=Zone.title),
+            #
+            # The ``zone=Zone.title`` restriction that survived that demotion has now been
+            # removed too, and the reason is a symmetry rule rather than a preference.
+            # ``ca_provincial_photo_id`` claims the identical string ``Identification Card``
+            # with no zone restriction. Two doctypes claiming one string must be equally
+            # audible on it: while this claim was title-only, any payload without a title
+            # zone — every plain-text extraction — heard the Canadian claim and not the
+            # American one, so the *zone gate* decided the jurisdiction and the evidence
+            # never got to. Measured: the Virginia DMV's AAMVA specimen for a Standard
+            # Identification Card, a document whose own barcode encodes ``DCG USA`` and
+            # ``DAJ VA``, scored ca_provincial_photo_id above us_state_id on this one
+            # asymmetric anchor. That is the same shape of defect as the decisive/
+            # non-decisive asymmetry ``_check_decisive_asymmetry`` was written for
+            # (``PERMANENT RESIDENT CARD`` on us_green_card against ca_pr_card), one level
+            # down: there the exclusivity differed, here the audibility does, and either way
+            # a bookkeeping difference between two packs settles a cross-border question.
+            # Ungated on both sides, the string is worth the same to both claimants and the
+            # rest of the evidence decides.
+            _a("IDENTIFICATION CARD"),
             _a("NOT FOR DRIVING"),
             _a("Identification No."),
             _a("DMV"),
@@ -887,48 +997,20 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _address_field(required=True),
             _issue_date_field(),
             _expiry_date_field(required=True),
+            _real_id_compliant_field(),
         ],
     ),
-    DocTypeSpec(
-        doctype_id="us_real_id",
-        label="US REAL ID-compliant Licence or Identification Card",
-        country="US",
-        category=Category.identity,
-        issuing_authority="State department of motor vehicles (REAL ID Act of 2005)",
-        officially_valid=True,
-        anchors=[
-            _a("REAL ID", decisive=True, zone=Zone.title),
-            _a("REAL ID COMPLIANT", decisive=True),
-            _a("Federally compliant"),
-            _a("DMV"),
-        ],
-        confusable_with={
-            "us_drivers_license": "REAL ID compliance is a marking on a licence — when the "
-            "card also says DRIVER LICENSE, classify it as a licence "
-            "and keep REAL ID as an attribute",
-            "us_state_id": "the same, for a non-driver card",
-        },
-        negative_anchors=["FEDERAL LIMITS APPLY", "NOT FOR FEDERAL IDENTIFICATION"],
-        fields=[
-            FieldSpec(
-                name="real_id_compliant",
-                attribute_key="doc.real_id_compliant",
-                type="bool",
-                labels={"en": ["REAL ID", "Federally compliant"]},
-                locators=["mark", "label", "regex"],
-                notes="Compliance is usually signalled by a gold or black star in the top "
-                "right corner rather than by printed text, and that star is a figure, "
-                "not a selection mark — a negative result here is NOT proof of "
-                "non-compliance. 'FEDERAL LIMITS APPLY' is the reliable negative.",
-            ),
-            _name_field(),
-            _dob_field(),
-            _address_field(required=True),
-            _expiry_date_field(),
-        ],
-        handling="A REAL ID card is still a licence or a state ID. Prefer the concrete "
-        "doctype and record compliance as an attribute.",
-    ),
+    # ``us_real_id`` used to sit here and was **merged away**, deliberately, into the
+    # ``real_id_compliant`` field that ``us_drivers_license`` and ``us_state_id`` now both
+    # carry. See :func:`_real_id_compliant_field` for the reasoning in full; the short form
+    # is that the REAL ID Act creates a standard, not a credential, so the set of REAL ID
+    # cards is a strict subset of licence-union-ID-card, and no anchor can separate a subset
+    # from its own superset. Keeping the doctype cost a wrong answer on the one specimen that
+    # exists — a Virginia DMV AAMVA calibration sheet titled "Real ID Driver's License",
+    # which is a driver's licence and was classified as one — and could never have gained a
+    # correct one. The fact a KYC reviewer actually needs ("is this card acceptable for
+    # federal identification?") survives as an extractable attribute; the doctype id that
+    # promised to answer it, and could not, does not.
     DocTypeSpec(
         doctype_id="us_ssn_card",
         label="US Social Security Card",
@@ -936,8 +1018,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="Social Security Administration (SSA)",
         anchors=[
-            _a("SOCIAL SECURITY ADMINISTRATION", decisive=True, zone=Zone.title),
-            _a("THIS NUMBER HAS BEEN ESTABLISHED FOR", decisive=True),
+            _a("SOCIAL SECURITY ADMINISTRATION", zone=Zone.title),
+            _a(
+                "THIS NUMBER HAS BEEN ESTABLISHED FOR",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a("SOCIAL SECURITY"),
             _a("NOT FOR IDENTIFICATION"),
             _a("VALID FOR WORK ONLY WITH DHS AUTHORIZATION"),
@@ -966,8 +1052,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.tax,
         issuing_authority="Internal Revenue Service (IRS)",
         anchors=[
-            _a("CP 565", decisive=True),
-            _a("We assigned you an Individual Taxpayer Identification Number", decisive=True),
+            _a("CP 565", decisive=True, controls=Controls.FORM_NUMBER),
+            _a(
+                "We assigned you an Individual Taxpayer Identification Number",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a("Individual Taxpayer Identification Number"),
             _a("Internal Revenue Service"),
             _a("CP565"),
@@ -1083,9 +1173,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         handling="Employment authorisation expires, often within a year. Record the expiry and "
         "re-verify at it rather than retaining the card image.",
         anchors=[
-            _a("EMPLOYMENT AUTHORIZATION CARD", decisive=True),
-            _a("EMPLOYMENT AUTHORIZATION DOCUMENT", decisive=True),
-            _a("I-766", decisive=True),
+            _a(
+                "EMPLOYMENT AUTHORIZATION CARD",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "EMPLOYMENT AUTHORIZATION DOCUMENT",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("I-766"),
             _a("USCIS"),
             _a("Category"),
             _a("Terms and Conditions"),
@@ -1132,8 +1230,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="State or county vital records office",
         anchors=[
-            _a("CERTIFICATE OF LIVE BIRTH", decisive=True),
-            _a("CERTIFICATION OF BIRTH", decisive=True),
+            _a(
+                "CERTIFICATE OF LIVE BIRTH",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("CERTIFICATION OF BIRTH", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("State File Number"),
             _a("Vital Records"),
             _a("Registrar"),
@@ -1191,7 +1293,11 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="U.S. Citizenship and Immigration Services (USCIS)",
         anchors=[
-            _a("CERTIFICATE OF NATURALIZATION", decisive=True),
+            _a(
+                "CERTIFICATE OF NATURALIZATION",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Department of Homeland Security"),
             _a("USCIS Registration No."),
             _a("Petition No."),
@@ -1244,7 +1350,11 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.identity,
         issuing_authority="U.S. Citizenship and Immigration Services (USCIS)",
         anchors=[
-            _a("CERTIFICATE OF CITIZENSHIP", decisive=True),
+            _a(
+                "CERTIFICATE OF CITIZENSHIP",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Department of Homeland Security"),
             _a("USCIS Registration No."),
         ],
@@ -1287,9 +1397,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="U.S. Department of Defense (DoD)",
         officially_valid=True,
         anchors=[
-            _a("UNIFORMED SERVICES IDENTIFICATION CARD", decisive=True),
-            _a("COMMON ACCESS CARD", decisive=True),
-            _a("Geneva Conventions Identification Card", decisive=True),
+            _a(
+                "UNIFORMED SERVICES IDENTIFICATION CARD",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("COMMON ACCESS CARD", decisive=True, controls=Controls.ISSUER_NAME),
+            _a(
+                "Geneva Conventions Identification Card",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Department of Defense"),
             _a("DoD ID"),
             _a("Pay Grade"),
@@ -1334,9 +1452,9 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Internal Revenue Service (IRS)",
         applies_to="both",
         anchors=[
-            _a("Request for Taxpayer Identification Number and Certification", decisive=True),
-            _a("Form W-9", decisive=True),
-            _a("Go to www.irs.gov/FormW9", decisive=True),
+            _a("Request for Taxpayer Identification Number and Certification"),
+            _a("Form W-9"),
+            _a("Go to www.irs.gov/FormW9", decisive=True, controls=Controls.ISSUER_TEMPLATE),
             _a("Internal Revenue Service"),
             _a("Department of the Treasury"),
             _a("Backup Withholding"),
@@ -1413,9 +1531,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a(
                 "Certificate of Foreign Status of Beneficial Owner for United States Tax "
                 "Withholding and Reporting (Individuals)",
-                decisive=True,
             ),
-            _a("For use by individuals. Entities must use Form W-8BEN-E", decisive=True),
+            _a(
+                "For use by individuals. Entities must use Form W-8BEN-E",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a("Internal Revenue Service"),
             _a("Foreign tax identifying number"),
             _a("Claim of Tax Treaty Benefits"),
@@ -1495,9 +1616,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a(
                 "Certificate of Status of Beneficial Owner for United States Tax Withholding "
                 "and Reporting (Entities)",
-                decisive=True,
             ),
-            _a("For use by entities. Individuals must use Form W-8BEN", decisive=True),
+            _a(
+                "For use by entities. Individuals must use Form W-8BEN",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             # NOT decisive: the *individual* W-8BEN prints "Entities must use Form
             # W-8BEN-E" in its own header, so the bare form number appears on both forms
             # and would misclassify every W-8BEN as a W-8BEN-E.
@@ -1557,9 +1681,9 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.tax,
         issuing_authority="Employer; filed with the Social Security Administration",
         anchors=[
-            _a("OMB No. 1545-0008", decisive=True),
-            _a("Wage and Tax Statement", decisive=True),
-            _a("Form W-2", decisive=True),
+            _a("OMB No. 1545-0008", decisive=True, controls=Controls.CONTROL_NUMBER),
+            _a("Wage and Tax Statement", decisive=True, controls=Controls.ISSUER_TEMPLATE),
+            _a("Form W-2"),
             _a("Social security wages"),
             _a("Wages, tips, other compensation"),
             _a("Federal income tax withheld"),
@@ -1605,11 +1729,11 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.tax,
         issuing_authority="Payer; filed with the Internal Revenue Service (IRS)",
         anchors=[
-            _a("1099-NEC", decisive=True),
-            _a("1099-MISC", decisive=True),
-            _a("1099-INT", decisive=True),
-            _a("1099-DIV", decisive=True),
-            _a("OMB No. 1545-0116", decisive=True),
+            _a("1099-NEC"),
+            _a("1099-MISC"),
+            _a("1099-INT"),
+            _a("1099-DIV"),
+            _a("OMB No. 1545-0116", decisive=True, controls=Controls.CONTROL_NUMBER),
             _a("Nonemployee compensation"),
             _a("PAYER'S TIN"),
             _a("RECIPIENT'S TIN"),
@@ -1665,9 +1789,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.tax,
         issuing_authority="Internal Revenue Service (IRS)",
         anchors=[
-            _a("U.S. Individual Income Tax Return", decisive=True),
-            _a("OMB No. 1545-0074", decisive=True),
-            _a("Form 1040", decisive=True),
+            _a(
+                "U.S. Individual Income Tax Return",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
+            _a("OMB No. 1545-0074", decisive=True, controls=Controls.CONTROL_NUMBER),
+            _a("Form 1040"),
             _a("Filing Status"),
             _a("Adjusted gross income"),
             _a("Standard Deduction"),
@@ -1728,9 +1856,17 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Internal Revenue Service (IRS)",
         applies_to="corporate",
         anchors=[
-            _a("CP 575", decisive=True),
-            _a("We assigned you an Employer Identification Number", decisive=True),
-            _a("Thank you for applying for an Employer Identification Number", decisive=True),
+            _a("CP 575", decisive=True, controls=Controls.FORM_NUMBER),
+            _a(
+                "We assigned you an Employer Identification Number",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
+            _a(
+                "Thank you for applying for an Employer Identification Number",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a("CP575"),
             _a("Internal Revenue Service"),
             _a("Employer Identification Number"),
@@ -1756,7 +1892,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Internal Revenue Service (IRS)",
         applies_to="corporate",
         anchors=[
-            _a("EIN Verification Letter", decisive=True),
+            _a("EIN Verification Letter", decisive=True, controls=Controls.ISSUER_TEMPLATE),
             _a("147C"),
             _a("Internal Revenue Service"),
             _a("Employer Identification Number"),
@@ -1892,7 +2028,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Secretary of State of the state of organization",
         applies_to="corporate",
         anchors=[
-            _a("ARTICLES OF ORGANIZATION", decisive=True),
+            _a("ARTICLES OF ORGANIZATION", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             # NOT decisive — see the matching comment on us_articles_incorporation. Texas,
             # New Jersey and Washington title the *corporation's* formation instrument
             # "Certificate of Formation" too, so this string identifies the filing but not the
@@ -1953,8 +2089,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Private instrument executed by the members",
         applies_to="corporate",
         anchors=[
-            _a("OPERATING AGREEMENT", decisive=True),
-            _a("LIMITED LIABILITY COMPANY OPERATING AGREEMENT", decisive=True),
+            _a("OPERATING AGREEMENT", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a(
+                "LIMITED LIABILITY COMPANY OPERATING AGREEMENT",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("Membership Interest"),
             _a("Manager-Managed"),
             _a("Capital Contribution"),
@@ -2015,7 +2155,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Private instrument adopted by the board of directors",
         applies_to="corporate",
         anchors=[
-            _a("BYLAWS", decisive=True, zone=Zone.title),
+            _a("BYLAWS", zone=Zone.title),
             # DEMOTED from decisive, and this is a measurement rather than a preference.
             # "Amended and Restated Bylaws of <company>" is how every SEC registrant captions
             # Exhibit 3.x of its annual report, so the string is printed, ungated and in the
@@ -2079,9 +2219,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Secretary of State",
         applies_to="corporate",
         anchors=[
-            _a("CERTIFICATE OF GOOD STANDING", decisive=True),
-            _a("CERTIFICATE OF EXISTENCE", decisive=True),
-            _a("is in good standing", decisive=True),
+            _a(
+                "CERTIFICATE OF GOOD STANDING",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("CERTIFICATE OF EXISTENCE", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a("is in good standing", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Secretary of State"),
             _a("duly incorporated"),
         ],
@@ -2125,8 +2269,16 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Financial Crimes Enforcement Network (FinCEN)",
         applies_to="corporate",
         anchors=[
-            _a("BENEFICIAL OWNERSHIP INFORMATION REPORT", decisive=True),
-            _a("Corporate Transparency Act", decisive=True),
+            _a(
+                "BENEFICIAL OWNERSHIP INFORMATION REPORT",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a(
+                "Corporate Transparency Act",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
             _a("BOIR"),
             _a("FinCEN"),
             _a("Reporting Company"),
@@ -2179,7 +2331,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Financial Crimes Enforcement Network (FinCEN)",
         applies_to="corporate",
         anchors=[
-            _a("BOIR SUBMISSION CONFIRMATION", decisive=True),
+            _a("BOIR SUBMISSION CONFIRMATION", decisive=True, controls=Controls.ISSUER_TEMPLATE),
             _a("FinCEN Identifier"),
             _a("Submission Tracking ID"),
             _a("BOIR ID"),
@@ -2367,8 +2519,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Private instrument between landlord and tenant",
         applies_to="both",
         anchors=[
-            _a("RESIDENTIAL LEASE AGREEMENT", decisive=True),
-            _a("LEASE AGREEMENT", decisive=True, zone=Zone.title),
+            _a(
+                "RESIDENTIAL LEASE AGREEMENT",
+                decisive=True,
+                controls=Controls.CLASS_NAME_UNCONTESTED,
+            ),
+            _a("LEASE AGREEMENT", zone=Zone.title),
             _a("Landlord"),
             _a("Tenant"),
             _a("Premises"),
@@ -2434,7 +2590,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.financial,
         issuing_authority="Mortgage servicer",
         anchors=[
-            _a("MORTGAGE STATEMENT", decisive=True),
+            _a("MORTGAGE STATEMENT", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Principal Balance"),
             _a("Escrow"),
             _a("Loan Number"),
@@ -2495,8 +2651,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.financial,
         issuing_authority="Employer or payroll provider",
         anchors=[
-            _a("EARNINGS STATEMENT", decisive=True),
-            _a("STATEMENT OF EARNINGS", decisive=True),
+            _a("EARNINGS STATEMENT", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a("STATEMENT OF EARNINGS", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Gross Pay"),
             _a("Net Pay"),
             _a("Pay Period"),
@@ -2548,7 +2704,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         category=Category.financial,
         issuing_authority="Depository institution",
         anchors=[
-            _a("VOIDED CHECK", decisive=True),
+            _a("VOIDED CHECK", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Pay to the order of"),
             _a("VOID"),
             _a("Memo"),
@@ -2602,9 +2758,9 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="Private instrument executed by the settlor and trustee",
         applies_to="corporate",
         anchors=[
-            _a("TRUST AGREEMENT", decisive=True, zone=Zone.title),
-            _a("DECLARATION OF TRUST", decisive=True),
-            _a("REVOCABLE LIVING TRUST", decisive=True),
+            _a("TRUST AGREEMENT", zone=Zone.title),
+            _a("DECLARATION OF TRUST", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
+            _a("REVOCABLE LIVING TRUST", decisive=True, controls=Controls.CLASS_NAME_UNCONTESTED),
             _a("Grantor"),
             _a("Settlor"),
             _a("Trustee"),
@@ -2719,7 +2875,11 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # The Form 10-K cover-page requirement that no other Exchange Act form carries.
             # Truncated before "common equity"/"stock", which is the one part that varies
             # between issuers; everything up to "non-voting" is the settled wording.
-            _a("aggregate market value of the voting and non-voting", decisive=True),
+            _a(
+                "aggregate market value of the voting and non-voting",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             # NOT decisive: printed 11 times inside Apple's 10-Q and 10 times inside its proxy
             # statement. See the section note above.
             _a("FORM 10-K"),
@@ -2810,6 +2970,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
                 "QUARTERLY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES "
                 "EXCHANGE ACT OF 1934",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             # NOT decisive: appears once inside the 10-K and twice inside the proxy statement.
             _a("FORM 10-Q"),
@@ -2861,11 +3022,16 @@ SPECS: tuple[DocTypeSpec, ...] = (
         anchors=[
             # The 8-K's own dateline caption. Verified present once on a filed 8-K and absent
             # from the 10-K, 10-Q, DEF 14A, 20-F and both Schedule 13 filings measured.
-            _a("Date of Report (Date of earliest event reported)", decisive=True),
+            _a(
+                "Date of Report (Date of earliest event reported)",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a(
                 "Check the appropriate box below if the Form 8-K filing is intended to "
                 "simultaneously satisfy the filing obligation",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             # NOT decisive: cross-referenced from the 10-K and the proxy statement.
             _a("FORM 8-K"),
@@ -2919,10 +3085,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a(
                 "Proxy Statement Pursuant to Section 14(a) of the Securities Exchange Act of 1934",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             _a(
                 "Confidential, for Use of the Commission Only (as permitted by Rule 14a-6(e)(2))",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             # NOT decisive: a 10-K that incorporates the proxy by reference names the schedule,
             # and DEFA14A / PRE 14A carry it too.
@@ -3019,6 +3187,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
                 "SHELL COMPANY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES "
                 "EXCHANGE ACT OF 1934",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             # NOT decisive: the 6-K cover asks whether the issuer files under cover of Form
             # 20-F or Form 40-F, so the designator appears on a document that is not a 20-F.
@@ -3098,6 +3267,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a(
                 "REPORT OF FOREIGN PRIVATE ISSUER PURSUANT TO RULE 13a-16 OR 15d-16",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
             _a("FORM 6-K"),
             _a("UNDER THE SECURITIES EXCHANGE ACT OF 1934"),
@@ -3153,7 +3323,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # 13d-102, so the two citations separate the schedules cleanly where the schedule
             # NAMES do not: a 13D cover routinely refers to Schedule 13G in the Rule 13d-1(e)
             # paragraph, and a proxy statement refers to both.
-            _a("Rule 13d-101", decisive=True),
+            _a("Rule 13d-101", decisive=True, controls=Controls.STATUTE_TITLE),
             _a("SCHEDULE 13D"),
             _a("Information to be Included in Statements Filed Pursuant"),
             _a("Under the Securities Exchange Act of 1934"),
@@ -3246,7 +3416,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
         "Exchange Commission",
         applies_to="both",
         anchors=[
-            _a("Rule 13d-102", decisive=True),
+            _a("Rule 13d-102", decisive=True, controls=Controls.STATUTE_TITLE),
             # NOT decisive: measured on the 13D cover, the DEF 14A and the 20-F as well.
             _a("SCHEDULE 13G"),
             _a(
@@ -3322,8 +3492,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # Form 5's. Each doctype is therefore anchored on the part of its own title that
             # the other two cannot contain — "INITIAL" here, "ANNUAL ... OF SECURITIES" on
             # Form 5 — plus its own OMB control number, which the XSL-rendered filing keeps.
-            _a("INITIAL STATEMENT OF BENEFICIAL OWNERSHIP OF SECURITIES", decisive=True),
-            _a("OMB Number: 3235-0104", decisive=True),
+            _a(
+                "INITIAL STATEMENT OF BENEFICIAL OWNERSHIP OF SECURITIES",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
+            _a("OMB Number: 3235-0104", decisive=True, controls=Controls.CONTROL_NUMBER),
             _a("Date of Event Requiring Statement"),
             _a("Name and Address of Reporting Person"),
             _a("Issuer Name and Ticker or Trading Symbol"),
@@ -3393,8 +3567,8 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # contiguous token substring of Form 5's "ANNUAL STATEMENT OF CHANGES IN
             # BENEFICIAL OWNERSHIP OF SECURITIES", so declaring it decisive would classify
             # every Form 5 as a Form 4. These two captions are Form 4's alone.
-            _a("Date of Earliest Transaction", decisive=True),
-            _a("OMB Number: 3235-0287", decisive=True),
+            _a("Date of Earliest Transaction", decisive=True, controls=Controls.ISSUER_TEMPLATE),
+            _a("OMB Number: 3235-0287", decisive=True, controls=Controls.CONTROL_NUMBER),
             _a("STATEMENT OF CHANGES IN BENEFICIAL OWNERSHIP"),
             _a(
                 "Filed pursuant to Section 16(a) of the Securities Exchange Act of 1934 or "
@@ -3477,9 +3651,14 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a(
                 "ANNUAL STATEMENT OF CHANGES IN BENEFICIAL OWNERSHIP OF SECURITIES",
                 decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
             ),
-            _a("OMB Number: 3235-0362", decisive=True),
-            _a("Statement for Issuer's Fiscal Year Ended", decisive=True),
+            _a("OMB Number: 3235-0362", decisive=True, controls=Controls.CONTROL_NUMBER),
+            _a(
+                "Statement for Issuer's Fiscal Year Ended",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a(
                 "Filed pursuant to Section 16(a) of the Securities Exchange Act of 1934 or "
                 "Section 30(h) of the Investment Company Act of 1940"
@@ -3536,8 +3715,12 @@ SPECS: tuple[DocTypeSpec, ...] = (
         "Commission",
         applies_to="corporate",
         anchors=[
-            _a("Notice of Exempt Offering of Securities", decisive=True),
-            _a("OMB Number: 3235-0076", decisive=True),
+            _a(
+                "Notice of Exempt Offering of Securities",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
+            _a("OMB Number: 3235-0076", decisive=True, controls=Controls.CONTROL_NUMBER),
             _a("FORM D"),
             _a("Issuer's Identity"),
             _a("CIK (Filer ID Number)"),
@@ -3616,8 +3799,16 @@ SPECS: tuple[DocTypeSpec, ...] = (
         issuing_authority="U.S. Securities and Exchange Commission / IARD",
         applies_to="corporate",
         anchors=[
-            _a("UNIFORM APPLICATION FOR INVESTMENT ADVISER REGISTRATION", decisive=True),
-            _a("REPORT BY EXEMPT REPORTING ADVISERS", decisive=True),
+            _a(
+                "UNIFORM APPLICATION FOR INVESTMENT ADVISER REGISTRATION",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
+            _a(
+                "REPORT BY EXEMPT REPORTING ADVISERS",
+                decisive=True,
+                controls=Controls.ISSUER_TEMPLATE,
+            ),
             _a("FORM ADV"),
             _a("Identifying Information"),
             _a("Regulatory Assets Under Management"),
@@ -3697,7 +3888,7 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # Unlike the periodic-report designators, X-17A-5 is not cross-referenced from
             # other document types: the only documents that name it are the FOCUS report and
             # the annual audited report, which are Parts IIA and III of the same form.
-            _a("FORM X-17A-5", decisive=True),
+            _a("FORM X-17A-5", decisive=True, controls=Controls.FORM_NUMBER),
             _a("FOCUS Report"),
             _a("FACING PAGE"),
             _a("REGISTRANT IDENTIFICATION"),

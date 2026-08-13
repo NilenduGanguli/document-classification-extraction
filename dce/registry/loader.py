@@ -20,6 +20,25 @@ UIDAI header — so the rule is not "never collide", it is
 ``confusable_with`` (naming the term that separates them) **and** each must keep at least
 one decisive anchor of its own. An undeclared collision is a bug and fails loudly.
 
+**Every check in this module is blind to a lone false claim, and always will be.** They all
+compare the registry against itself, so they can only fire when a *second* doctype declares
+the same string — which means one pack declaring ``BIRTH CERTIFICATE`` decisive is invisible
+here by construction, however many foreign birth certificates it goes on to match. Four such
+claims survived review that way. Two things close the gap, and neither of them can live in
+this module:
+
+* :class:`dce.models.Controls` makes the claim **typed**: a decisive anchor has to name its
+  grounds, so the author of a document-class name has to write
+  ``controls=CLASS_NAME_UNCONTESTED`` and say out loud that the claim is weak. That much *is*
+  enforced here (:func:`_check_anchor`), and it buys the stricter uniqueness rule in
+  :func:`_check_class_name_uncontested`.
+* ``tests/test_registry_corpus_decisive.py`` enforces the real property —
+  *a decisive anchor must not match a document of a different doctype* — against the corpus,
+  because the evidence that contradicts a lone false claim is documents, and documents are
+  outside the registry. It stays a **test**: the service must not depend on ``corpus/``, and
+  this loader must stay pure. Note the direction of travel — the checks here get *weaker* as
+  the registry grows relative to the evidence; that test gets *stronger* as the corpus grows.
+
 Word counting here deliberately does *not* use :func:`dce.models.tokenize`. That tokenizer
 is ``[^\\W_]+``, and Python's ``\\w`` excludes Unicode combining marks (categories Mn/Mc),
 so every Devanagari matra splits a word: ``"आधार"`` tokenizes to ``["आध", "र"]``. Anchor
@@ -35,7 +54,7 @@ import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from importlib import import_module
 
-from dce.models import Anchor, DocTypeSpec, FieldSpec
+from dce.models import Anchor, Controls, DocTypeSpec, FieldSpec
 from dce.normalize import fold, skeletonize, tokenize_unicode
 
 __all__ = [
@@ -408,7 +427,37 @@ def _check_anchor(doctype_id: str, anchor: Anchor, country: str) -> None:
             "decomposed OCR read and the pack agree",
         )
     if not anchor.decisive:
+        # ``controls`` is the justification for a decisive claim. On an anchor that makes no
+        # such claim it is decoration, and decoration is exactly what stops
+        # ``grep -c class_name_uncontested`` from being an honest count of the weak claims.
+        if anchor.controls is not None:
+            _fail(
+                doctype_id,
+                f"anchor {text!r} is not decisive but declares controls="
+                f"{anchor.controls.value!r}; controls justifies a decisive claim and means "
+                "nothing without one — drop it, or mark the anchor decisive",
+            )
         return
+    # A decisive anchor asserts near-proof of the doctype. Until this check existed, making
+    # that assertion cost one keystroke and required no justification, so declaring
+    # 'OMB No. 1545-0074' decisive and declaring 'BIRTH CERTIFICATE' decisive were
+    # indistinguishable acts — and the two cross-spec checks below cannot tell them apart
+    # either, because both compare the registry against itself and a *lone* false claim has
+    # no second claimant to collide with. Requiring the author to name the grounds is what
+    # converts that invisible violation into a question asked at authoring time: whoever
+    # wrote 'BIRTH CERTIFICATE' would have had nothing honest to put here.
+    if anchor.controls is None:
+        _fail(
+            doctype_id,
+            f"decisive anchor {text!r} does not say what makes it decisive; set controls= "
+            f"to one of {[c.value for c in Controls]} (see dce.models.Controls). A decisive "
+            "anchor asserts the string appears on this document type and no other, and that "
+            "assertion has to have grounds. If the honest answer is 'it is the name of the "
+            "document class and nothing collides with it yet', say exactly that with "
+            f"controls={Controls.CLASS_NAME_UNCONTESTED.value!r} — it is a real value, it is "
+            "counted and reported as a weak claim, and the loader holds it to a stricter "
+            "uniqueness rule than the others",
+        )
     # A decisive anchor carries fuse_weight_anchor (3.0) on its own. Short, single-word
     # decisive anchors are how a registry starts producing confident nonsense — "DL",
     # "PAN", "GST". Allow a short one only when it is pinned to a zone, because a bare
@@ -705,13 +754,42 @@ def _check_decisive_asymmetry(errors: list[str]) -> None:
     cross-jurisdiction confusion resolves to a confident identity determination in the wrong
     country's legal regime, which is the worst error a KYC classifier can make.
 
-    How to tell which you have: a decisive anchor must be a string **one issuer controls** — a
-    form number, an OMB control number, a statute title, an MRZ document-code prefix, an
-    issuing-authority name that issues only this document. A *document-class* name
-    (``IDENTIFICATION CARD``, ``ACCOUNT STATEMENT``, ``ARTICLES OF INCORPORATION``,
-    ``PASAPORTE``, ``PERMANENT RESIDENT CARD``) is chosen independently by every issuer in the
-    world. An *issuer* name that heads several doctypes in this registry
-    (``INCOME TAX DEPARTMENT``) proves the issuer, not the document.
+    **How to tell which you have — and why the old answer here was wrong.** This paragraph
+    used to read: a decisive anchor must be a string *one issuer controls* — a form number, an
+    OMB control number, a statute title, an MRZ prefix, an issuing-authority name. That was a
+    proxy for the property that actually matters, and measuring it against the corpus showed
+    it is a bad proxy in **both** directions. It keeps 26 anchors that demonstrably match
+    another doctype's documents (``Form W-9``, ``1099-NEC``, ``I-766``, ``FORM 51-101F1``,
+    ``SOCIAL SECURITY ADMINISTRATION``, ``TELMEX`` — every one of them issuer-controlled), and
+    it demotes 163 that demonstrably match nothing else (``RATION CARD``, ``PASSBOOK``,
+    ``ACTA DE NACIMIENTO``). The property is:
+
+        **A decisive anchor must not appear on a document of another type — WHICH INCLUDES
+        BEING CITED BY ONE.**
+
+    Citation is the mechanism the old rule never accounted for, and it is not incidental in
+    this domain: documents here reference each other's form numbers constantly ("Give Form W-9
+    to the requester", a 20-F listing the tax forms its holders file), and KYC onboarding
+    paperwork *enumerates the document classes it accepts* —
+    ``corpus/ca/ca_sin_confirmation.pdf`` alone breaks six anchors (``BIRTH CERTIFICATE``,
+    ``CERTIFICATE OF BIRTH``, ``CERTIFICATE OF MARRIAGE``,
+    ``CERTIFICATE OF CANADIAN CITIZENSHIP``, ``CONFIRMATION OF PERMANENT RESIDENCE``,
+    ``DRIVER'S LICENSE``) because it lists the ID it will accept, and
+    ``corpus/in/in_form60.pdf`` breaks four the same way. Issuer control is therefore not
+    sufficient, and — as the 163 show — not necessary either.
+
+    Two consequences for how a pack is written:
+
+    * The claim is now **typed**. Every decisive anchor names its grounds in
+      :class:`dce.models.Controls`, and the honest value for a document-class name is
+      ``CLASS_NAME_UNCONTESTED``, which keeps the anchor, marks it weak, and subjects it to
+      :func:`_check_class_name_uncontested`. The old prose gave an author with a class name
+      nothing to write but ``decisive=True``.
+    * The property is **enforced against documents**, not against the registry, by
+      ``tests/test_registry_corpus_decisive.py``. It has to be a test and not a check here:
+      the evidence a lone false claim contradicts lives outside the registry, and the service
+      must not depend on the corpus. Everything in this module gets *weaker* as the registry
+      grows relative to the evidence; that test gets *stronger* as the corpus grows.
 
     Same-doctype pairs are exempt throughout. A pack that declares a string decisive at
     ``zone=title`` and non-decisive ungated is expressing "worth more in the title" about one
@@ -758,6 +836,90 @@ def _check_decisive_asymmetry(errors: list[str]) -> None:
                     "shared-issuer name, or, since these are doctypes of one jurisdiction, "
                     "declare the overlap in both directions if they are one document family"
                 )
+
+
+def _check_class_name_uncontested(errors: list[str]) -> None:
+    """A ``CLASS_NAME_UNCONTESTED`` decisive anchor must have no other claimant at all.
+
+    This is the tripwire the whole tier exists for, and it is deliberately stricter than
+    both checks above it.
+
+    :func:`_check_decisive_collisions` permits a shared decisive anchor when the doctypes
+    declare each other as one document family. :func:`_check_decisive_asymmetry` permits a
+    shared string outright when the sharing doctypes are of one jurisdiction and declare the
+    overlap. Neither escape hatch is available here, because the value's own meaning removes
+    it: ``CLASS_NAME_UNCONTESTED`` says *"this is a document-class name, and it is decisive
+    only because nothing currently collides with it"*. A second claimant is precisely the
+    condition the claim was conditioned on, and a class name shared by two doctypes is not a
+    family — it is two issuers who independently chose the same words, which is what a class
+    name is.
+
+    Today the rule costs nothing: every one of these anchors is claimed by exactly one
+    doctype, which is why they were kept decisive rather than demoted. That is the point. The
+    registry grows, and the day a pack author adds a doctype that prints ``RATION CARD`` or
+    ``MORTGAGE STATEMENT``, the import fails and names both sides — instead of the older
+    behaviour, where the new doctype would simply have become unclassifiable and nothing
+    would have said so.
+    """
+    claims = anchor_claims(all_specs())
+    for spec in all_specs():
+        for anchor in spec.anchors:
+            if not anchor.decisive or anchor.controls is not Controls.CLASS_NAME_UNCONTESTED:
+                continue
+            others = sorted(claims.get(anchor_claim_key(anchor.text), frozenset()) - {
+                spec.doctype_id
+            })
+            if others:
+                errors.append(
+                    f"{spec.doctype_id!r} declares {anchor.text!r} DECISIVE with "
+                    f"controls={Controls.CLASS_NAME_UNCONTESTED.value!r}, but {others} also "
+                    "declare that string. That value means 'a document-class name, decisive "
+                    "only because nothing collides with it' — something now does, so the "
+                    "condition it was kept under has expired. Demote it (both sides print "
+                    "it, so it identifies neither), or, if this doctype really does own a "
+                    "string one issuer controls, anchor on that string instead and give it "
+                    "the controls= value that describes it"
+                )
+
+
+def _check_issuer_name_not_shared(errors: list[str]) -> None:
+    """An ``ISSUER_NAME`` may head at most one doctype's decisive claim.
+
+    :func:`_check_decisive_asymmetry` states the rule in prose — "an *issuer* name that heads
+    several doctypes in this registry (``INCOME TAX DEPARTMENT``) proves the issuer, not the
+    document" — and then does not enforce it, because the same-jurisdiction branch accepts a
+    two-way ``confusable_with`` declaration as the remedy for any shared string.
+
+    Measured, that acceptance is wrong for this species specifically.
+    ``in_certificate_incorporation`` and ``in_llp_incorporation`` both declared
+    ``MINISTRY OF CORPORATE AFFAIRS`` decisive, declared each other, passed validation — and
+    the string is printed by ``in_brsr`` and ``in_statutory_auditor_report`` documents in the
+    corpus as well. Declaring a family is the right remedy when the shared string genuinely
+    identifies the family and something *else* separates the members. An issuer name does not
+    identify the family; it identifies the issuer, who also issues everything else it issues.
+
+    Scope is deliberately narrow, and the narrowness is the measured part. The rule asks who
+    declares the string **decisive**, not who declares it. ``in_aadhaar`` anchors decisively
+    on the UIDAI header and ``in_aadhaar_masked`` lists the same header as ordinary lexical
+    evidence: one doctype is staking the identification on it, which is the shape this rule
+    permits and :func:`_check_decisive_asymmetry` already governs.
+    """
+    owners: dict[tuple[str, ...], list[str]] = {}
+    for spec in all_specs():
+        for anchor in spec.anchors:
+            if anchor.decisive and anchor.controls is Controls.ISSUER_NAME:
+                owners.setdefault(anchor_claim_key(anchor.text), []).append(spec.doctype_id)
+    for key, doc_ids in sorted(owners.items()):
+        unique = sorted(set(doc_ids))
+        if len(unique) > 1:
+            errors.append(
+                f"{unique} all declare the issuer name {' '.join(key)!r} DECISIVE. An issuer "
+                "name that heads several doctypes proves the issuer, not the document, and a "
+                "two-way confusable_with declaration does not change that — the string is "
+                "printed on every document this body issues, including the ones this "
+                "registry has not modelled yet. Demote it in all of them and let each "
+                "doctype's own form number, statute or template wording carry the claim"
+            )
 
 
 def _check_confusable_targets(errors: list[str]) -> None:
@@ -902,6 +1064,8 @@ def validate_registry() -> None:
         raise RegistryError("registry is empty; no doctype packs were imported")
     _check_decisive_collisions(errors)
     _check_decisive_asymmetry(errors)
+    _check_class_name_uncontested(errors)
+    _check_issuer_name_not_shared(errors)
     _check_confusable_targets(errors)
     _check_generic_not_greedy(errors)
     _check_validators(errors)

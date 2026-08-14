@@ -13,17 +13,31 @@ number that flatters us:
 digital PDFs with a real text layer. When a PDF has none, this tool records it as
 ``needs_ocr`` and *skips* it. It does not fall back to rasterise-and-hope, and it does not
 quietly drop the document from the denominator — it is reported in its own section, with a
-count, so the OCR decision is made deliberately and not smuggled in here. ``--ocr`` is that
-deliberate decision made explicitly: it rasterises those documents and runs them through an
-Azure Read v3.2 endpoint before classifying. It is **off by default and changes nothing when
-off** — the numbers a plain run produces are the numbers a plain run has always produced.
+count, so the OCR decision is made deliberately and not smuggled in here. Two flags are that
+deliberate decision made explicitly, and both are **off by default and change nothing when
+off** — the numbers a plain run produces are the numbers a plain run has always produced:
+
+* ``--ingest`` is the one to reach for. The file goes to the service as bytes and **the
+  service's own OCR path** reads it, with the provider ``/readyz`` reports this deployment
+  configured (``--ocr-provider`` overrides it, and can only name a provider ``/readyz``
+  already lists). Nothing is rasterised here and no OCR endpoint is called from here: the
+  harness posts a document and the service does what it does in production, which is the
+  only reason a number from this path is evidence about production rather than about this
+  tool's rasteriser.
+* ``--ocr`` is the older, harness-side path: *this tool* rasterises the pages and calls an
+  Azure Read v3.2 endpoint itself, then posts text. It measures the classifier given OCR
+  text, not the service's ingestion. When both flags are on, ``--ingest`` wins for every
+  document with no text layer — one rule, so a scanned PDF and a JPEG are never read by two
+  different engines in the same run.
 
 **OCR results are reported apart from text-layer results, always.** OCR error is a confound:
 a wrong doctype on an OCR'd scan may be the classifier's fault or the OCR engine's, and
-averaging the two together produces a number nobody can act on. Every summary is split three
-ways — ``overall``, ``text_layer`` and ``ocr`` — the per-document table carries a ``src``
-column, and OCR'd documents get their own section. Compare a run against its own
-``text_layer`` bucket, never against ``overall``.
+averaging the two together produces a number nobody can act on. Every summary is split by
+text source — ``text_layer``, ``service_ingest``, ``ocr`` (harness-side) and
+``service_ingest_ocr`` (the service's own recogniser) — with a second split by *reader*, so
+each provider that read documents in a run carries its own row count and its own rate. The
+per-document table names the reader in its ``src`` column and recognised documents get their
+own section. Compare a run against its own ``text_layer`` bucket, never against ``overall``.
 
 **Abstention is a distinct outcome, not a wrong answer.** The service is built to refuse
 rather than guess; scoring an abstention as a miss would push a reader toward exactly the
@@ -74,7 +88,10 @@ Usage::
     python tools/corpus_test.py --country in --verbose
     python tools/corpus_test.py --only us_w9,us_1040 --classify-only
     python tools/corpus_test.py --corpus-root /tmp/fake-corpus --out-dir /tmp/out
-    python tools/corpus_test.py --ocr --layout        # scans and images measured too
+    python tools/corpus_test.py --ingest               # scans and images measured too, by
+                                                      # the service's own OCR path
+    python tools/corpus_test.py --ingest --ocr-provider azure_read    # ...with Read instead
+    python tools/corpus_test.py --ocr --layout        # the harness-side OCR path
     python tools/corpus_test.py --layout --zone-dump-dir /tmp/zones   # audit the inference
 
 Exit status is always ``0``. This is a measurement tool, not a gate; a CI job that wants a
@@ -99,7 +116,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-TOOL_VERSION = "1.2.0"
+TOOL_VERSION = "1.3.0"
 
 #: Repo root, assuming this file stays at ``<repo>/tools/corpus_test.py``.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -145,6 +162,18 @@ SOURCE_OCR = "ocr"
 #: than by this harness's, so a difference between the two buckets is a difference between
 #: two readers of the same file and not between two qualities of text.
 SOURCE_INGEST = "service_ingest"
+#: The service **recognised** the bytes: the file carried no text at all, and ``dce.ingest``
+#: handed it to the OCR provider this deployment configured. A fourth bucket rather than a
+#: shade of ``service_ingest``, for the reason the whole file is split on text source: a wrong
+#: doctype here may be the recogniser's error and not the classifier's, and a bucket that
+#: mixed a DOCX's own XML with a photograph of a passport would hide exactly that. Kept
+#: distinct from ``ocr`` too — that one is *this harness's* rasteriser and endpoint, this one
+#: is production's.
+SOURCE_INGEST_OCR = "service_ingest_ocr"
+
+#: Text sources whose text came out of a recognition engine, whoever called it. Every rate
+#: built on these carries OCR error; the report says so wherever it prints one.
+SOURCES_RECOGNISED = frozenset({SOURCE_OCR, SOURCE_INGEST_OCR})
 
 # ---------------------------------------------------------------------------
 # Zones
@@ -162,12 +191,26 @@ ZONE_SOURCE_NONE = "none_all_body"             # plain text: the service labels 
 #: structure — a DOCX ``Title`` style, an HTML ``<h1>``, a PPTX title placeholder, an EML
 #: ``Subject`` — onto the zone model. Not a geometry heuristic, and not this harness's opinion.
 ZONE_SOURCE_INGEST = "service_ingest"
+#: ``dce.ingest`` called this deployment's OCR provider and mapped *its* structure. What that
+#: is worth depends entirely on the provider, which is why the provider is in every row: an
+#: ``azure_layout`` read comes back with paragraph roles and reaches ``dce/adapters.py``'s
+#: ``from_azure_layout``, so it carries real title/heading zones; ``azure_read`` and the
+#: in-process engines return lines only and the service labels every block ``body``. Either
+#: way the mapping is the service's own, so it is what production does — with the provider's
+#: ceiling on it, and OCR error underneath it.
+ZONE_SOURCE_INGEST_OCR = "service_ingest_ocr"
 
-#: Zone sources that reproduce production. Two of them now, for the same reason: production
+#: Zone sources that reproduce production. Three of them, for the same reason: production
 #: assigns these zones itself. ``azure_di_roles`` is the service's adapter reading a real
 #: Document Intelligence payload; ``service_ingest`` is the service's own parser reading a
-#: DOCX/XLSX/PPTX/ODT/HTML/EML/MSG. Every other source in this file is the harness guessing.
-ZONE_SOURCES_REAL = frozenset({ZONE_SOURCE_DI_ROLES, ZONE_SOURCE_INGEST})
+#: DOCX/XLSX/PPTX/ODT/HTML/EML/MSG; ``service_ingest_ocr`` is the service calling its own
+#: configured recogniser and mapping the answer with the same adapters. Every other source in
+#: this file is the harness guessing. "Production-faithful zones" is *not* "trustworthy text":
+#: the OCR bucket's text still came from a recogniser, and the text-source split is where that
+#: is accounted for.
+ZONE_SOURCES_REAL = frozenset(
+    {ZONE_SOURCE_DI_ROLES, ZONE_SOURCE_INGEST, ZONE_SOURCE_INGEST_OCR}
+)
 
 ZONE_TITLE = "title"
 ZONE_HEADING = "heading"
@@ -1190,14 +1233,142 @@ def load_di_sidecar(sidecar: Path) -> tuple[dict[str, Any], PdfText]:
 
 
 # ---------------------------------------------------------------------------
+# The service's own OCR path — asked about, not assumed
+# ---------------------------------------------------------------------------
+@dataclass
+class ServiceOcr:
+    """How the **service** reads a document with no text layer, read from ``/readyz``.
+
+    None of this is a constant in the harness, and that is the point. Which recogniser runs
+    is a property of the deployment under test: an operator switches providers with an
+    environment variable, and a harness carrying its own default would keep reporting the
+    provider it was written against long after the service stopped using it. So the default
+    is whatever ``/readyz`` says (``ocr.provider``), ``--ocr-provider`` may only name
+    something in ``ocr.configured_providers``, and both facts land in the report.
+
+    The pin is always sent explicitly once resolved, even when it equals the default. That
+    turns "which engine read this document" from an inference into a contract: the service
+    honours the pin or refuses the request with ``ocr_provider_mismatch`` — it never
+    substitutes — so the provider recorded in a row is the provider that read the document.
+    """
+
+    #: The provider this run pins. Empty when no recogniser is usable here.
+    provider: str = ""
+    #: What ``/readyz`` reports as ``ocr.provider`` — the one that runs unpinned.
+    default_provider: str = ""
+    #: Everything ``ocr_provider`` will accept on this deployment.
+    configured: tuple[str, ...] = ()
+    #: True when :attr:`provider` came from ``--ocr-provider`` rather than from ``/readyz``.
+    pinned_by_operator: bool = False
+    #: True when a document with no text layer can actually be read here.
+    available: bool = False
+    #: Whether reading a document with :attr:`provider` is a call to another host, and where.
+    network: bool = False
+    endpoint_host: str = ""
+    #: ``roles`` (paragraph roles survive, so title-gated anchors can fire) or ``lines``.
+    structure: str = ""
+    #: Why :attr:`available` is false, or why the deployment's own status block is unhappy.
+    problem: str = ""
+
+
+def fetch_service_ocr(
+    base_url: str, api_key: str, timeout: float, requested: str = ""
+) -> ServiceOcr:
+    """Ask ``/readyz`` which recogniser this deployment uses, and resolve the pin against it.
+
+    Never raises: a service too old to publish an ``ocr`` block, or one with no recogniser
+    configured, is a *finding* about that deployment and belongs in the report next to the
+    documents it could not read — not a traceback that costs the other 150 documents their
+    run.
+
+    Args:
+        requested: ``--ocr-provider``, or ``""`` to take the deployment's default.
+
+    Returns:
+        A :class:`ServiceOcr`. ``available`` is false, with a ``problem`` that says why,
+        whenever a document with no text layer cannot be read on this deployment.
+    """
+    try:
+        body = get_json(f"{base_url}/readyz", api_key, min(timeout, 15.0))
+    except HarnessError as exc:
+        return ServiceOcr(problem=f"cannot read {base_url}/readyz: {exc}")
+
+    block = body.get("ocr")
+    if not isinstance(block, dict):
+        return ServiceOcr(
+            problem=(
+                "this service's /readyz carries no 'ocr' block, so it cannot say which "
+                "recogniser it uses; documents with no text layer stay unmeasured"
+            )
+        )
+
+    configured = tuple(str(p) for p in (block.get("configured_providers") or []))
+    default = str(block.get("provider") or "")
+    rows = {
+        str(p.get("name")): p
+        for p in (block.get("providers") or [])
+        if isinstance(p, dict) and p.get("name")
+    }
+    wanted = (requested or "").strip().lower()
+
+    if not configured or default in ("", "none"):
+        return ServiceOcr(
+            default_provider=default,
+            configured=configured,
+            problem=(
+                "this deployment has configured no recogniser (/readyz reports "
+                f"ocr.provider={default or 'none'!r}), so it cannot read a document that "
+                "carries no text. Documents with no text layer stay unmeasured, which is "
+                "the service's own honest answer and not a harness limitation"
+            ),
+        )
+    if wanted and wanted not in configured:
+        return ServiceOcr(
+            default_provider=default,
+            configured=configured,
+            pinned_by_operator=True,
+            problem=(
+                f"--ocr-provider={wanted!r} is not configured on this deployment. /readyz "
+                f"lists {', '.join(configured)}. Refusing to substitute: the service would "
+                "refuse the pin too, and a run that quietly used a different engine would "
+                "put the wrong provider in every row of this report"
+            ),
+        )
+
+    provider = wanted or default
+    row = rows.get(provider) or {}
+    problem = str(row.get("reason") or "") if not row.get("available", True) else ""
+    return ServiceOcr(
+        provider=provider,
+        default_provider=default,
+        configured=configured,
+        pinned_by_operator=bool(wanted),
+        available=not problem,
+        network=bool(row.get("network")),
+        endpoint_host=str(row.get("endpoint") or ""),
+        structure=str(row.get("structure") or ""),
+        problem=problem,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Payloads and HTTP
 # ---------------------------------------------------------------------------
-def build_ingest_payload(doc_id: str, path: Path, limits_mb: int = 0) -> dict[str, Any]:
+def build_ingest_payload(
+    doc_id: str, path: Path, limits_mb: int = 0, ocr_provider: str = ""
+) -> dict[str, Any]:
     """The request body for the service-side ingestion path.
 
     The whole file goes over as base64 with ``ingest`` set, and the service decides what it
     is from the bytes. The filename is passed as the hint it is — the service will not let it
     choose a parser — because it is genuinely useful for telling a ``.csv`` from a ``.txt``.
+
+    Args:
+        ocr_provider: Sent as ``ingest.ocr_provider`` when non-empty, and only for documents
+            that actually need recognising. It is deliberately **not** sent on every request:
+            the pin is validated against the deployment even when nothing would be
+            recognised, so pinning a provider while uploading a DOCX would turn a
+            perfectly readable file into a ``400`` on a deployment with no OCR configured.
 
     Raises:
         HarnessError: the file cannot be read, or is over ``limits_mb``.
@@ -1208,10 +1379,13 @@ def build_ingest_payload(doc_id: str, path: Path, limits_mb: int = 0) -> dict[st
         raise HarnessError(f"cannot read {path}: {exc}") from exc
     if limits_mb and len(data) > limits_mb * 1024 * 1024:
         raise HarnessError(f"file is {len(data) / 1e6:.1f} MB, over the --ingest-max-mb cap")
+    ingest: dict[str, Any] = {"filename": path.name}
+    if ocr_provider:
+        ingest["ocr_provider"] = ocr_provider
     return {
         "doc_id": doc_id,
         "content_base64": base64.b64encode(data).decode("ascii"),
-        "ingest": {"filename": path.name},
+        "ingest": ingest,
     }
 
 
@@ -1523,13 +1697,266 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+# ---------------------------------------------------------------------------
+# The service-side ingestion path
+# ---------------------------------------------------------------------------
+#: A ``source.note`` from the service that begins this way is the service saying it *read*
+#: the document rather than parsed it — the remote wording ("recognised by <engine> at
+#: <host>…") and the in-process wording ("recognised in this process by <engine>…") both
+#: start here. Used only to **corroborate** what this harness already decided from the bytes,
+#: never as the sole basis: if the two disagree the disagreement is recorded in the row.
+_RECOGNISED_NOTE_PREFIX = "recognised"
+
+
+def _service_read(body: dict[str, Any]) -> dict[str, Any]:
+    """The service's own account of which reading of the document it scored.
+
+    ``/process`` returns this as ``source``; ``--classify-only`` currently gets ``null``, so
+    every caller has to cope with an empty answer rather than assume one.
+    """
+    source = body.get("source")
+    if not isinstance(source, dict):
+        return {}
+    return {
+        "provider": str(source.get("provider") or ""),
+        "remote": bool(source.get("remote")),
+        "endpoint_host": str(source.get("endpoint_host") or ""),
+        "note": str(source.get("note") or "")[:400],
+    }
+
+
+def _unmeasured(record: dict[str, Any], status: str, reason: str) -> None:
+    """Record a document that produced no classification, and take its zone source back.
+
+    "Unmeasured" is not a zone source. A row that never reached the classifier must not
+    appear in a zone bucket, or a deployment with no recogniser would show a
+    ``service_ingest_ocr`` bucket of documents it never read — which is exactly the kind of
+    number that gets quoted.
+    """
+    record["status"] = status
+    record["reason"] = reason
+    record["zones"] = dict(record.get("zones") or {}, source=None, counts={})
+
+
+def post_service_ingest(
+    entry: ManifestEntry,
+    record: dict[str, Any],
+    doc_path: Path,
+    doc_id: str,
+    *,
+    base_url: str,
+    endpoint: str,
+    api_key: str,
+    timeout: float,
+    max_mb: int,
+    classify_only: bool,
+    show_values: bool,
+    needs_recognition: bool,
+    service_ocr: ServiceOcr,
+) -> None:
+    """Post one file's bytes to the service and score what comes back. Mutates ``record``.
+
+    One function for both reasons a document takes this path, because they are the same
+    request and splitting them would be two places to get the reporting wrong:
+
+    * **the file has a text layer this harness cannot read** — a DOCX, an XLSX, an HTML
+      filing — and ``dce.ingest`` parses it in-process. ``needs_recognition`` is False, no
+      provider is pinned, and the row lands in ``service_ingest``.
+    * **the file has no text at all** — a JPEG, or a PDF whose pages are pictures. Then
+      ``needs_recognition`` is True, the resolved provider is pinned, the service's own OCR
+      path reads it, and the row lands in ``service_ingest_ocr``, apart from every text-layer
+      rate in the report.
+
+    A ``422`` is the service saying there was nothing to read; a ``400`` from a document that
+    needed recognising is the recogniser failing on it. Neither is a classification, so both
+    stay out of every rate — the first has always been ``needs_ocr`` here and the second joins
+    it, because scoring "the OCR engine choked" as an abstention would credit the classifier
+    with a decision it never made. A ``400`` that is ``ocr_provider_mismatch`` is the one
+    exception: that is this harness pinning a provider the deployment does not have, a fault
+    in the run rather than in the document, and it stays an ERROR so it cannot be mistaken
+    for a property of the corpus.
+    """
+    provider = service_ocr.provider if needs_recognition else ""
+    record["text_source"] = SOURCE_INGEST_OCR if needs_recognition else SOURCE_INGEST
+    record["zones"] = {
+        "source": ZONE_SOURCE_INGEST_OCR if needs_recognition else ZONE_SOURCE_INGEST,
+        "counts": {},
+        "basis": (
+            (
+                f"dce.ingest handed the file to {provider} inside the service and mapped what "
+                f"came back with the service's own adapters ({service_ocr.structure or '?'} "
+                "structure); this harness saw neither the text nor the zones"
+            )
+            if needs_recognition
+            else (
+                "dce.ingest parsed the file inside the service and mapped the format's "
+                "own stated structure onto the zone model; this harness saw no text"
+            )
+        ),
+        "payload": "content_base64+ingest",
+        "sidecar": "",
+    }
+    record["service_ocr"] = {
+        "requested_provider": provider,
+        "needs_recognition": needs_recognition,
+        "network": service_ocr.network if needs_recognition else False,
+        "endpoint_host": service_ocr.endpoint_host if needs_recognition else "",
+        "structure": service_ocr.structure if needs_recognition else "",
+        "pinned_by_operator": service_ocr.pinned_by_operator if needs_recognition else False,
+        "reported_by_service": {},
+        "agrees_with_service": None,
+    }
+
+    if needs_recognition and not service_ocr.available:
+        # Nothing was sent. The deployment cannot read this document, and saying so is a
+        # measurement — of the deployment — rather than a gap in the harness.
+        _unmeasured(
+            record,
+            STATUS_NEEDS_OCR,
+            "no usable text layer, and the service cannot recognise it: "
+            f"{service_ocr.problem or 'no recogniser is available on this deployment'}",
+        )
+        return
+
+    try:
+        payload = build_ingest_payload(doc_id, doc_path, max_mb, provider)
+        status, body, elapsed = post_json(
+            f"{base_url}{endpoint}",
+            payload,
+            api_key,
+            timeout,
+            allow_statuses=frozenset({400, 422}),
+        )
+    except HarnessError as exc:
+        _unmeasured(record, STATUS_ERROR, str(exc))
+        return
+
+    record["http"] = {"status": status, "elapsed_ms": elapsed}
+    detail = body.get("detail") if isinstance(body.get("detail"), dict) else {}
+
+    if status == 422:
+        # The service read the bytes and found no text. Same bucket as a scanned PDF —
+        # unmeasured, not broken — but with the service's own reason attached instead of
+        # the harness's guess at one.
+        _unmeasured(
+            record,
+            STATUS_NEEDS_OCR,
+            str(detail.get("reason") or "the service returned 422 without a reason"),
+        )
+        record["ingest"] = detail
+        return
+
+    if status == 400:
+        code = str(detail.get("error") or "")
+        text = str(detail.get("detail") or body.get("detail") or "")[:400]
+        record["ingest"] = detail
+        if needs_recognition and code != "ocr_provider_mismatch":
+            _unmeasured(
+                record,
+                STATUS_NEEDS_OCR,
+                f"the service's recogniser ({provider}) could not read it "
+                f"— {code or 'HTTP 400'}: {text}",
+            )
+        else:
+            _unmeasured(
+                record,
+                STATUS_ERROR,
+                f"HTTP 400 from the service ({code or 'no code'}): {text}",
+            )
+        return
+
+    record.update(score_document(entry, body, classify_only, show_values))
+
+    # What the SERVICE says it did, next to what this harness expected it to do. They should
+    # agree; when they do not, the row says so rather than one of them silently winning. The
+    # honest reading of a disagreement is that this harness's "no usable text layer" floor
+    # (60 alphanumeric characters) and the service's own (40, in dce/ingest/pdf.py) are not
+    # the same number, so a document between the two is parsed by the service and merely
+    # *expected* to be recognised here.
+    reported = _service_read(body)
+    record["service_ocr"]["reported_by_service"] = reported
+    if reported:
+        recognised = reported["remote"] or reported["note"].strip().lower().startswith(
+            _RECOGNISED_NOTE_PREFIX
+        )
+        record["service_ocr"]["agrees_with_service"] = recognised == needs_recognition
+        record["text_source"] = SOURCE_INGEST_OCR if recognised else SOURCE_INGEST
+        record["zones"]["source"] = (
+            ZONE_SOURCE_INGEST_OCR if recognised else ZONE_SOURCE_INGEST
+        )
+        if recognised != needs_recognition:
+            record["zones"]["basis"] = (
+                f"{record['zones']['basis']} — NOTE: the service reports it "
+                f"{'recognised' if recognised else 'parsed a text layer from'} this document, "
+                "which is not what this harness expected; the service's account wins and this "
+                "row is bucketed by it"
+            )
+    else:
+        record["text_source"] = SOURCE_INGEST_OCR if needs_recognition else SOURCE_INGEST
+
+
+#: Text sources that are not a reading at all. A document nothing could read is attributed to
+#: no reader — filing six unread scans under "PyMuPDF" would make PyMuPDF look like it had
+#: failed on them, when in truth it was never asked.
+_UNREAD_READER = "(unread — needs_ocr / error)"
+
+
+def _reader_of(document: dict[str, Any]) -> str:
+    """Which engine produced the text this document was scored on, named in full.
+
+    The provider is part of the measurement, not a footnote: ``azure_layout`` returns
+    paragraph roles and ``azure_read`` does not, so the same document scored through the two
+    is two different experiments. Every table that carries a rate carries this next to it.
+    """
+    if document.get("status") not in SCORED_STATUSES:
+        return _UNREAD_READER
+    source = document.get("text_source")
+    if source == SOURCE_OCR:
+        engine = (document.get("ocr") or {}).get("engine") or "?"
+        return f"harness OCR — {engine}"
+    if source == SOURCE_INGEST_OCR:
+        service = document.get("service_ocr") or {}
+        provider = (
+            service.get("requested_provider")
+            or (service.get("reported_by_service") or {}).get("provider")
+            or "?"
+        )
+        return f"service OCR — {provider}"
+    if source == SOURCE_INGEST:
+        return "dce.ingest — the file's own text"
+    return "PyMuPDF — the file's own text layer"
+
+
+def _reader_short(document: dict[str, Any]) -> str:
+    """The same fact, narrow enough for a table column. Always names the OCR provider."""
+    source = document.get("text_source")
+    if source == SOURCE_OCR:
+        return f"OCR/{(document.get('ocr') or {}).get('engine') or '?'}"
+    if source == SOURCE_INGEST_OCR:
+        service = document.get("service_ocr") or {}
+        provider = (
+            service.get("requested_provider")
+            or (service.get("reported_by_service") or {}).get("provider")
+            or "?"
+        )
+        return f"OCR/{provider}"
+    if source == SOURCE_INGEST:
+        return "ingest"
+    return "text"
+
+
 def summarise(documents: list[dict[str, Any]]) -> dict[str, Any]:
     """Counts and the two accuracies: overall, per country, per text source, per zone source.
 
-    ``text_layer`` and ``ocr`` are reported as separate buckets and not merely as a
-    breakdown of ``overall``. A run with ``--ocr`` on adds documents whose text came from a
-    recognition engine, so its ``overall`` is not comparable with a previous run's; its
-    ``text_layer`` bucket is, exactly. Regression checks belong there.
+    ``text_layer``, ``service_ingest``, ``ocr`` and ``service_ingest_ocr`` are reported as
+    separate buckets and not merely as a breakdown of ``overall``. A run that switches on
+    either OCR path adds documents whose text came from a recognition engine, so its
+    ``overall`` is not comparable with a previous run's; its ``text_layer`` bucket is,
+    exactly. Regression checks belong there.
+
+    ``by_reader`` is the same split one level finer, keyed by the engine that actually
+    produced the text. Two OCR providers in one run are two experiments, and a single
+    ``service_ingest_ocr`` rate covering both would answer neither.
 
     ``by_zone_source`` splits on the same principle and for a stronger reason. A number
     produced with real Azure DI roles says something about production; the same number
@@ -1566,10 +1993,18 @@ def summarise(documents: list[dict[str, Any]]) -> dict[str, Any]:
         by_country[country] = bucket([d for d in documents if d["country"] == country])
 
     by_source: dict[str, Any] = {}
-    for source in (SOURCE_TEXT_LAYER, SOURCE_OCR, SOURCE_INGEST):
+    for source in (SOURCE_TEXT_LAYER, SOURCE_INGEST, SOURCE_OCR, SOURCE_INGEST_OCR):
         subset = [d for d in documents if d.get("text_source") == source]
         if subset:
             by_source[source] = bucket(subset)
+
+    # One row per *reader*, which is the finer question the text-source split cannot answer.
+    # "service_ingest_ocr 12 documents, 9 correct" is only actionable once you know whether
+    # azure_layout or rapidocr read them: they are different products with different ceilings,
+    # and a run may use more than one. So each reader gets its own count and its own rate.
+    by_reader: dict[str, Any] = {}
+    for reader in sorted({_reader_of(d) for d in documents}):
+        by_reader[reader] = bucket([d for d in documents if _reader_of(d) == reader])
 
     by_zone: dict[str, Any] = {}
     for source in (
@@ -1577,6 +2012,7 @@ def summarise(documents: list[dict[str, Any]]) -> dict[str, Any]:
         ZONE_SOURCE_PYMUPDF,
         ZONE_SOURCE_OCR_BBOX,
         ZONE_SOURCE_INGEST,
+        ZONE_SOURCE_INGEST_OCR,
         ZONE_SOURCE_NONE,
     ):
         subset = [d for d in documents if (d.get("zones") or {}).get("source") == source]
@@ -1587,6 +2023,7 @@ def summarise(documents: list[dict[str, Any]]) -> dict[str, Any]:
         "overall": bucket(documents),
         "by_country": by_country,
         "by_text_source": by_source,
+        "by_reader": by_reader,
         "by_zone_source": by_zone,
     }
 
@@ -1639,8 +2076,32 @@ def render_markdown(report: dict[str, Any]) -> str:
                 "those scripts; point `--ocr-endpoint`/`--ocr-key` at a real resource "
                 "before drawing conclusions about non-Latin documents."
             )
-    else:
+    elif not (report.get("service_ocr") or {}).get("enabled"):
         add("- **OCR**: off — documents with no text layer were skipped, not guessed")
+    svc_ocr = report.get("service_ocr") or {}
+    if svc_ocr.get("enabled"):
+        where = (
+            f" at `{svc_ocr.get('endpoint_host')}`"
+            if svc_ocr.get("network") and svc_ocr.get("endpoint_host")
+            else " in the service process"
+        )
+        chosen = (
+            "pinned with `--ocr-provider`"
+            if svc_ocr.get("pinned_by_operator")
+            else "this deployment's default, from `/readyz`"
+        )
+        add(
+            f"- **Service OCR**: on — documents with no text layer were read by "
+            f"`{svc_ocr.get('provider')}`{where} ({chosen}, `{svc_ocr.get('structure')}` "
+            "structure). The service did the reading, not this harness."
+        )
+        if svc_ocr.get("problem"):
+            add(f"- **Service OCR problem**: {svc_ocr['problem']}")
+    elif svc_ocr.get("consulted"):
+        add(
+            "- **Service OCR**: unavailable — "
+            + str(svc_ocr.get("problem") or "no recogniser is configured on this deployment")
+        )
     add(f"- **Corpus**: `{report['corpus_root']}`")
     filters = report["filters"]
     if filters["country"] or filters["only"]:
@@ -1701,6 +2162,42 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"| {_pct(stats['precision_when_answered'])} |"
             )
         add("")
+        add(
+            "`text_layer` is PyMuPDF reading the publisher's own text. `service_ingest` is "
+            "`dce.ingest` doing the same job inside the service for a format this harness "
+            "cannot read. `ocr` is **this harness** rasterising pages and calling an OCR "
+            "endpoint. `service_ingest_ocr` is **the service** handing a document with no "
+            "text at all to the recogniser its operator configured — the production path, "
+            "and the only one of the four whose result is evidence about how production "
+            "reads a scan."
+        )
+        add("")
+
+    by_reader = summary.get("by_reader") or {}
+    if len([r for r in by_reader if r != _UNREAD_READER]) > 1:
+        add("## By reader — which engine produced the text")
+        add("")
+        add(
+            "One row per engine that actually read documents in this run. `azure_layout` and "
+            "`azure_read` are different products with different ceilings — Read predicts no "
+            "paragraph roles, so a Read payload can never satisfy a title-gated decisive "
+            "anchor — and an in-process engine is different again. A single OCR rate spanning "
+            "them would answer no question about any of them."
+        )
+        add("")
+        add(
+            "| reader | docs | sent | correct | wrong | abstained | needs OCR | errors "
+            "| accuracy | precision |"
+        )
+        add("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for reader, stats in by_reader.items():
+            add(
+                f"| {reader} | {stats['documents']} | {stats['scored']} "
+                f"| {stats['correct']} | {stats['wrong']} | {stats['abstained']} "
+                f"| {stats['needs_ocr']} | {stats['errors']} | {_pct(stats['accuracy'])} "
+                f"| {_pct(stats['precision_when_answered'])} |"
+            )
+        add("")
 
     add("## By country")
     add("")
@@ -1729,17 +2226,18 @@ def render_markdown(report: dict[str, Any]) -> str:
         add("| --- | --- | --- | --- | ---: | ---: | ---: | --- |")
         for d in wrongs:
             c = d["classification"]
-            src = "OCR" if d.get("text_source") == SOURCE_OCR else "text"
             add(
-                f"| `{d['file']}` | {src} | `{d['expected_doctype']}` | `{c['doctype_id']}` "
+                f"| `{d['file']}` | {_reader_short(d)} | `{d['expected_doctype']}` "
+                f"| `{c['doctype_id']}` "
                 f"| {c['confidence']:.2f} | {c['margin']:.2f} | {c['coverage']:.2f} "
                 f"| {_runners(c['runners_up'])} |"
             )
-        if any(d.get("text_source") == SOURCE_OCR for d in wrongs):
+        if any(d.get("text_source") in SOURCES_RECOGNISED for d in wrongs):
             add("")
             add(
-                "*`OCR` rows may be misrecognition rather than misclassification. Read the "
-                "recognised text before counting one as a classifier defect.*"
+                "*`OCR/...` rows may be misrecognition rather than misclassification, and the "
+                "engine named in `src` is the one to suspect first. Read the recognised text "
+                "before counting one as a classifier defect.*"
             )
     add("")
 
@@ -1755,45 +2253,79 @@ def render_markdown(report: dict[str, Any]) -> str:
         for d in abstentions:
             c = d["classification"]
             reason = (c["reason"] or d["reason"]).replace("|", "/")
-            src = "OCR" if d.get("text_source") == SOURCE_OCR else "text"
             add(
-                f"| `{d['file']}` | {src} | `{d['expected_doctype']}` | {reason} "
+                f"| `{d['file']}` | {_reader_short(d)} | `{d['expected_doctype']}` | {reason} "
                 f"| {c['confidence']:.2f} | {c['margin']:.2f} | {c['coverage']:.2f} "
                 f"| {_runners(c['runners_up'])} |"
             )
     add("")
 
     # ---- OCR'd documents --------------------------------------------------
-    ocr_docs = [d for d in docs if d.get("text_source") == SOURCE_OCR]
+    ocr_docs = [d for d in docs if d.get("text_source") in SOURCES_RECOGNISED]
     if ocr_docs:
-        add("## OCR'd documents (measured, but through a recognition engine)")
+        add("## Recognised documents (measured, but through an OCR engine)")
         add("")
         add(
             "These had no text layer of their own — scans and photo IDs, the least-tested "
-            "path in the service and the one production sees most. Their text came from "
-            "the OCR engine named above, so **every result here carries OCR error**. A "
-            "WRONG row is a lead, not a verdict: check the recognised text (rerun with "
-            "`--ocr-dump-dir`) before blaming the classifier, and check it again before "
-            "clearing it."
+            "path in the service and the one production sees most. Their text came from a "
+            "recognition engine, so **every result here carries OCR error**. A WRONG row is "
+            "a lead, not a verdict: check the recognised text before blaming the classifier, "
+            "and check it again before clearing it. **`read by` is the first column to "
+            "look at** — a `service OCR` row is the service's own ingestion path doing what "
+            "it does in production, while a `harness OCR` row is this tool's rasteriser and "
+            "endpoint standing in for it, and the two are not the same measurement."
         )
         add("")
         add(
-            "| file | expected | status | got | conf | margin | cov | pages OCR'd "
-            "| lines | chars | ms |"
+            "| file | read by | expected | status | got | conf | margin | cov | pages "
+            "| lines/blocks | chars | ms |"
         )
-        add("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        add(
+            "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        )
         for d in sorted(ocr_docs, key=lambda x: (x["country"], x["file"])):
             c = d.get("classification") or {}
             pdf = d.get("pdf") or {}
             o = d.get("ocr") or {}
-            pages = f"{o.get('pages_ok', 0)}/{o.get('pages_sent', 0)}"
+            if d.get("text_source") == SOURCE_OCR:
+                pages = f"{o.get('pages_ok', 0)}/{o.get('pages_sent', 0)}"
+                extra = f"{o.get('lines', 0)} | {pdf.get('chars', 0)} | {o.get('ms', 0)}"
+            else:
+                # The service read it, so this harness has no line count or character count
+                # to report — it never saw the text. Saying "0" would read as "found nothing".
+                pages = str(pdf.get("page_count", 0) or "—")
+                extra = f"— | — | {(d.get('http') or {}).get('elapsed_ms', 0)}"
             add(
-                f"| `{d['file']}` | `{d['expected_doctype']}` | {d['status']} "
+                f"| `{d['file']}` | {_reader_short(d)} | `{d['expected_doctype']}` "
+                f"| {d['status']} "
                 f"| `{c.get('doctype_id', '—')}` | {c.get('confidence', 0):.2f} "
                 f"| {c.get('margin', 0):.2f} | {c.get('coverage', 0):.2f} | {pages} "
-                f"| {o.get('lines', 0)} | {pdf.get('chars', 0)} | {o.get('ms', 0)} |"
+                f"| {extra} |"
             )
         add("")
+        add(
+            "*`lines/blocks`, `chars` and `ms` are dashes on `service OCR` rows on purpose: "
+            "the service read the document and this harness never saw the text, so it has "
+            "nothing to count. `ms` there is the whole round trip, recognition included.*"
+        )
+        add("")
+        disagreed = [
+            d
+            for d in ocr_docs
+            if (d.get("service_ocr") or {}).get("agrees_with_service") is False
+        ]
+        if disagreed:
+            add(
+                "The service reported a different reading from the one this harness expected "
+                "on these — the harness's no-text-layer floor is 60 alphanumeric characters "
+                "and the service's is 40, so a document between the two is parsed rather than "
+                "recognised. The service's account is what the rows above are bucketed by:"
+            )
+            add("")
+            for d in disagreed:
+                note = (d.get("service_ocr") or {}).get("reported_by_service") or {}
+                add(f"- `{d['file']}` — {note.get('note', '')}")
+            add("")
         failed = [(d, d.get("ocr") or {}) for d in ocr_docs if (d.get("ocr") or {}).get("errors")]
         if failed:
             add("Pages the OCR engine could not read:")
@@ -1815,14 +2347,20 @@ def render_markdown(report: dict[str, Any]) -> str:
             else "None — every PDF in the corpus had a usable text layer."
         )
     else:
+        recognition_ran = bool(report.get("ocr", {}).get("enabled")) or bool(
+            report.get("service_ocr", {}).get("enabled")
+        )
         add(
-            "These have no text layer, so nothing was sent to the service. Rerun with "
-            "`--ocr` to rasterise and recognise them; without it, guessing here would "
+            "These have no text layer, so nothing classifiable was ever produced for them. "
+            "Rerun with `--ingest` to have the **service** read them with the recogniser its "
+            "operator configured — the production path — or with `--ocr` to have this harness "
+            "rasterise and recognise them itself. Without one of those, guessing here would "
             "produce numbers that mean nothing."
-            if not (report.get("ocr") or {}).get("enabled")
-            else "These reached the OCR path and still produced nothing classifiable. They "
-            "remain unmeasured — an OCR failure is not a classifier result and is not "
-            "scored as one."
+            if not recognition_ran
+            else "These reached a recogniser and still produced nothing classifiable, or the "
+            "deployment had no recogniser to offer. They remain unmeasured — an OCR failure "
+            "is not a classifier result and is not scored as one. The `note` column says "
+            "which of the two it was, and names the engine."
         )
         add("")
         add("| file | expected | pages | alnum chars | note |")
@@ -1899,12 +2437,16 @@ def render_markdown(report: dict[str, Any]) -> str:
     # ---- inventory --------------------------------------------------------
     add("## All documents")
     add("")
-    add("`src` is where the text came from: `text` = the publisher's own text layer, "
-        "`OCR` = a recognition engine, and any result on an `OCR` row carries OCR error. "
+    add("`src` is where the text came from and, when a recogniser produced it, **which "
+        "one**: `text` = the publisher's own text layer read here by PyMuPDF, `ingest` = "
+        "the same, read inside the service by `dce.ingest`, `OCR/<provider>` = recognised, "
+        "and any result on an `OCR/` row carries that provider's error. "
         "`zones` is where that document's zones came from — `di` = real provider roles, "
-        "`geo` = inferred from PDF geometry, `geo-ocr` = inferred from OCR boxes, `none` = "
+        "`geo` = inferred from PDF geometry, `geo-ocr` = inferred from OCR boxes, "
+        "`ingest` = the format's own structure, `ingest-ocr` = the recogniser's, `none` = "
         "plain text, everything `body`. `t/h/f` counts the title, heading and furniture "
-        "blocks actually sent.")
+        "blocks actually sent — dashes where the service assigned the zones and this "
+        "harness never saw them.")
     add("")
     add("| file | expected | status | src | zones | t/h/f | got | conf | margin | cov "
         "| pages | chars |")
@@ -1913,17 +2455,16 @@ def render_markdown(report: dict[str, Any]) -> str:
         c = d.get("classification") or {}
         pdf = d.get("pdf") or {}
         got = c.get("doctype_id", "—")
-        src = "OCR" if d.get("text_source") == SOURCE_OCR else "text"
         zones = d.get("zones") or {}
         counts = zones.get("counts") or {}
         thf = (
             f"{counts.get(ZONE_TITLE, 0)}/{counts.get(ZONE_HEADING, 0)}/"
             f"{counts.get(ZONE_FURNITURE, 0)}"
-            if zones.get("source")
+            if zones.get("source") and counts
             else "—"
         )
         add(
-            f"| `{d['file']}` | `{d['expected_doctype']}` | {d['status']} | {src} "
+            f"| `{d['file']}` | `{d['expected_doctype']}` | {d['status']} | {_reader_short(d)} "
             f"| {_ZONE_SHORT.get(zones.get('source') or '', '—')} | {thf} | `{got}` "
             f"| {c.get('confidence', 0):.2f} | {c.get('margin', 0):.2f} "
             f"| {c.get('coverage', 0):.2f} | {pdf.get('page_count', 0)} "
@@ -1970,6 +2511,7 @@ _ZONE_SHORT: dict[str, str] = {
     ZONE_SOURCE_PYMUPDF: "geo",
     ZONE_SOURCE_OCR_BBOX: "geo-ocr",
     ZONE_SOURCE_INGEST: "ingest",
+    ZONE_SOURCE_INGEST_OCR: "ingest-ocr",
     ZONE_SOURCE_NONE: "none",
 }
 
@@ -2003,6 +2545,17 @@ _ZONE_SOURCE_NOTES: dict[str, str] = {
         "different one: for formats that state no structure (a PDF text layer, a TXT file, "
         "OCR output) the service labels everything `body` on purpose, so those documents "
         "carry no title channel in this bucket either."
+    ),
+    ZONE_SOURCE_INGEST_OCR: (
+        "**Production-faithful zones, recognised text.** The file carried no text at all, so "
+        "`dce/ingest/` handed it to the recogniser this deployment configured and mapped the "
+        "answer with the service's own adapters — exactly what production does with a scan. "
+        "Two caveats, and they pull in opposite directions. What zones exist depends on the "
+        "provider: `azure_layout` returns paragraph roles and reaches `from_azure_layout`, so "
+        "title-gated anchors can fire; `azure_read` and the in-process engines return lines "
+        "only and everything is `body`. And the text underneath is recognised text, so every "
+        "number in this bucket carries OCR error as well — see the reader table, which names "
+        "the engine."
     ),
     ZONE_SOURCE_NONE: (
         "**No zones at all.** The plain-text payload makes the service label every block "
@@ -2245,18 +2798,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     ingest = parser.add_argument_group(
         "service-side ingestion (off by default)",
-        "Send non-PDF corpus files to the service as raw bytes and let dce.ingest parse "
-        "them in-process. This is the only way to score a .docx, .xlsx, .pptx, .odt, .rtf, "
-        ".csv, .html, .eml, .msg or an image, none of which this harness can read itself. "
-        "PDFs are unaffected: they keep the PyMuPDF path, because that is what --layout's "
-        "zone inference measures. Images still come back NEEDS_OCR unless the service has "
-        "local OCR switched on — the service will not send an unclassified document to a "
-        "cloud recogniser, and neither will this flag.",
+        "Send corpus files to the service as raw bytes and let dce.ingest read them "
+        "in-process. This is the only way to score a .docx, .xlsx, .pptx, .odt, .rtf, .csv, "
+        ".html, .eml, .msg or an image, none of which this harness can read itself — AND "
+        "the only way to measure a scan the way production measures one, because the "
+        "service's own OCR path reads it. A PDF with a text layer is unaffected: it keeps "
+        "the PyMuPDF path, because that is what --layout's zone inference measures. A PDF "
+        "with none no longer stays NEEDS_OCR: it goes to the service like any other "
+        "unreadable file. Whether the service can actually read it is the deployment's "
+        "business — if it has configured no recogniser, the documents stay NEEDS_OCR with "
+        "the service's own reason, which is a measurement of that deployment.",
     )
     ingest.add_argument("--ingest", action="store_true",
-        help="POST non-PDF files as content_base64 with ingest set, instead of skipping them")
+        help="POST files this harness cannot read as content_base64 with ingest set — "
+             "non-PDF formats, images, and PDFs with no text layer — instead of skipping them")
     ingest.add_argument("--ingest-max-mb", type=int, default=24,
         help="skip files larger than this before uploading (default: %(default)s; 0 = no cap)")
+    ingest.add_argument("--ocr-provider", default="",
+        help="which recogniser the SERVICE should use for documents with no text layer, e.g. "
+             "azure_layout, azure_read, rapidocr. Default: whatever /readyz reports as this "
+             "deployment's configured provider — never a constant in this harness. It can "
+             "only name a provider /readyz already lists; it cannot switch one on. Requires "
+             "--ingest")
     return parser.parse_args(argv)
 
 
@@ -2389,14 +2952,58 @@ def run(args: argparse.Namespace) -> int:
         if ocr_cfg.dump_dir:
             print(f"ocr: dumping recognised text to {ocr_cfg.dump_dir} — do not commit it")
 
+    # -- service-side ingestion preflight ------------------------------------
+    # Which recogniser reads a scan is a property of the DEPLOYMENT, so it is asked for
+    # rather than assumed. This is the only place the provider is decided, and it is decided
+    # once per run so every row can name it.
+    service_ocr = ServiceOcr()
+    non_pdf = sum(1 for e in selected if e.path and detect_filetype(e.path) != "pdf")
     if args.ingest:
-        non_pdf = sum(1 for e in selected if e.path and detect_filetype(e.path) != "pdf")
-        print(
-            f"ingest: on — {non_pdf} non-PDF file(s) will be parsed by the service "
-            "(dce.ingest), which assigns their zones from the format's own structure"
+        service_ocr = fetch_service_ocr(
+            base_url, args.api_key, args.timeout, args.ocr_provider
         )
+        print(
+            f"ingest: on — {non_pdf} file(s) this harness cannot read will be parsed by the "
+            "service (dce.ingest), which assigns their zones from the format's own structure"
+        )
+        if service_ocr.available:
+            where = (
+                f"{service_ocr.endpoint_host or 'the configured endpoint'} (a call out of "
+                "the service process)"
+                if service_ocr.network
+                else "in the service process"
+            )
+            chosen = (
+                "pinned with --ocr-provider"
+                if service_ocr.pinned_by_operator
+                else f"this deployment's default from /readyz (ocr.provider="
+                f"{service_ocr.default_provider})"
+            )
+            print(
+                f"ingest: documents with no text layer will be read by the SERVICE using "
+                f"{service_ocr.provider} at {where} — {chosen}"
+            )
+            if service_ocr.structure != "roles":
+                print(
+                    f"ingest: {service_ocr.provider} returns '{service_ocr.structure}' and no "
+                    "paragraph roles, so the service labels every block 'body' for these "
+                    "documents and no zone-gated anchor can fire on them"
+                )
+        else:
+            print(f"ingest: documents with no text layer stay unmeasured — {service_ocr.problem}")
+        if ocr_cfg.enabled:
+            print(
+                "ocr: --ocr and --ingest are both on. --ingest wins for every document with "
+                "no text layer, so the service reads all of them and no document in this run "
+                "is read by two different engines. --ocr affects nothing here"
+            )
     else:
-        non_pdf = sum(1 for e in selected if e.path and detect_filetype(e.path) != "pdf")
+        if args.ocr_provider:
+            print(
+                f"ocr-provider: --ocr-provider={args.ocr_provider} was given without "
+                "--ingest, so it selects nothing — the service only reads a document this "
+                "harness hands it as bytes. Ignored"
+            )
         if non_pdf:
             print(
                 f"ingest: off — {non_pdf} non-PDF file(s) cannot be read by this harness and "
@@ -2456,18 +3063,20 @@ def run(args: argparse.Namespace) -> int:
                 _log(args.verbose, index, len(selected), record)
                 continue
 
-        # -- service-side ingestion: everything that is not a PDF --------------------
-        # A PDF keeps this harness's own PyMuPDF path, because that is what carries the zone
-        # *inference* --layout exists to measure. Everything else — a .docx, an .xlsx, an
-        # .eml, and the two passport JPEGs that have sat in the NEEDS_OCR column since the
-        # day they were added — has no harness path at all. Those now go to the service,
-        # which parses them in-process and assigns the zones itself.
-        if di_payload is None and args.ingest and detect_filetype(doc_path) != "pdf":
-            record["text_source"] = SOURCE_INGEST
+        # -- service-side ingestion: everything this harness cannot read itself ------
+        # A PDF *with a text layer* keeps this harness's own PyMuPDF path, because that is
+        # what carries the zone *inference* --layout exists to measure. Everything else — a
+        # .docx, an .xlsx, an .eml, the two passport JPEGs — has no harness path at all and
+        # goes to the service, which parses it in-process and assigns the zones itself. A
+        # file whose bytes are an image needs recognising by definition, so the resolved
+        # provider is pinned on the request; the rest are parsed, not read, and are sent
+        # without a pin.
+        filetype = detect_filetype(doc_path)
+        if di_payload is None and args.ingest and filetype != "pdf":
             record["pdf"] = {
                 "bytes": doc_path.stat().st_size if doc_path.exists() else 0,
-                "filetype": detect_filetype(doc_path) or "",
-                "is_image": detect_filetype(doc_path) not in (None, "pdf"),
+                "filetype": filetype or "",
+                "is_image": filetype not in (None, "pdf"),
                 "page_count": 0,
                 "pages_read": 0,
                 "chars": 0,
@@ -2476,50 +3085,23 @@ def run(args: argparse.Namespace) -> int:
                 "empty_pages": [],
                 "lines": 0,
             }
-            record["zones"] = {
-                "source": ZONE_SOURCE_INGEST,
-                "counts": {},
-                "basis": (
-                    "dce.ingest parsed the file inside the service and mapped the format's "
-                    "own stated structure onto the zone model; this harness saw no text"
-                ),
-                "payload": "content_base64+ingest",
-                "sidecar": "",
-            }
-            try:
-                ingest_body = build_ingest_payload(
-                    rel or entry.file, doc_path, args.ingest_max_mb
-                )
-                status, body, elapsed = post_json(
-                    f"{base_url}{endpoint}",
-                    ingest_body,
-                    args.api_key,
-                    args.timeout,
-                    allow_statuses=frozenset({422}),
-                )
-            except HarnessError as exc:
-                record["reason"] = str(exc)
-                documents.append(record)
-                _log(args.verbose, index, len(selected), record)
-                continue
-
-            record["http"] = {"status": status, "elapsed_ms": elapsed}
-            if status == 422:
-                # The service read the bytes and found no text. Same bucket as a scanned PDF
-                # — unmeasured, not broken — but now with the service's own reason attached
-                # instead of the harness's guess at one.
-                detail = body.get("detail") if isinstance(body.get("detail"), dict) else {}
-                record["status"] = STATUS_NEEDS_OCR
-                record["reason"] = str(
-                    detail.get("reason") or "the service returned 422 without a reason"
-                )
-                record["ingest"] = detail
-                documents.append(record)
-                _log(args.verbose, index, len(selected), record)
-                continue
-
-            record.update(score_document(entry, body, args.classify_only, args.show_values))
-            record["text_source"] = SOURCE_INGEST
+            post_service_ingest(
+                entry,
+                record,
+                doc_path,
+                rel or entry.file,
+                base_url=base_url,
+                endpoint=endpoint,
+                api_key=args.api_key,
+                timeout=args.timeout,
+                max_mb=args.ingest_max_mb,
+                classify_only=args.classify_only,
+                show_values=args.show_values,
+                # An image carries no text layer in the same way a scan carries none; that
+                # is the definition of the format, not a judgement about this file.
+                needs_recognition=filetype is not None,
+                service_ocr=service_ocr,
+            )
             documents.append(record)
             _log(args.verbose, index, len(selected), record)
             continue
@@ -2570,6 +3152,34 @@ def run(args: argparse.Namespace) -> int:
         # A DI sidecar has already been through a recognition engine; there is no second OCR
         # pass to make, and its own line count is the provider's answer about this document.
         if di_payload is None and pdf.alnum_chars < MIN_ALNUM_CHARS:
+            if args.ingest:
+                # A scan, and --ingest is on: send the PDF whole and let the SERVICE read it
+                # with the recogniser its operator configured. This is the production path —
+                # both Azure products take a PDF natively, so nothing is rasterised anywhere
+                # — and it is why these six documents stop being a permanent hole in every
+                # rate. --ingest wins over --ocr here deliberately: one rule for every
+                # document with no text layer means a run never has a scanned PDF read by one
+                # engine and a JPEG by another.
+                record["pdf"]["text_layer_alnum_chars"] = pdf.alnum_chars
+                post_service_ingest(
+                    entry,
+                    record,
+                    doc_path,
+                    rel or entry.file,
+                    base_url=base_url,
+                    endpoint=endpoint,
+                    api_key=args.api_key,
+                    timeout=args.timeout,
+                    max_mb=args.ingest_max_mb,
+                    classify_only=args.classify_only,
+                    show_values=args.show_values,
+                    needs_recognition=True,
+                    service_ocr=service_ocr,
+                )
+                documents.append(record)
+                _log(args.verbose, index, len(selected), record)
+                continue
+
             if not ocr_cfg.enabled:
                 record["status"] = STATUS_NEEDS_OCR
                 record["reason"] = (
@@ -2687,7 +3297,33 @@ def run(args: argparse.Namespace) -> int:
             "enabled": bool(args.ingest),
             "max_mb": int(args.ingest_max_mb),
             "documents": sum(
-                1 for d in documents if d.get("text_source") == SOURCE_INGEST
+                1
+                for d in documents
+                if d.get("text_source") in (SOURCE_INGEST, SOURCE_INGEST_OCR)
+            ),
+            "parsed": sum(1 for d in documents if d.get("text_source") == SOURCE_INGEST),
+            "recognised": sum(
+                1 for d in documents if d.get("text_source") == SOURCE_INGEST_OCR
+            ),
+        },
+        # How the SERVICE read the documents that carried no text, asked of /readyz rather
+        # than assumed here. ``requested`` is what the operator typed; every other field is
+        # the deployment's own answer, so a report can be read years later without anyone
+        # having to remember which provider was default at the time.
+        "service_ocr": {
+            "consulted": bool(args.ingest),
+            "enabled": bool(args.ingest) and service_ocr.available,
+            "requested": args.ocr_provider,
+            "provider": service_ocr.provider,
+            "default_provider": service_ocr.default_provider,
+            "configured_providers": list(service_ocr.configured),
+            "pinned_by_operator": service_ocr.pinned_by_operator,
+            "network": service_ocr.network,
+            "endpoint_host": service_ocr.endpoint_host,
+            "structure": service_ocr.structure,
+            "problem": service_ocr.problem,
+            "documents": sum(
+                1 for d in documents if d.get("text_source") == SOURCE_INGEST_OCR
             ),
         },
         "ocr": {
@@ -2771,9 +3407,7 @@ def _log(verbose: bool, index: int, total: int, record: dict[str, Any]) -> None:
 
     c = record.get("classification") or {}
     got = c.get("doctype_id", "—")
-    src = {SOURCE_OCR: "ocr ", SOURCE_INGEST: "ingst"}.get(
-        record.get("text_source", ""), "text"
-    )
+    src = _reader_short(record)
     bits = [f"[{index}/{total}]", f"{record['status']:<10}", f"[{src}]", f"{record['file']}"]
     if record["status"] in (STATUS_CORRECT, STATUS_WRONG, STATUS_ABSTAINED):
         bits.append(
@@ -2818,6 +3452,14 @@ def _print_summary(report: dict[str, Any], json_path: Path, md_path: Path) -> No
             for name, s in by_source.items()
         ))
         print("  OCR rows carry recognition error — compare runs on text_layer, not overall")
+    by_reader = report["summary"].get("by_reader") or {}
+    readers = {n: s for n, s in by_reader.items() if n != _UNREAD_READER}
+    if len(readers) > 1:
+        print("  by reader: " + "   ".join(
+            f"{name} {s['correct']}/{s['scored']} ({_pct(s['accuracy'])}, "
+            f"{s['wrong']} wrong)"
+            for name, s in readers.items()
+        ))
     by_zone = report["summary"].get("by_zone_source") or {}
     if by_zone:
         print("  by zone source: " + "   ".join(
@@ -2836,6 +3478,15 @@ def _print_summary(report: dict[str, Any], json_path: Path, md_path: Path) -> No
             f"{cc.upper()} {s['correct']}/{s['scored']} ({_pct(s['accuracy'])})"
             for cc, s in report["summary"]["by_country"].items()
         ))
+    svc = report.get("service_ocr") or {}
+    if svc.get("enabled") and svc.get("documents"):
+        print(
+            f"  {svc['documents']} document(s) had no text layer and were read by the "
+            f"SERVICE with {svc['provider']}"
+            + (f" at {svc['endpoint_host']}" if svc.get("network") else " in-process")
+        )
+    elif svc.get("consulted") and not svc.get("enabled"):
+        print(f"  service OCR unavailable: {svc.get('problem', '')}")
     if overall["needs_ocr"]:
         print(f"  {overall['needs_ocr']} document(s) have no text layer and were skipped "
               "— see the report's OCR section")

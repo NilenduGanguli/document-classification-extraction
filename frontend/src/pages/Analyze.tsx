@@ -658,17 +658,22 @@ function OcrPicker({
   value,
   onChange,
   declaration,
-  disabled = false,
+  idle = false,
 }: {
   options: OcrOption[];
   value: string;
   onChange: (id: string) => void;
   /** What this deployment declares about its remote OCR endpoint, and who says so. */
   declaration: BoundaryDeclaration;
-  /** Greyed out when the read channel is `lexical`: nothing is being recognised, so there is
-   *  no recogniser to choose. Shown rather than hidden, so the choice does not appear to
-   *  vanish and the reason is legible. */
-  disabled?: boolean;
+  /** True when the read channel is `lexical`, so nothing will be recognised on this request.
+   *
+   *  The grid stays fully SELECTABLE — disabling it was wrong. A choice you can still make is
+   *  not the same as a choice that has an effect right now, and conflating them takes the
+   *  setting away instead of explaining it: an operator lining up "read the text layer" and
+   *  "read it with Document Intelligence" to compare the two would find the second control
+   *  dead under the first. The pick is remembered and applies the moment the channel is
+   *  anything but `lexical`; a line above the grid says so. */
+  idle?: boolean;
 }) {
   const selected = findOcrOption(options, value);
   const onPremises = declaration.boundary === 'on_premises';
@@ -682,6 +687,14 @@ function OcrPicker({
           already in the file.
         </span>
       </div>
+
+      {idle && (
+        <div className="az-note faint">
+          Nothing is recognised on a <span className="mono">lexical</span> read, so this choice
+          does not apply to the next run — it is kept, and takes effect as soon as the channel is
+          <span className="mono"> auto</span> or <span className="mono">optical</span>.
+        </div>
+      )}
 
       <div className="az-ocr-grid" role="radiogroup" aria-label="OCR provider">
         {options.map((option) => {
@@ -709,7 +722,7 @@ function OcrPicker({
                 type="radio"
                 name="az-ocr"
                 checked={active}
-                disabled={disabled || !option.available}
+                disabled={!option.available}
                 onChange={() => onChange(option.id)}
               />
               <span className="az-ocr-body">
@@ -2466,7 +2479,7 @@ export default function Analyze({ readiness }: PageProps) {
                 value={ocrId}
                 onChange={(id) => setParam('ocr', id === LOCAL_ID ? '' : id)}
                 declaration={boundary}
-                disabled={readChannel === 'lexical'}
+                idle={readChannel === 'lexical'}
               />
             </>
           )}

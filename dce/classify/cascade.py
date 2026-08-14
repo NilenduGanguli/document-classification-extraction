@@ -1624,15 +1624,32 @@ def _verdict(
     # holding evidence on it and not losing the runner-up on it. So every answer the previous
     # form identified is still identified, and this change can only add outcomes, never
     # withdraw one.
+    # ``lexical_primary`` relaxes exactly one half of that, for exactly one tier. The anchor
+    # tier must still hold evidence for the candidate — corroboration is not optional — but it
+    # may no longer VETO by preferring the runner-up. The lexical tier keeps both halves and so
+    # decides the comparison.
+    #
+    # The case for it is measured rather than aesthetic: on the documents probed while
+    # diagnosing the abstentions the lexical tier held the correct answer while the anchor tier
+    # elected something else — ca_sin_confirmation, ca_articles_incorporation_provincial,
+    # us_bylaws. Their anchors are generic, so the anchor tier is weak there, and a weak tier
+    # that can still veto turns "I have little to say" into "no".
+    #
+    # The case against it, which is why this is a switch rather than a rewrite: the reliability
+    # is not uniform. On ``us_paystub`` the anchor tier is CORRECT and the lexical tier prefers
+    # ``us_ssn_card``, so removing the veto there removes the tier that was right. It is a
+    # measured trade and the corpus is the measurement: if it turns an abstention into a WRONG
+    # answer it is not worth having, whatever else it recovers.
+    anchor_may_veto = not settings.lexical_primary
     dissenting = tuple(
         name
-        for name, channel in (
-            ("anchor", deciding_anchor_bits),
-            ("lexical", deciding_explained),
+        for name, channel, may_veto in (
+            ("anchor", deciding_anchor_bits, anchor_may_veto),
+            ("lexical", deciding_explained, True),
         )
         if not (
             channel.get(candidate, 0.0) > 0.0
-            and channel.get(candidate, 0.0) >= channel.get(runner_up, 0.0)
+            and (not may_veto or channel.get(candidate, 0.0) >= channel.get(runner_up, 0.0))
         )
     )
     concurred = bool(runner_up) and not dissenting

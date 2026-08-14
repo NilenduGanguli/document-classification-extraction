@@ -137,6 +137,38 @@ class Settings(BaseSettings):
     #: of the other two gates can see it. See, in ``tests/test_classify.py``,
     #: ``test_support_floor_is_the_only_gate_that_can_refuse_thin_evidence``.
     classify_min_support: float = 0.30
+
+    #: Let the LEXICAL tier decide the comparison, with the anchor tier corroborating but not
+    #: vetoing.
+    #:
+    #: Acceptance normally requires both tiers to hold evidence for the candidate AND neither to
+    #: prefer the runner-up. This keeps the first half for both tiers and drops the second half
+    #: for the anchor tier alone: it must still have something to say about the candidate, but
+    #: it can no longer refuse an answer by preferring something else.
+    #:
+    #: Why it exists: on the documents that abstain here the anchor tier is weak, because their
+    #: anchors are generic phrases rather than strings an issuer controls, and a weak tier that
+    #: can still veto turns "I have little to say" into "no".
+    #:
+    #: Why it is OFF by default: **measured, it buys one correct answer and one wrong one.**
+    #: On the 117-document corpus, enabling it moved 97 correct / 0 wrong / 20 abstained to
+    #: 98 / 1 / 18 — precision 100% to 99.0%.
+    #:
+    #: The wrong answer is the argument. ``us_sec_sc13g.htm`` classified as ``us_sec_sc13d`` at
+    #: 0.548. Schedule 13D and Schedule 13G are the two beneficial-ownership schedules — 13D
+    #: for an active investor, 13G for a passive one — so they carry near-identical prose and
+    #: mean materially different things about the filer's intent. The lexical tier cannot
+    #: separate them; the anchor tier can, because each holds a decisive anchor the other does
+    #: not (``Rule 13d-101`` against ``Rule 13d-102``). Removing the anchor veto removes exactly
+    #: the evidence that told them apart, and a KYC pipeline that reports a passive holder as an
+    #: active one has not made a rounding error.
+    #:
+    #: That is the shape of the trade in general: the veto costs coverage on documents whose
+    #: anchors are generic, and earns it back on documents whose anchors are the only thing
+    #: distinguishing two neighbours. A deployment whose corpus has no such neighbours may well
+    #: want this on — measure it there rather than assuming either way.
+    lexical_primary: bool = False
+
     #: The fraction of the winning class's own vocabulary that must have been present, taken
     #: as ``max(profile coverage, anchor coverage)``. The one control the cascade has always
     #: called load-bearing, and it is kept live and unchanged in value: it is why a photo-ID

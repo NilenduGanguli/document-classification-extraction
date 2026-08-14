@@ -51,6 +51,7 @@ services:
       # not a difference of two registry-normalised probabilities. Its scale changed with its
       # meaning: the old 0.25 applied to this quantity abstains on essentially everything.
       CLASSIFY_MIN_MARGIN: "0.04"
+      LEXICAL_PRIMARY: "${LEXICAL_PRIMARY:-false}"
       CLASSIFY_MIN_SUPPORT: "0.30"
       CLASSIFY_MIN_COVERAGE: "0.20"
 

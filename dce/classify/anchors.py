@@ -3,12 +3,12 @@
 Two kinds of evidence live here, and they are the two strongest signals in the service:
 
 **Anchors.** The strings an issuer prints on every copy of a document: ``INSTITUTO NACIONAL
-ELECTORAL``, ``WAGE AND TAX STATEMENT``, ``UNIQUE IDENTIFICATION AUTHORITY OF INDIA``. A
+ELECTORAL``, ``WAGE AND TAX STATEMENT``, ``CANADA BUSINESS CORPORATIONS ACT``. A
 *decisive* anchor is near-proof of the doctype on its own.
 
 **Checksums.** An identifier that matches its registry pattern *and* passes its check digit is
-the strongest thing this system can observe. Nobody accidentally writes a Verhoeff-valid
-12-digit number, or a TD3 machine-readable zone whose four check digits agree.
+the strongest thing this system can observe. Nobody accidentally writes a Luhn-valid
+Canadian SIN, or a TD3 machine-readable zone whose four check digits agree.
 
 The one rule that matters more than any scoring detail:
 
@@ -125,11 +125,11 @@ class ChecksumHit:
     """An identifier that matched a registry pattern, and what validation said about it.
 
     The distinction between ``level="checksum"`` and ``level="format"`` is the whole value of
-    this class. A published check digit is proof; a structural pattern is a shape. An Indian
-    PAN's tenth character *looks* like a check character but the algorithm is unpublished, and
-    a US SSN has no check digit at all — so ``AAAPL1234C`` and ``123-45-6789`` are *shapes*,
-    and only a Verhoeff-valid Aadhaar or a four-check-digit MRZ is *proof*. Only ``verified``
-    hits can make the cascade skip the lexical tier.
+    this class. A published check digit is proof; a structural pattern is a shape. A US SSN
+    has no check digit at all and an EIN can only have its campus prefix checked — so
+    ``123-45-6789`` is a *shape*, and only a Luhn-valid SIN, a RENAPO-consistent CURP or a
+    four-check-digit MRZ is *proof*. Only ``verified`` hits can make the cascade skip the
+    lexical tier.
 
     Attributes:
         doctype_id: Owning doctype.
@@ -573,60 +573,20 @@ def check_identifier(name: str, value: str) -> tuple[bool, str]:
 # matched, unverified" because another module has not landed yet.
 #
 # The split between checksum-grade and format-grade is copied from reality, not from
-# convenience: Aadhaar (Verhoeff), SIN (Luhn), CURP and the MRZ publish a check digit; SSN,
-# EIN, ITIN and PAN do not, and pretending otherwise would reject genuine documents.
-_VERHOEFF_D = (
-    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    (1, 2, 3, 4, 0, 6, 7, 8, 9, 5),
-    (2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
-    (3, 4, 0, 1, 2, 8, 9, 5, 6, 7),
-    (4, 0, 1, 2, 3, 9, 5, 6, 7, 8),
-    (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
-    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2),
-    (7, 6, 5, 9, 8, 2, 1, 0, 4, 3),
-    (8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
-    (9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
-)
-_VERHOEFF_P = (
-    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    (1, 5, 7, 6, 2, 8, 3, 0, 9, 4),
-    (5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
-    (8, 9, 1, 6, 0, 4, 3, 5, 2, 7),
-    (9, 4, 5, 3, 1, 2, 6, 8, 7, 0),
-    (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
-    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5),
-    (7, 0, 4, 6, 9, 1, 3, 2, 5, 8),
-)
+# convenience: SIN (Luhn), CURP and the MRZ publish a check digit; SSN, EIN and ITIN do
+# not, and pretending otherwise would reject genuine documents.
 #: RENAPO check-digit alphabet (index == value).
 _CURP_ALPHABET = "0123456789ABCDEFGHIJKLMNÑOPQRSTUVWXYZ"
 #: IRS campus prefixes that were never issued.
 _INVALID_EIN_PREFIXES = frozenset(
     {"00", "07", "08", "09", "17", "18", "19", "28", "29", "49", "78", "79", "89"}
 )
-_PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 _RFC_RE = re.compile(r"^[A-ZÑ&]{3,4}\d{6}[0-9A-Z]{2}[0-9A]$")
 _MRZ_CHECK_WEIGHTS = (7, 3, 1)
 
 
 def _digits(value: str) -> str:
     return "".join(ch for ch in value if ch.isdigit())
-
-
-def verhoeff(value: str) -> bool:
-    """Verhoeff check over a digit string (Aadhaar's scheme)."""
-    digits = _digits(value)
-    if len(digits) < 2:
-        return False
-    checksum = 0
-    for i, ch in enumerate(reversed(digits)):
-        checksum = _VERHOEFF_D[checksum][_VERHOEFF_P[i % 8][int(ch)]]
-    return checksum == 0
-
-
-def verhoeff_aadhaar(value: str) -> bool:
-    """Aadhaar: 12 digits, first digit 2-9, Verhoeff-valid."""
-    digits = _digits(value)
-    return len(digits) == 12 and digits[0] not in "01" and verhoeff(digits)
 
 
 def luhn(value: str) -> bool:
@@ -666,16 +626,6 @@ def ein(value: str) -> bool:
     """US EIN: 9 digits whose 2-digit campus prefix was actually issued."""
     digits = _digits(value)
     return len(digits) == 9 and digits[:2] not in _INVALID_EIN_PREFIXES
-
-
-def pan(value: str) -> bool:
-    """Indian PAN: ``AAAAA9999A`` with a valid holder-type letter in position 4.
-
-    Structure only. The tenth character is a check character but the algorithm is not
-    published by the Income Tax Department, so computing one would reject real cards.
-    """
-    candidate = value.strip().upper()
-    return bool(_PAN_RE.match(candidate)) and candidate[3] in "ABCFGHJLPT"
 
 
 def curp(value: str) -> bool:
@@ -743,29 +693,23 @@ def mrz_td3(value: str) -> bool:
 
 
 _FALLBACK_VALIDATORS: dict[str, Callable[[str], bool]] = {
-    "verhoeff_aadhaar": verhoeff_aadhaar,
     "sin_luhn": sin_luhn,
     "ssn": ssn,
     "ein": ein,
-    "pan": pan,
     "curp": curp,
     "rfc": rfc,
     "mrz_td3": mrz_td3,
 }
 #: Which fallbacks carry a genuine published check digit. Everything else is shape only.
 _FALLBACK_LEVELS: dict[str, str] = {
-    "verhoeff_aadhaar": "checksum",
     "sin_luhn": "checksum",
     "curp": "checksum",
     "mrz_td3": "checksum",
     "ssn": "format",
     "ein": "format",
-    "pan": "format",
     "rfc": "format",
 }
 _FALLBACK_ALIASES: dict[str, str] = {
-    "aadhaar": "verhoeff_aadhaar",
-    "in_pan": "pan",
     "us_ssn": "ssn",
     "us_ein": "ein",
     "ca_sin": "sin_luhn",

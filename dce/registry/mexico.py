@@ -899,16 +899,28 @@ SPECS: tuple[DocTypeSpec, ...] = (
             _a("SERVICIO DE ADMINISTRACIÓN TRIBUTARIA"),
             _a("REGISTRO FEDERAL DE CONTRIBUYENTES"),
             _a("Datos de identificación del contribuyente"),
-            _a("Régimen"),
             _a("idCIF"),
             _a("Domicilio fiscal"),
             # The sections the SAT prints only on the constancia. Page 1 of a CSF *is* the
             # cédula, so nothing on page 1 can separate the two documents — but a CSF always
             # continues into the regimes and obligations tables and a standalone cédula
-            # never does. These are the only strings in this pair that discriminate.
+            # never does. These are the only strings in this pair that discriminate, and the
+            # list is now exactly the strings that survive the measurement:
+            #
+            # ``Régimen`` (singular) and ``Actividades Económicas`` were declared here and
+            # are removed. Both are printed on page 1: ``corpus/mx/mx_cif.pdf`` is a
+            # page-1-only extract of a constancia and carries "Régimen Capital:" in the
+            # cédula's own identification block and "Actividades Económicas:" as the heading
+            # of a table whose rows begin on page 2. The pack already knew about the first
+            # one in the other direction — mx_cif's mirror-image negative anchor on
+            # "Régimen" was removed for firing on every genuine cédula — and declaring it
+            # positively here was the same error with the sign flipped. Measured: with these
+            # two present, a page-1-only extract was ACCEPTED as mx_rfc_csf at 0.75, the
+            # wrong answer this pair's whole design exists to refuse. The plural
+            # ``Regímenes`` and ``Obligaciones`` are genuinely absent from page 1 and are
+            # what is left.
             _a("Regímenes"),
             _a("Obligaciones"),
-            _a("Actividades Económicas"),
         ],
         id_patterns=[RFC_PATTERN, CURP_PATTERN],
         confusable_with={

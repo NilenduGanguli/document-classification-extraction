@@ -711,7 +711,7 @@ class ReviewPort:
         """List queue items, filtered by status and doctype.
 
         The store filters by status and document; the doctype filter is applied here, because
-        the store does not have one and a caller asking for ``?doctype=in_pan`` must not be
+        the store does not have one and a caller asking for ``?doctype=us_w9`` must not be
         handed a page of everybody else\'s PII by way of an ignored keyword.
         """
         fn = self._attr(self._queue, self._LIST)

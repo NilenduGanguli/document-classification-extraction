@@ -5,7 +5,7 @@ letting the document leave the process.
 
 Other business units send this service files nobody has looked at yet: a scan that might be a
 PAN card, might be a utility bill, might be a passport page, might be an internal memo that
-should never have been uploaded. DCE classifies it against a registry of 121 document types,
+should never have been uploaded. DCE classifies it against a registry of 129 document types,
 and only once a type is accepted does it extract that type's fields, escalating from a free
 local resolver to paid tiers only for the fields the cheaper ones could not find — each value
 carrying the locator, page and bounding box that produced it.
@@ -151,7 +151,7 @@ auditable and this is a KYC system.
 | Tier | What it does | Why it is there |
 |---|---|---|
 | **L0 structural prior** | page count, aspect ratio, number of marks and tables, digital vs scanned | A 1-page 3.37×2.13 card is not a 40-page statement. Free, and it kills whole branches. |
-| **L1 anchors + checksums** | decisive anchor strings (`INCOME TAX DEPARTMENT`), plus identifiers whose checksum validates (Verhoeff/Aadhaar, PAN, SSN, SIN, CURP, RFC, MRZ) | A checksum-valid identifier in the right context is near-proof. Weighted **3.0** on purpose. |
+| **L1 anchors + checksums** | decisive anchor strings (`WAGE AND TAX STATEMENT`), plus identifiers whose checksum validates (SIN, CURP, RFC, MRZ; SSN/EIN/ITIN are structural only) | A checksum-valid identifier in the right context is near-proof. Weighted **3.0** on purpose. |
 | **L2 zone-weighted BM25** | per-doctype term profiles scored over the layout's zones | The same word is worth 3.0 in a title and 0.25 in a page footer. This is what makes it better than grep — and the zones come free from the layout payload. |
 | **L3 local BERT kNN** *(optional, off)* | a mounted checkpoint, in-process, CPU | Only if L1+L2 prove insufficient on your corpus. See below. |
 | **L4 abstain** | `unknown` → human queue | The tier that makes the other four safe. |
@@ -183,7 +183,7 @@ for the fields the tiers before it could not fill, and stops the moment nothing 
 | Tier | What it is | Cost | Runs when | Needs |
 |---|---|---|---|---|
 | **T1 local resolver** | layout-anchored locators + validators, in-process | **free** | always | nothing |
-| **T2 Azure prebuilt** | `prebuilt-idDocument`, `tax.us.w2/1099/1040`, `bankStatement.us`, `payStub.us` | per **page** | `t2_enabled`, fields still missing, **and Azure ships a model for this doctype** (14 of 121 today) | `AZURE_DI_*`, `content_base64`, httpx |
+| **T2 Azure prebuilt** | `prebuilt-idDocument`, `tax.us.w2/1099/1040`, `bankStatement.us`, `payStub.us` | per **page** | `t2_enabled`, fields still missing, **and Azure ships a model for this doctype** (13 of 129 today) | `AZURE_DI_*`, `content_base64`, httpx |
 | **T3 Azure queryFields** | the layout model asked for named fields nobody trained it on | per **field** (max 20/request) | `t3_enabled`, fields still missing | `AZURE_DI_*`, `content_base64`, httpx |
 | **T4 constrained LLM** | JSON-schema-constrained completion over a *window* of the text | per **token** | `t4_enabled`, fields still missing | `LLM_*`, httpx |
 | **T5 human review** | a person, one field at a time | a person's minutes | the result still needs one | nothing |
@@ -288,7 +288,7 @@ covering a whole document would be an approval by somebody who looked at one fie
 are stable, so re-processing a document does not resurrect a decision somebody already made.
 
 **Blind double entry, where it actually matters.** A field that is **both PII and backed by a
-real check digit** — an Aadhaar number, a CURP, a SIN — takes **two independent decisions**:
+real check digit** — a SIN, a CURP, an MRZ document number — takes **two independent decisions**:
 
 * `approve` twice, by two *different* reviewers. The first is recorded and the item stays
   `pending` (a `200` with `status: pending` is a success, not a failure). The same person
@@ -315,20 +315,24 @@ this service owns.
 
 ---
 
-## The doctype registry — 121 types across four countries
+## The doctype registry — 129 types across three countries
 
 | Country | Total | Identity | Address proof | Tax | Corporate | Financial | Other |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 🇮🇳 India | **36** | 12 | 7 | 4 | 7 | 5 | 1 |
-| 🇺🇸 United States | **35** | 12 | 2 | 9 | 8 | 4 | — |
-| 🇨🇦 Canada | **25** | 11 | 3 | 4 | 6 | 1 | — |
-| 🇲🇽 Mexico | **20** | 8 | 5 | 4 | 2 | 1 | — |
-| 🌐 Cross-country (`XX`) | **5** | 2 | 1 | — | — | 1 | 1 |
-| **Total** | **121** | **45** | **18** | **21** | **23** | **12** | **2** |
+| 🇺🇸 United States | **50** | 11 | 2 | 9 | 22 | 6 | — |
+| 🇨🇦 Canada | **37** | 11 | 3 | 4 | 18 | 1 | — |
+| 🇲🇽 Mexico | **27** | 8 | 5 | 4 | 5 | 4 | 1 |
+| 🌐 Cross-country (`XX`) | **15** | 2 | 1 | 1 | 4 | 3 | 4 |
+| **Total** | **129** | **32** | **11** | **18** | **49** | **14** | **5** |
 
-28 of them are flagged `officially_valid` — RBI "Officially Valid Document" and equivalents,
-which is regulatory weight rather than a tag. Between them the packs carry ~1,270 classification
-anchors and ~909 field specifications. `GET /api/v1/doctypes?country=IN` lists them.
+An India pack of 52 doctypes was removed on 2026-08-14 — the owner has no requirement for
+them. It is preserved in full on the `archive/india-doctypes` branch, together with the 41
+Indian corpus documents; nothing on `main` keeps it alive behind a flag.
+
+20 of them are flagged `officially_valid` — primary photo identity evidence under the US CIP
+rule, the CNBV *identificación oficial* list and their equivalents, which is regulatory weight
+rather than a tag. Between them the packs carry 992 classification anchors and 883 field
+specifications. `GET /api/v1/doctypes?country=CA` lists them.
 
 > **Be honest about what this is.** The registry was **authored from published specifications,
 > form templates and public documentation — it has not been validated against a corpus of real
@@ -343,33 +347,35 @@ anchors and ~909 field specifications. `GET /api/v1/doctypes?country=IN` lists t
 ## Adding a doctype
 
 This is the one thing an integrator actually does. A doctype is a single `DocTypeSpec`: how to
-recognise it and what to pull out of it, declared together — because "this is an Aadhaar card"
-and "an Aadhaar card has a 12-digit UID with a Verhoeff check" are the same knowledge, and they
-drift apart the moment you split them across two files.
+recognise it and what to pull out of it, declared together — because "this is a Canadian SIN
+confirmation" and "a SIN is nine Luhn-checked digits" are the same knowledge, and they drift
+apart the moment you split them across two files.
 
 ```python
 DocTypeSpec(
-    doctype_id="in_pan",                       # stable id; never renamed once in use
-    label="Permanent Account Number card",
-    country="IN",
+    doctype_id="ca_sin_confirmation",          # stable id; never renamed once in use
+    label="Confirmation of Social Insurance Number",
+    country="CA",
     category=Category.identity,
-    issuing_authority="Income Tax Department",
-    officially_valid=True,                     # RBI OVD — regulatory weight, not a tag
+    issuing_authority="Service Canada",
+    officially_valid=False,                    # not primary photo ID on its own
     anchors=[
-        Anchor(text="income tax department", decisive=True, zone=Zone.title),
-        Anchor(text="permanent account number", decisive=True),
-        Anchor(text="आयकर विभाग", lang="hi"),
+        Anchor(text="SOCIAL INSURANCE NUMBER", decisive=True, zone=Zone.title,
+               controls=Controls.CLASS_NAME_UNCONTESTED),
+        Anchor(text="Service Canada"),
+        Anchor(text="NUMÉRO D'ASSURANCE SOCIALE", lang="fr"),
     ],
-    id_patterns=[r"\b[A-Z]{5}\d{4}[A-Z]\b"],   # decisive when the checksum validates too
-    confusable_with={"in_tan": "deductor"},    # and the term that separates them
-    negative_anchors=["challan"],
+    id_patterns=[r"(?<!\d)\d{3}[ -]?\d{3}[ -]?\d{3}(?!\d)"],  # decisive once Luhn validates
+    confusable_with={"ca_pr_card": "the card carries a photo and a UCI"},
+    negative_anchors=["PERMANENT RESIDENT CARD"],
     fields=[
         FieldSpec(
-            name="pan_number", attribute_key="id.pan", type="id",
+            name="sin_number", attribute_key="id.sin", type="id",
             required=True, pii=True,
-            labels={"en": ["Permanent Account Number", "PAN"]},
-            pattern=r"[A-Z]{5}\d{4}[A-Z]",
-            validator="pan",
+            labels={"en": ["Social Insurance Number", "SIN"],
+                    "fr": ["Numéro d'assurance sociale", "NAS"]},
+            pattern=r"\d{3}[ -]?\d{3}[ -]?\d{3}",
+            validator="sin_luhn",
             locators=["kv", "label", "regex"],
         ),
     ],
@@ -512,12 +518,12 @@ curl -s localhost:8200/api/v1/process \
 A `/process` response now carries a tier ledger — what ran, what it produced, what it cost:
 
 ```jsonc
-{ "classification": { "doctype_id": "in_pan", "confidence": 0.94, "…": "…" },
+{ "classification": { "doctype_id": "ca_sin_confirmation", "confidence": 0.94, "…": "…" },
   "extraction":     { "fields": [ /* … each with locator, page, bbox, verification */ ] },
   "needs_review": false,
   "tiers_used": [
     { "tier": "t1_local",          "status": "ran",     "fields_filled": 1, "fields": ["pan_number"],  "ms": 4,    "cost_bearing": false },
-    { "tier": "t2_azure_prebuilt", "status": "skipped", "fields_filled": 0, "detail": "no azure model covers in_pan; staying on T1" },
+    { "tier": "t2_azure_prebuilt", "status": "skipped", "fields_filled": 0, "detail": "no azure model covers ca_sin_confirmation; staying on T1" },
     { "tier": "t4_llm",            "status": "ran",     "fields_filled": 1, "fields": ["holder_name"], "ms": 1840, "cost_bearing": true }
   ],
   "review_ids": [],
@@ -684,7 +690,7 @@ service must always be able to say.
 * **Calibration is identity.** The Platt calibration on L2 is a no-op until somebody fits it on
   a labelled corpus, so probabilities are ordered correctly but not calibrated, and the accept
   threshold is doing more work than it should.
-* **T2 covers 14 of 121 doctypes.** Everything else stays on T1/T3/T4 by design; the map only
+* **T2 covers 13 of 129 doctypes.** Everything else stays on T1/T3/T4 by design; the map only
   grows after somebody measures a specialist on real documents of that type.
 * **Per-page classification of merged PDFs is not exposed.** `Classification.page_types` exists
   in the contract and the cascade can produce segments; the routes classify whole documents.

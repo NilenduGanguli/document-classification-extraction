@@ -66,21 +66,21 @@ CONTENT_B64 = "JVBERi0xLjcgbm90IHJlYWxseSBhIHBkZg=="
 # ---------------------------------------------------------------------------
 # Fixtures — registry, classifier and T1, stubbed at the port boundary
 # ---------------------------------------------------------------------------
-PAN_SPEC = DocTypeSpec(
-    doctype_id="in_pan",
-    label="Permanent Account Number card",
-    country="IN",
+SIN_SPEC = DocTypeSpec(
+    doctype_id="ca_sin_confirmation",
+    label="Confirmation of SIN",
+    country="CA",
     category=Category.identity,
     officially_valid=True,
-    anchors=[Anchor(text="income tax department", decisive=True, zone=Zone.title)],
+    anchors=[Anchor(text="social insurance number", decisive=True, zone=Zone.title)],
     fields=[
         FieldSpec(
-            name="pan_number",
-            attribute_key="id.pan",
+            name="sin_number",
+            attribute_key="id.sin",
             type="id",
             required=True,
             pii=True,
-            validator="pan",
+            validator="sin_luhn",
         ),
         FieldSpec(
             name="holder_name",
@@ -93,9 +93,9 @@ PAN_SPEC = DocTypeSpec(
 )
 
 ACCEPTED = Classification(
-    doctype_id="in_pan",
-    label="Permanent Account Number card",
-    country="IN",
+    doctype_id="ca_sin_confirmation",
+    label="Confirmation of SIN",
+    country="CA",
     confidence=0.94,
     margin=0.61,
     coverage=0.55,
@@ -113,13 +113,13 @@ ABSTAINED = Classification(
 def t1_result() -> ExtractionResult:
     """What the local resolver gets on its own: the id, checksum-verified; not the name."""
     return ExtractionResult(
-        doctype_id="in_pan",
+        doctype_id="ca_sin_confirmation",
         fields=[
             ExtractedField(
-                name="pan_number",
-                attribute_key="id.pan",
-                value="ABCPE1234F",
-                normalized="ABCPE1234F",
+                name="sin_number",
+                attribute_key="id.sin",
+                value="193-000-007",
+                normalized="193-000-007",
                 confidence=0.97,
                 verification="checksum_verified",
                 locator="kv",
@@ -193,7 +193,7 @@ def build_app(
     """An app wired to stubs. ``TestClient`` is used without its context manager on purpose:
     entering it runs the lifespan, which would replace these stubs with the real engines."""
     app = create_app(Settings(_env_file=None, **settings_kwargs))
-    app.state.registry = RegistryPort(StubRegistry(specs if specs is not None else [PAN_SPEC]))
+    app.state.registry = RegistryPort(StubRegistry(specs if specs is not None else [SIN_SPEC]))
     app.state.classifier = ClassifierPort(StubClassifier(classification or ACCEPTED))
     app.state.extractor = ExtractorPort(StubExtractor(extraction or t1_result()))
     # False is the router's "looked, found nothing" sentinel — it stops the real modules from
@@ -235,8 +235,8 @@ def test_with_every_tier_disabled_process_is_what_it_always_was() -> None:
 
     body = process(client)
 
-    assert body["classification"]["doctype_id"] == "in_pan"
-    assert body["extraction"]["fields"][0]["value"] == "ABCPE1234F"
+    assert body["classification"]["doctype_id"] == "ca_sin_confirmation"
+    assert body["extraction"]["fields"][0]["value"] == "193-000-007"
     assert body["extraction"]["missing_required"] == ["holder_name"]
     assert body["needs_review"] is True
     assert body["timings"]["tiers_ms"] == 0
@@ -247,7 +247,7 @@ def test_with_every_tier_disabled_process_is_what_it_always_was() -> None:
         "tier": "t1_local",
         "status": "ran",
         "fields_filled": 1,
-        "fields": ["pan_number"],
+        "fields": ["sin_number"],
         "ms": used["t1_local"]["ms"],
         "cost_bearing": False,
         "detail": "",
@@ -299,13 +299,13 @@ def test_an_enabled_tier_fills_the_gap_and_says_what_it_cost() -> None:
     spy = install(
         client,
         T2,
-        SpyTier([ExtractedField(name="holder_name", value="RAHUL SHARMA", confidence=0.88)]),
+        SpyTier([ExtractedField(name="holder_name", value="ANNA ERIKSSON", confidence=0.88)]),
     )
 
     body = process(client, content_base64=CONTENT_B64)
 
     filled = {f["name"]: f for f in body["extraction"]["fields"]}
-    assert filled["holder_name"]["value"] == "RAHUL SHARMA"
+    assert filled["holder_name"]["value"] == "ANNA ERIKSSON"
     # Provenance survives the merge: a reviewer must be able to see this came from a vendor.
     assert filled["holder_name"]["locator"] == "t2_azure_prebuilt"
     assert filled["holder_name"]["attribute_key"] == "identity.full_name"  # from the spec
@@ -319,7 +319,7 @@ def test_an_enabled_tier_fills_the_gap_and_says_what_it_cost() -> None:
     assert body["timings"]["tiers_ms"] >= 0
 
     # The tier only ever saw the bytes and the accepted doctype.
-    assert spy.calls[0]["doctype_id"] == "in_pan"
+    assert spy.calls[0]["doctype_id"] == "ca_sin_confirmation"
     assert spy.calls[0]["data"].startswith(b"%PDF")
 
     # Nothing is left for a human, so nothing was queued.
@@ -337,8 +337,8 @@ def test_a_tier_cannot_overwrite_a_value_that_was_already_found() -> None:
         T2,
         SpyTier(
             [
-                ExtractedField(name="pan_number", value="WRONG12345", confidence=0.99),
-                ExtractedField(name="holder_name", value="RAHUL SHARMA", confidence=0.6),
+                ExtractedField(name="sin_number", value="WRONG12345", confidence=0.99),
+                ExtractedField(name="holder_name", value="ANNA ERIKSSON", confidence=0.6),
             ]
         ),
     )
@@ -346,9 +346,9 @@ def test_a_tier_cannot_overwrite_a_value_that_was_already_found() -> None:
     body = process(client, content_base64=CONTENT_B64)
 
     values = {f["name"]: f for f in body["extraction"]["fields"]}
-    assert values["pan_number"]["value"] == "ABCPE1234F"
-    assert values["pan_number"]["verification"] == "checksum_verified"
-    assert values["pan_number"]["locator"] == "kv"
+    assert values["sin_number"]["value"] == "193-000-007"
+    assert values["sin_number"]["verification"] == "checksum_verified"
+    assert values["sin_number"]["locator"] == "kv"
     assert tiers_by_id(body)["t2_azure_prebuilt"]["fields"] == ["holder_name"]
 
 
@@ -376,7 +376,7 @@ def test_a_tier_that_is_enabled_but_unconfigured_is_reported_not_fatal() -> None
     assert t2["status"] == "misconfigured"
     assert "azure_di_endpoint" in t2["detail"]
     assert t2["cost_bearing"] is False
-    assert body["extraction"]["fields"][0]["value"] == "ABCPE1234F"
+    assert body["extraction"]["fields"][0]["value"] == "193-000-007"
 
 
 def test_a_tier_that_raises_costs_money_and_does_not_fail_the_request() -> None:
@@ -390,7 +390,7 @@ def test_a_tier_that_raises_costs_money_and_does_not_fail_the_request() -> None:
     assert "azure said no" in t2["detail"]
     # The call was made, so it is on the bill whether or not the answer was usable.
     assert t2["cost_bearing"] is True
-    assert body["extraction"]["fields"][0]["value"] == "ABCPE1234F"
+    assert body["extraction"]["fields"][0]["value"] == "193-000-007"
     assert body["needs_review"] is True
 
 
@@ -412,13 +412,13 @@ def test_a_tier_whose_module_is_missing_is_reported_as_unavailable(
     assert t2["status"] == "unavailable"
     assert "not importable" in t2["detail"]
     assert t2["cost_bearing"] is False
-    assert body["extraction"]["fields"][0]["value"] == "ABCPE1234F"
+    assert body["extraction"]["fields"][0]["value"] == "193-000-007"
 
 
 def test_tiers_escalate_and_stop_as_soon_as_nothing_is_missing() -> None:
     """T3 pays for nothing T2 already found — the escalation is the cost control."""
     client = build_app(t2_enabled=True, t3_enabled=True, queue=real_queue(), **AZURE)
-    install(client, T2, SpyTier([ExtractedField(name="holder_name", value="RAHUL SHARMA")]))
+    install(client, T2, SpyTier([ExtractedField(name="holder_name", value="ANNA ERIKSSON")]))
     t3_spy = install(client, T3, SpyTier([ExtractedField(name="holder_name", value="SOMEBODY")]))
 
     body = process(client, content_base64=CONTENT_B64)
@@ -433,7 +433,7 @@ def test_the_ledger_reports_every_tier_in_escalation_order() -> None:
     )
     install(client, T2, SpyTier([]))
     install(client, T3, SpyTier([]))
-    install(client, T4, SpyTier([ExtractedField(name="holder_name", value="RAHUL SHARMA")]))
+    install(client, T4, SpyTier([ExtractedField(name="holder_name", value="ANNA ERIKSSON")]))
 
     body = process(client, content_base64=CONTENT_B64)
 
@@ -445,7 +445,7 @@ def test_the_ledger_reports_every_tier_in_escalation_order() -> None:
 
 def test_spend_is_visible_in_the_metrics() -> None:
     client = build_app(t2_enabled=True, queue=real_queue(), **AZURE)
-    install(client, T2, SpyTier([ExtractedField(name="holder_name", value="RAHUL SHARMA")]))
+    install(client, T2, SpyTier([ExtractedField(name="holder_name", value="ANNA ERIKSSON")]))
     process(client, content_base64=CONTENT_B64)
 
     body = client.get("/metrics").text
@@ -491,7 +491,7 @@ def test_the_cascade_refuses_an_unclassified_document_outright() -> None:
         run_tier_cascade(
             _request_of(client),
             view=LayoutView(doc_id="doc-1"),
-            spec=PAN_SPEC,
+            spec=SIN_SPEC,
             classification=ABSTAINED,
             result=t1_result(),
             settings=Settings(_env_file=None, t2_enabled=True, **AZURE),
@@ -542,7 +542,7 @@ def test_review_filters_by_status_and_doctype() -> None:
     client = build_app(queue=real_queue())
     process(client)
 
-    assert client.get("/api/v1/review?doctype=in_pan").json()["count"] == 1
+    assert client.get("/api/v1/review?doctype=ca_sin_confirmation").json()["count"] == 1
     assert client.get("/api/v1/review?doctype=us_w9").json()["count"] == 0
     assert client.get("/api/v1/review?status=approved").json()["count"] == 0
     assert client.get("/api/v1/review?status=all").json()["count"] == 1
@@ -581,11 +581,11 @@ def test_correct_replaces_the_value() -> None:
     item_id = process(client)["review_ids"][0]
 
     body = client.post(
-        f"/api/v1/review/{item_id}/correct", json={"reviewer": "asha", "value": "RAHUL SHARMA"}
+        f"/api/v1/review/{item_id}/correct", json={"reviewer": "asha", "value": "ANNA ERIKSSON"}
     ).json()
 
     assert body["status"] == "corrected"
-    assert body["corrected_value"] == "RAHUL SHARMA"
+    assert body["corrected_value"] == "ANNA ERIKSSON"
 
 
 def test_an_empty_correction_is_refused_rather_than_treated_as_an_approval() -> None:
@@ -663,10 +663,12 @@ def test_review_endpoints_say_503_when_no_queue_is_installed() -> None:
 
 def test_a_document_that_needs_no_human_queues_nothing() -> None:
     complete = ExtractionResult(
-        doctype_id="in_pan",
+        doctype_id="ca_sin_confirmation",
         fields=[
-            ExtractedField(name="pan_number", value="ABCPE1234F", confidence=0.97, locator="kv"),
-            ExtractedField(name="holder_name", value="RAHUL SHARMA", confidence=0.91, locator="kv"),
+            ExtractedField(name="sin_number", value="193-000-007", confidence=0.97, locator="kv"),
+            ExtractedField(
+                name="holder_name", value="ANNA ERIKSSON", confidence=0.91, locator="kv"
+            ),
         ],
     )
     client = build_app(extraction=complete, queue=real_queue())

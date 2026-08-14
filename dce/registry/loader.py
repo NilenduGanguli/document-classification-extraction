@@ -1,6 +1,7 @@
 """The doctype registry: registration, lookup, and structural validation.
 
-This module is *mechanism*. The knowledge lives in the packs (:mod:`dce.registry.india`,
+This module is *mechanism*. The knowledge lives in the packs (:mod:`dce.registry.usa`,
+:mod:`dce.registry.canada`, :mod:`dce.registry.mexico`,
 :mod:`dce.registry.crosscountry`), which call :func:`register_all` at import time.
 
 Two design decisions are worth stating up front, because they are what stop the registry
@@ -14,11 +15,13 @@ with an uncompilable regex is worse than one that refuses to start.
 **Decisive anchors must stay distinguishing.** The cascade treats a decisive anchor as
 near-proof of a doctype (``fuse_weight_anchor`` is 3.0 against 1.0 for lexical). Two
 doctypes claiming the same decisive anchor therefore make each other unclassifiable at L1.
-That is *sometimes legitimate* — a masked Aadhaar and a full Aadhaar really do share the
-UIDAI header — so the rule is not "never collide", it is
-:func:`_check_decisive_collisions`: colliding doctypes must declare each other in
+That is *sometimes legitimate* — two documents of one issuer's family (a card and its
+masked reprint) really can share the issuer's header — so the rule is not "never collide",
+it is :func:`_check_decisive_collisions`: colliding doctypes must declare each other in
 ``confusable_with`` (naming the term that separates them) **and** each must keep at least
-one decisive anchor of its own. An undeclared collision is a bug and fails loudly.
+one decisive anchor of its own. An undeclared collision is a bug and fails loudly. No
+doctype in the registry currently shares a decisive anchor with another, which is the state
+the check exists to preserve rather than a reason to relax it.
 
 **Every check in this module is blind to a lone false claim, and always will be.** They all
 compare the registry against itself, so they can only fire when a *second* doctype declares
@@ -41,10 +44,12 @@ this module:
 
 Word counting here deliberately does *not* use :func:`dce.models.tokenize`. That tokenizer
 is ``[^\\W_]+``, and Python's ``\\w`` excludes Unicode combining marks (categories Mn/Mc),
-so every Devanagari matra splits a word: ``"आधार"`` tokenizes to ``["आध", "र"]``. Anchor
-*specificity* is a property of the human-readable string, so :func:`_words` splits on
-whitespace and punctuation only and is script-agnostic. See the note in
-``tests/test_registry_india.py``.
+so any script that writes a vowel as a combining mark has its words split mid-word — which
+would make a two-word anchor look like a four-word one and let it past the specificity
+rules below. Anchor *specificity* is a property of the human-readable string, so
+:func:`_words` splits on whitespace and punctuation only and is script-agnostic. The packs
+registered today are Latin-script, and the rule is written for the script the next pack
+brings, not for the ones already here.
 """
 
 from __future__ import annotations
@@ -61,7 +66,6 @@ __all__ = [
     "ATTRIBUTE_KEYS",
     "KNOWN_FIELD_TYPES",
     "KNOWN_LOCATORS",
-    "PENDING_VALIDATORS",
     "VALIDATOR_CONTRACT",
     "RegistryError",
     "all_specs",
@@ -87,60 +91,42 @@ class RegistryError(RuntimeError):
 # Canonical attribute keys — the dotted namespace the fleet merges facts on.
 # Carried over verbatim from di.ontology where a key already existed, so a fact
 # extracted here lands in the same bucket as the same fact extracted by the US/CA/MX
-# pipeline. New keys below are India-specific extensions of the same namespaces.
+# pipeline. This is the jurisdiction-neutral base only: a key that names one country's
+# instrument (an SSN, a CURP, an SIN) is declared by that country's pack — see
+# ATTRIBUTE_KEY_EXTENSIONS in dce.registry.usa and the note there. Some base keys are
+# currently unreferenced by any FieldSpec; they stay because the namespace is shared with
+# the rest of the fleet, and dropping a key here would split a merge bucket in two.
 # ---------------------------------------------------------------------------
 ATTRIBUTE_KEYS: dict[str, str] = {
     # -- identity ---------------------------------------------------------
     "identity.full_name": "Full legal name",
     "identity.given_names": "Given name(s)",
     "identity.surname": "Surname / family name",
-    "identity.father_name": "Father's name (near-universal on Indian IDs)",
+    "identity.father_name": "Father's name, where a document prints one",
     "identity.mother_name": "Mother's name",
     "identity.spouse_name": "Spouse / husband / wife name",
-    "identity.guardian_name": "Guardian — the C/O or S/O line on an Aadhaar letter",
+    "identity.guardian_name": "Guardian — the care-of line on an identity document",
     "identity.date_of_birth": "Date of birth",
-    "identity.year_of_birth": "Year of birth only (Aadhaar prints YOB when DOB is unknown)",
+    "identity.year_of_birth": "Year of birth only, where a document prints no full date",
     "identity.age": "Stated age, as of a stated date",
     "identity.sex": "Sex / gender marker",
     "identity.nationality": "Nationality",
     "identity.place_of_birth": "Place of birth",
     "identity.mobile": "Registered mobile number",
     "identity.email": "Registered email address",
-    "identity.category": "Social category (SC / ST / OBC / General)",
     # -- government identifiers ------------------------------------------
-    "id.aadhaar": "Aadhaar number (12 digits, Verhoeff) — see UIDAI masking obligation",
-    "id.aadhaar_last4": "Last four digits of an Aadhaar number (the only part normally storable)",
-    "id.aadhaar_vid": "Aadhaar Virtual ID (16 digits)",
-    "id.aadhaar_enrolment": "Aadhaar enrolment number (pre-issue acknowledgement slip)",
-    "id.pan": "Permanent Account Number",
-    "id.tan": "Tax Deduction and Collection Account Number",
     "id.passport_number": "Passport number",
-    "id.voter_epic": "Voter EPIC number",
-    "id.driving_licence": "Driving licence number",
-    "id.gstin": "Goods and Services Tax Identification Number",
-    "id.cin": "Corporate Identity Number (MCA)",
-    "id.llpin": "LLP Identification Number (MCA)",
-    "id.firm_registration_number": "Registrar of Firms registration number",
-    "id.uan": "EPFO Universal Account Number",
-    "id.esic": "ESIC insurance number",
-    "id.ckyc_kin": "CKYC Identification Number (KIN)",
-    "id.ration_card": "Ration card number",
-    "id.nrega_job_card": "MGNREGA job card number",
-    "id.ppo_number": "Pension Payment Order number",
-    "id.property_id": "Municipal property / khata identifier",
     # -- address ----------------------------------------------------------
     "address.residential": "Residential address",
     "address.mailing": "Mailing address",
     "address.registered": "Registered / principal place of business",
-    "address.postal_code": "PIN code",
+    "address.postal_code": "Postal / ZIP code",
     "address.district": "District",
-    "address.state": "State / union territory",
+    "address.state": "State / province / territory",
     "address.village": "Village / town / locality",
     # -- financial / income ------------------------------------------------
     "account.number": "Bank account number",
     "account.balance": "Reported balance",
-    "account.ifsc": "IFSC of the account's branch",
-    "account.micr": "MICR code",
     "account.bank_name": "Bank name",
     "account.branch": "Branch name / address",
     "account.type": "Account type (savings / current / …)",
@@ -152,7 +138,6 @@ ATTRIBUTE_KEYS: dict[str, str] = {
     "income.net_pay": "Net pay for the period",
     "income.total_income": "Total income declared for the year",
     "income.tax_deducted": "Tax deducted at source",
-    "income.pension_amount": "Basic pension sanctioned",
     # -- corporate / ownership --------------------------------------------
     "entity.legal_name": "Company / firm legal name",
     "entity.trade_name": "Trade name, where it differs from the legal name",
@@ -169,7 +154,7 @@ ATTRIBUTE_KEYS: dict[str, str] = {
     "ownership.share": "Profit-sharing / shareholding proportion",
     # -- utility / tenancy --------------------------------------------------
     "utility.consumer_number": "Consumer / connection / service number",
-    "utility.service_provider": "DISCOM / board / operator name",
+    "utility.service_provider": "Utility / board / operator name",
     "utility.units_consumed": "Units consumed in the billing period",
     "utility.bill_amount": "Amount billed",
     "utility.bill_period": "Billing period covered",
@@ -182,7 +167,6 @@ ATTRIBUTE_KEYS: dict[str, str] = {
     "doc.expiry_date": "Document expiry / validity date",
     "doc.issuing_authority": "Named issuing authority / office",
     "doc.reference_number": "Certificate / acknowledgement / serial number",
-    "doc.assessment_year": "Assessment year (Indian tax documents)",
     "doc.due_date": "Payment due date",
     "doc.place_of_issue": "Place of issue",
     "doc.registration_number": "Registration number assigned by the issuing registry",
@@ -214,45 +198,18 @@ VALIDATOR_MODULE = "dce.extract.validate"
 #: identifier silently rejects genuine documents, which is the worst failure mode this
 #: service has.
 VALIDATOR_CONTRACT: dict[str, str] = {
-    "verhoeff_aadhaar": (
-        "12 digits, first digit 2-9, Verhoeff check digit over all 12. Accept the "
-        "'NNNN NNNN NNNN' printed grouping; compare on the compact form."
-    ),
-    "pan": (
-        "10 chars, [A-Z]{5}[0-9]{4}[A-Z]. 4th char is the holder type (one of ABCFGHJLPT), "
-        "5th is the first letter of the surname/entity name. The 10th character IS a check "
-        "character but the algorithm is NOT published by the Income Tax Department — "
-        "validate structure only, never a computed check digit."
-    ),
-    "gstin": (
-        "15 chars: 2-digit state code + 10-char PAN + 1 entity code + 'Z' + 1 check "
-        "character. The check character IS a published mod-36 weighted algorithm — compute "
-        "and enforce it."
-    ),
-    "epic_voter": (
-        "Current EPIC numbers are 3 letters (state functional code) + 7 digits. Older "
-        "state-issued series must NOT be rejected outright — accept the modern form, note "
-        "the rest."
-    ),
-    "in_dl": (
-        "Indian driving licence shape: 2-letter state code + 2-digit RTO code, then a "
-        "state-specific serial. No national standard and no checksum — heuristic only."
-    ),
-    "in_passport": (
-        "Indian passport number shape: 1 letter + 7 digits. No check digit on the printed "
-        "number; the only verifiable digits live in the MRZ — see mrz_td3."
-    ),
     "mrz_td3": (
         "ICAO 9303 TD3: two 44-character lines, per-field and composite check digits over "
         "the 7-3-1 weighting. Enforce every check digit."
     ),
     "generic_date": (
-        "Indian documents print day-first, so day/month ambiguity must resolve DMY and the "
-        "assumption must be reported, not hidden. Normalise to ISO."
+        "A printed date in any of the orderings the packs' documents use. Where day/month "
+        "order is genuinely ambiguous the assumption must be reported, not hidden. "
+        "Normalise to ISO."
     ),
     "amount": (
-        "Currency amount including the Indian lakh grouping (12,34,567.89). Normalise to a "
-        "plain decimal."
+        "Currency amount in any of the thousands-grouping conventions the packs' documents "
+        "print. Normalise to a plain decimal."
     ),
     "name": "A person or entity name — must reject a date or a bare digit run binding to it.",
     "address": (
@@ -260,44 +217,6 @@ VALIDATOR_CONTRACT: dict[str, str] = {
     ),
 }
 
-#: Validators the registry NEEDS but :mod:`dce.extract.validate` does not implement yet.
-#:
-#: These are not referenced by any FieldSpec — doing so would (correctly) fail
-#: :func:`_check_field`. The affected fields fall back to their ``pattern``, which covers
-#: the structural case but not the normalisation. This mapping is the checklist for whoever
-#: extends the validator module; once a name lands there, wire it into the FieldSpecs that
-#: need it and move the entry up into :data:`VALIDATOR_CONTRACT`.
-#:
-#: ``tests/test_registry_india.py::test_pending_validators_are_still_pending`` fails the
-#: moment one of these is implemented, so the list cannot quietly go stale.
-PENDING_VALIDATORS: dict[str, str] = {
-    "aadhaar_last4": "Exactly 4 digits — the only portion of an Aadhaar number normally storable.",
-    "assessment_year": "Indian AY printed as YYYY-YY (e.g. 2024-25); normalise to the full span.",
-    "cheque_number": "6 digits under the CTS-2010 standard. Structure only.",
-    "cin": (
-        "21 chars: listing status [LU] + 5-digit industry code + 2-letter state + 4-digit "
-        "year + 3-letter ownership code + 6-digit registration number. No check digit."
-    ),
-    "ckyc_kin": "CKYC Identification Number: 14 digits. Structure only; no published check digit.",
-    "ifsc": (
-        "11 chars: 4-letter bank code + '0' + 6 alphanumeric branch code. Structure only; "
-        "the branch code is a lookup, not a checksum."
-    ),
-    "indian_bank_account": (
-        "9-18 digits after stripping separators. NO checksum exists across Indian banks — "
-        "each bank has its own internal scheme. Length and charset only; do not invent one."
-    ),
-    "indian_mobile": "10 digits beginning 6-9, optionally prefixed +91 / 0.",
-    "indian_pincode": "6 digits, first digit 1-9.",
-    "itr_acknowledgement_number": "ITR-V acknowledgement number: 15 digits. Structure only.",
-    "llpin": (
-        "LLP identification number: 3 letters + '-' + 4 digits (e.g. AAA-1234). Structure only."
-    ),
-    "micr": "9 digits: 3-digit city + 3-digit bank + 3-digit branch. Structure only.",
-    "tan": "10 chars, [A-Z]{4}[0-9]{5}[A-Z]. Structure only; no published check digit.",
-    "uan_epfo": "EPFO Universal Account Number: 12 digits. Structure only; no public check digit.",
-    "year_yyyy": "A 4-digit year in a plausible range (Aadhaar prints 'Year of Birth' alone).",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -329,8 +248,9 @@ def _words(text: str) -> list[str]:
 def _anchor_key(anchor: Anchor) -> tuple[str, str | None]:
     """Identity of an anchor for collision purposes: normalised text plus its zone.
 
-    Case-folded and NFC-normalised so ``"AADHAAR"`` and ``"Aadhaar"`` collide, and so two
-    spellings of the same Devanagari string that differ only in composition do too.
+    Case-folded and NFC-normalised so ``"PASSPORT"`` and ``"Passport"`` collide, and so two
+    spellings of an accented string that differ only in composition ("RÉSIDENT" written
+    precomposed and decomposed) do too.
     """
     text = unicodedata.normalize("NFC", anchor.text).strip().casefold()
     return (text, anchor.zone.value if anchor.zone is not None else None)
@@ -540,7 +460,7 @@ def _validate_spec(spec: DocTypeSpec) -> None:
     """
     did = spec.doctype_id
     if not _DOCTYPE_ID_RE.match(did):
-        _fail(did, "doctype_id must be lowercase snake_case prefixed by the country, e.g. 'in_pan'")
+        _fail(did, "doctype_id must be lowercase snake_case prefixed by the country, e.g. 'us_w9'")
     if not _COUNTRY_RE.match(spec.country):
         _fail(did, f"country {spec.country!r} must be a 2-letter uppercase code (IN, US, XX, …)")
     if not did.startswith(f"{spec.country.lower()}_"):
@@ -673,9 +593,11 @@ def _check_decisive_collisions(errors: list[str]) -> None:
     """Decisive anchors must leave every colliding doctype distinguishable.
 
     Sharing a decisive anchor is allowed when the doctypes are genuinely the same document
-    family (a masked and an unmasked Aadhaar share the UIDAI header), but only if they
-    *say so*: each must list the others in ``confusable_with`` with the term that separates
-    them, and each must retain at least one decisive anchor the others do not have.
+    family (a card and its masked reprint share the issuing authority's header), but only if
+    they *say so*: each must list the others in ``confusable_with`` with the term that
+    separates them, and each must retain at least one decisive anchor the others do not
+    have. Nothing in the registry shares one today; the rule is here for the pack that adds
+    a family.
     """
     owners: dict[tuple[str, str | None], list[str]] = {}
     decisive_by_doc: dict[str, set[tuple[str, str | None]]] = {}
@@ -730,9 +652,12 @@ def _check_decisive_asymmetry(errors: list[str]) -> None:
     not interchangeable.** This was measured rather than reasoned, and the measurement is the
     reason the rule is shaped the way it is.
 
-    *Same country — declare it.* A masked and an unmasked Aadhaar genuinely share the UIDAI
-    header; ``in_certificate_incorporation`` and ``in_llp_incorporation`` genuinely share
-    ``MINISTRY OF CORPORATE AFFAIRS``. Declaring the overlap in ``confusable_with``, both ways,
+    *Same country — declare it.* Two documents of one issuer's family genuinely do share the
+    issuer's header — a card and its masked reprint, or a national registrar's incorporation
+    certificate and the same registrar's certificate for a partnership. (Both measured
+    instances were in the India pack, which has since been removed from this registry, so
+    the branch has no live example; it is retained because the shape recurs wherever one
+    authority issues several documents.) Declaring the overlap in ``confusable_with``, both ways,
     naming the separating term, is the honest description of a one-issuer document family. At
     classification time :func:`contested_claims` then stops the shared string from carrying the
     conclusive-L1 identification route, and the two-channel rule arbitrates on the full
@@ -761,7 +686,7 @@ def _check_decisive_asymmetry(errors: list[str]) -> None:
     it is a bad proxy in **both** directions. It keeps 26 anchors that demonstrably match
     another doctype's documents (``Form W-9``, ``1099-NEC``, ``I-766``, ``FORM 51-101F1``,
     ``SOCIAL SECURITY ADMINISTRATION``, ``TELMEX`` — every one of them issuer-controlled), and
-    it demotes 163 that demonstrably match nothing else (``RATION CARD``, ``PASSBOOK``,
+    it demotes 163 that demonstrably match nothing else (``PASSBOOK``, ``BYLAWS``,
     ``ACTA DE NACIMIENTO``). The property is:
 
         **A decisive anchor must not appear on a document of another type — WHICH INCLUDES
@@ -774,9 +699,8 @@ def _check_decisive_asymmetry(errors: list[str]) -> None:
     ``corpus/ca/ca_sin_confirmation.pdf`` alone breaks six anchors (``BIRTH CERTIFICATE``,
     ``CERTIFICATE OF BIRTH``, ``CERTIFICATE OF MARRIAGE``,
     ``CERTIFICATE OF CANADIAN CITIZENSHIP``, ``CONFIRMATION OF PERMANENT RESIDENCE``,
-    ``DRIVER'S LICENSE``) because it lists the ID it will accept, and
-    ``corpus/in/in_form60.pdf`` breaks four the same way. Issuer control is therefore not
-    sufficient, and — as the 163 show — not necessary either.
+    ``DRIVER'S LICENSE``) because it lists the ID it will accept. Issuer control is therefore
+    not sufficient, and — as the 163 show — not necessary either.
 
     Two consequences for how a pack is written:
 
@@ -856,7 +780,7 @@ def _check_class_name_uncontested(errors: list[str]) -> None:
 
     Today the rule costs nothing: every one of these anchors is claimed by exactly one
     doctype, which is why they were kept decisive rather than demoted. That is the point. The
-    registry grows, and the day a pack author adds a doctype that prints ``RATION CARD`` or
+    registry grows, and the day a pack author adds a doctype that prints ``BYLAWS`` or
     ``MORTGAGE STATEMENT``, the import fails and names both sides — instead of the older
     behaviour, where the new doctype would simply have become unclassifiable and nothing
     would have said so.
@@ -890,19 +814,25 @@ def _check_issuer_name_not_shared(errors: list[str]) -> None:
     document" — and then does not enforce it, because the same-jurisdiction branch accepts a
     two-way ``confusable_with`` declaration as the remedy for any shared string.
 
-    Measured, that acceptance is wrong for this species specifically.
-    ``in_certificate_incorporation`` and ``in_llp_incorporation`` both declared
-    ``MINISTRY OF CORPORATE AFFAIRS`` decisive, declared each other, passed validation — and
-    the string is printed by ``in_brsr`` and ``in_statutory_auditor_report`` documents in the
-    corpus as well. Declaring a family is the right remedy when the shared string genuinely
-    identifies the family and something *else* separates the members. An issuer name does not
-    identify the family; it identifies the issuer, who also issues everything else it issues.
+    Measured, that acceptance is wrong for this species specifically. Two doctypes of one
+    national company registrar both declared the registrar's own name decisive, declared each
+    other, and passed validation — while two *further* documents in the corpus, of types the
+    pair had never heard of, printed the same string on their covers. Declaring a family is
+    the right remedy when the shared string genuinely identifies the family and something
+    *else* separates the members. An issuer name does not identify the family; it identifies
+    the issuer, who also issues everything else it issues, including the document types this
+    registry has not modelled.
+
+    (That measurement was made on the India pack, which has since been removed. The check is
+    kept because the failure is structural, not Indian: every jurisdiction has a tax
+    authority, a registrar and a licensing body whose name heads more of their paper than any
+    registry models.)
 
     Scope is deliberately narrow, and the narrowness is the measured part. The rule asks who
-    declares the string **decisive**, not who declares it. ``in_aadhaar`` anchors decisively
-    on the UIDAI header and ``in_aadhaar_masked`` lists the same header as ordinary lexical
-    evidence: one doctype is staking the identification on it, which is the shape this rule
-    permits and :func:`_check_decisive_asymmetry` already governs.
+    declares the string **decisive**, not who declares it. A pack may anchor one doctype
+    decisively on an issuer header while a sibling doctype lists the same header as ordinary
+    lexical evidence: only one doctype is staking the identification on it, which is the shape
+    this rule permits and :func:`_check_decisive_asymmetry` already governs.
     """
     owners: dict[tuple[str, ...], list[str]] = {}
     for spec in all_specs():

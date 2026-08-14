@@ -18,16 +18,14 @@ unpack it positionally.
   is off. It must never be promoted past ``format_valid``, its confidence is discounted,
   and the message lands in ``ExtractedField.validator_error`` for the reviewer.
 
-The soft state is not a convenience; two real identifiers require it:
+The soft state is not a convenience; a real identifier requires it:
 
-* **EPIC (Indian voter ID)** — ``stdnum.in_.epic`` enforces a Luhn digit that genuine
-  EPICs reportedly fail. A checksum mismatch here lowers confidence; it must not reject.
 * **RFC (Mexico)** — OCR mangles the homoclave constantly on a Constancia de Situación
   Fiscal printout, so the structure is strict and the check digit is advisory.
 
-Two identifiers have **no checksum at all** and are format heuristics only: Indian driving
-licence numbers (:func:`in_dl` — no national standard exists) and Indian passport numbers
-(:func:`in_passport`).
+Two identifiers have **no published check digit at all** and are structural rules only:
+the US SSN (:func:`ssn` — the SSA publishes area/group/serial rules and nothing more) and
+the US EIN (:func:`ein` — only the campus prefix can be checked).
 
 Dependency note: this module imports only the standard library. The classifier's checksum
 sweep runs *before* a document type is known — inside the no-egress path — so importing it
@@ -55,8 +53,6 @@ __all__ = [
     "register",
     "sweep",
     "validate",
-    "verhoeff_check_digit",
-    "verhoeff_ok",
     "verification_level",
 ]
 
@@ -84,8 +80,6 @@ VALIDATORS: dict[str, Validator] = {}
 #: ``checksum_verified``, and only when they returned no soft error.
 CHECKSUM_VALIDATORS: Final[frozenset[str]] = frozenset(
     {
-        "verhoeff_aadhaar",
-        "gstin",
         "curp",
         "rfc",
         "sin_luhn",
@@ -192,51 +186,6 @@ def _join_errors(errors: Iterable[str]) -> str:
 # ---------------------------------------------------------------------------
 # Check-digit primitives
 # ---------------------------------------------------------------------------
-_VERHOEFF_D: Final[tuple[tuple[int, ...], ...]] = (
-    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    (1, 2, 3, 4, 0, 6, 7, 8, 9, 5),
-    (2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
-    (3, 4, 0, 1, 2, 8, 9, 5, 6, 7),
-    (4, 0, 1, 2, 3, 9, 5, 6, 7, 8),
-    (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
-    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2),
-    (7, 6, 5, 9, 8, 2, 1, 0, 4, 3),
-    (8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
-    (9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
-)
-_VERHOEFF_P: Final[tuple[tuple[int, ...], ...]] = (
-    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    (1, 5, 7, 6, 2, 8, 3, 0, 9, 4),
-    (5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
-    (8, 9, 1, 6, 0, 4, 3, 5, 7, 2),
-    (9, 4, 5, 3, 1, 2, 6, 8, 7, 0),
-    (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
-    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5),
-    (7, 0, 4, 6, 9, 1, 3, 2, 5, 8),
-)
-_VERHOEFF_INV: Final[tuple[int, ...]] = (0, 4, 3, 2, 1, 5, 6, 7, 8, 9)
-
-
-def verhoeff_ok(number: str) -> bool:
-    """Verhoeff-validate a digit string whose last digit is the check digit."""
-    if not number.isdigit():
-        return False
-    c = 0
-    for i, item in enumerate(reversed(number)):
-        c = _VERHOEFF_D[c][_VERHOEFF_P[i % 8][int(item)]]
-    return c == 0
-
-
-def verhoeff_check_digit(payload: str) -> str:
-    """Return the Verhoeff check digit for ``payload`` (which must exclude it)."""
-    if not payload.isdigit():
-        raise ValueError("payload must be digits")
-    c = 0
-    for i, item in enumerate(reversed(payload)):
-        c = _VERHOEFF_D[c][_VERHOEFF_P[(i + 1) % 8][int(item)]]
-    return str(_VERHOEFF_INV[c])
-
-
 def luhn_ok(number: str) -> bool:
     """Luhn-validate a digit string whose last digit is the check digit."""
     if not number.isdigit() or len(number) < 2:
@@ -270,226 +219,6 @@ def mrz_check_digit(chars: str) -> str:
     """Compute the ICAO 9303 7-3-1 check digit over ``chars``."""
     total = sum(_mrz_value(ch) * _MRZ_WEIGHTS[i % 3] for i, ch in enumerate(chars))
     return str(total % 10)
-
-
-# ---------------------------------------------------------------------------
-# India
-# ---------------------------------------------------------------------------
-@register("verhoeff_aadhaar")
-def verhoeff_aadhaar(
-    value: str, context: Mapping[str, Any] | None = None
-) -> ValidationResult:
-    """Validate a 12-digit Aadhaar (UID) with its Verhoeff check digit.
-
-    UIDAI never allocates a UID beginning with 0 or 1, so a leading 0/1 is a hard reject
-    even when the Verhoeff digit happens to agree.
-
-    Handling note: UIDAI mandates that a stored/displayed Aadhaar be masked to the last
-    four digits. This validator deliberately returns the *unmasked* compact form — masking
-    is a presentation and persistence concern, and doing it here would break the checksum
-    for anything downstream that re-validates.
-    """
-    digits = _digits(value)
-    if len(digits) != 12:
-        return _fail(f"bad_length:{len(digits)}!=12")
-    if digits[0] in "01":
-        return _fail("invalid_leading_digit")
-    if not verhoeff_ok(digits):
-        return _fail("verhoeff_check_failed")
-    return ValidationResult(True, digits, "")
-
-
-#: PAN 4th character — the entity code. Anything outside this map is not a PAN.
-_PAN_ENTITY_CODES: Final[dict[str, str]] = {
-    "A": "Association of Persons (AOP)",
-    "B": "Body of Individuals (BOI)",
-    "C": "Company",
-    "E": "Limited Liability Partnership",
-    "F": "Firm / Partnership",
-    "G": "Government",
-    "H": "Hindu Undivided Family",
-    "J": "Artificial Juridical Person",
-    "K": "Krish (Trust) — legacy allocation",
-    "L": "Local Authority",
-    "P": "Individual",
-    "T": "Trust (AOP-Trust)",
-}
-_PAN_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
-
-
-@register("pan")
-def pan(value: str, context: Mapping[str, Any] | None = None) -> ValidationResult:
-    """Validate an Indian PAN: ``AAAAA9999A`` plus the 4th-character entity code.
-
-    The 5th character is the first letter of the holder's surname (or of the entity name).
-    That can only be checked against a name, so when ``context["surname"]`` (or
-    ``context["name"]``) is supplied a mismatch is reported as a **soft** failure — OCR
-    routinely swaps given name and surname, and a good PAN should not be discarded over it.
-
-    PAN's 10th character is a check character, but the Income Tax Department has never
-    published the algorithm, so there is nothing to verify: this validator is format-only
-    and never yields ``checksum_verified``.
-    """
-    compact = _compact(value)
-    if len(compact) != 10:
-        return _fail(f"bad_length:{len(compact)}!=10")
-    if not _PAN_RE.match(compact):
-        return _fail("bad_format:expected_AAAAA9999A")
-    entity = compact[3]
-    if entity not in _PAN_ENTITY_CODES:
-        return _fail(f"invalid_entity_code:{entity}")
-
-    surname = ""
-    if context:
-        surname = str(context.get("surname") or context.get("name") or "")
-    errors: list[str] = []
-    initial = _initial_letter(surname)
-    if initial and initial != compact[4]:
-        errors.append(f"surname_initial_mismatch:{compact[4]}!={initial}")
-    return ValidationResult(True, compact, _join_errors(errors))
-
-
-def _initial_letter(name: str) -> str:
-    """First A-Z letter of the last whitespace-separated token of ``name``."""
-    tokens = [t for t in re.split(r"[\s,]+", _squash(name).upper()) if t]
-    if not tokens:
-        return ""
-    for ch in tokens[-1]:
-        if "A" <= ch <= "Z":
-            return ch
-    return ""
-
-
-_EPIC_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Z]{3}[0-9]{7}$")
-_EPIC_LEGACY_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Z]{2,3}[0-9]{8,11}$")
-
-
-@register("epic_voter")
-def epic_voter(value: str, context: Mapping[str, Any] | None = None) -> ValidationResult:
-    """Validate an EPIC (Elector's Photo Identity Card) number.
-
-    Canonical modern form is three letters of the Functional State Code followed by seven
-    digits. Older series carry 8-11 digits and are accepted with a note.
-
-    **Checksum policy — do not "fix" this.** ``stdnum.in_.epic`` enforces a Luhn digit over
-    the numeric part, and genuine EPIC numbers issued by the ECI reportedly fail it. A Luhn
-    mismatch is therefore a *soft* failure: the field stays usable, is never promoted past
-    ``format_valid``, and the confidence is discounted. Hard-rejecting here would throw away
-    real voter IDs.
-    """
-    compact = _compact(value)
-    if not compact:
-        return _fail("empty_value")
-    errors: list[str] = []
-    if _EPIC_RE.match(compact):
-        numeric = compact[3:]
-    elif _EPIC_LEGACY_RE.match(compact):
-        numeric = re.sub(r"\D", "", compact)
-        errors.append("legacy_epic_series")
-    else:
-        return _fail("bad_format:expected_AAA9999999")
-    if not luhn_ok(numeric):
-        errors.append("epic_luhn_soft_fail:genuine_EPICs_are_known_to_fail_this")
-    return ValidationResult(True, compact, _join_errors(errors))
-
-
-#: GSTIN check character alphabet — index is the character's value (base 36).
-_GSTIN_ALPHABET: Final[str] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-_GSTIN_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][A-Z][0-9A-Z]$"
-)
-#: State/UT codes in use, plus 97 (Other Territory) and 99 (Centre Jurisdiction).
-_GSTIN_STATE_CODES: Final[frozenset[str]] = frozenset(
-    {f"{n:02d}" for n in range(1, 39)} | {"97", "99"}
-)
-
-
-def gstin_check_char(first14: str) -> str:
-    """Return the GSTIN check character for the first 14 characters."""
-    total = 0
-    for i, ch in enumerate(first14):
-        product = _GSTIN_ALPHABET.index(ch) * (2 if i % 2 else 1)
-        total += product // 36 + product % 36
-    return _GSTIN_ALPHABET[(36 - total % 36) % 36]
-
-
-@register("gstin")
-def gstin(value: str, context: Mapping[str, Any] | None = None) -> ValidationResult:
-    """Validate a 15-character GSTIN, including its base-36 check character.
-
-    Structure is ``SS`` state code + the 10-character PAN of the registrant + a 1-character
-    entity number + ``Z`` + the check character. The embedded PAN is validated too, since a
-    GSTIN whose PAN is malformed is an OCR artefact rather than a registration.
-    """
-    compact = _compact(value)
-    if len(compact) != 15:
-        return _fail(f"bad_length:{len(compact)}!=15")
-    if not _GSTIN_RE.match(compact):
-        return _fail("bad_format")
-    errors: list[str] = []
-    if compact[:2] not in _GSTIN_STATE_CODES:
-        errors.append(f"unknown_state_code:{compact[:2]}")
-    embedded_pan = pan(compact[2:12])
-    if not embedded_pan.ok:
-        return _fail(f"embedded_pan_invalid:{embedded_pan.error}")
-    expected = gstin_check_char(compact[:14])
-    if compact[14] != expected:
-        return _fail(f"check_char_failed:{compact[14]}!={expected}")
-    return ValidationResult(True, compact, _join_errors(errors))
-
-
-#: Indian passport: one letter (Q, X and Z are not issued), then 7 digits where the first
-#: and last must not be 0.
-_IN_PASSPORT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-PR-WY][1-9][0-9]{5}[1-9]$")
-
-
-@register("in_passport")
-def in_passport(value: str, context: Mapping[str, Any] | None = None) -> ValidationResult:
-    """Validate the *shape* of an Indian passport number (``A1234567``).
-
-    There is **no checksum** on an Indian passport number itself — the only verifiable
-    digits on the booklet live in the ICAO 9303 MRZ, which :func:`mrz_td3` handles. This is
-    a format heuristic and never yields ``checksum_verified``.
-    """
-    compact = _compact(value)
-    if len(compact) != 8:
-        return _fail(f"bad_length:{len(compact)}!=8")
-    if not _IN_PASSPORT_RE.match(compact):
-        return _fail("bad_format:expected_letter_plus_7_digits")
-    return ValidationResult(True, compact, "")
-
-
-_IN_DL_STRUCTURED_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[A-Z]{2}[0-9]{2}(?:19|20)[0-9]{2}[0-9]{7}$"
-)
-_IN_DL_LOOSE_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Z]{2}[0-9]{9,14}$")
-
-
-@register("in_dl")
-def in_dl(value: str, context: Mapping[str, Any] | None = None) -> ValidationResult:
-    """Validate the *shape* of an Indian driving licence number — heuristic only.
-
-    **There is no national standard and no checksum for Indian DL numbers.** Each state
-    transport authority formats them differently; the most common shape is
-    ``SS RR YYYY NNNNNNN`` (state code, RTO code, year of issue, serial), but plenty of
-    states deviate. This validator therefore:
-
-    * accepts the common structured shape cleanly,
-    * accepts a looser two-letter-plus-digits shape as a **soft** pass, and
-    * never returns ``checksum_verified``.
-
-    Consequence for callers: a DL number **must not be used as an identity or dedup key**.
-    Two different people can hold licences that normalise to the same string, and one
-    person's licence can be re-issued under a different number.
-    """
-    compact = _compact(value)
-    if len(compact) < 9:
-        return _fail(f"too_short:{len(compact)}")
-    if _IN_DL_STRUCTURED_RE.match(compact):
-        return ValidationResult(True, compact, "no_checksum_exists:format_heuristic_only")
-    if _IN_DL_LOOSE_RE.match(compact):
-        return _soft(compact, "nonstandard_state_format;no_checksum_exists")
-    return _fail("bad_format:expected_state_code_plus_digits")
 
 
 # ---------------------------------------------------------------------------
@@ -954,8 +683,9 @@ def name(value: str, context: Mapping[str, Any] | None = None) -> ValidationResu
     """Validate a person or entity name.
 
     Rejects the two things that actually bind to a name field by mistake: a date, and a
-    run of digits. Script-agnostic — Devanagari, accented Latin and ``Ñ`` all count as
-    letters — because a name field on an Aadhaar card carries both scripts.
+    run of digits. Script-agnostic — accented Latin, ``Ñ`` and any non-Latin script all
+    count as letters — because a bilingual card prints the holder's name twice, and the
+    second rendering must not be thrown away for having no ASCII in it.
     """
     text = _squash(value).strip(" :;,-\u2013\u2014")
     if not text:
@@ -1043,12 +773,6 @@ def amount(value: str, context: Mapping[str, Any] | None = None) -> ValidationRe
 #: by the regex locator when a FieldSpec declares a validator but no pattern, and by
 #: :func:`sweep` for the classifier's L1 tier.
 ID_PATTERNS: Final[dict[str, str]] = {
-    "verhoeff_aadhaar": r"(?<!\d)\d{4}\s?\d{4}\s?\d{4}(?!\d)",
-    "pan": r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
-    "gstin": r"\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b",
-    "epic_voter": r"\b[A-Z]{3}\d{7}\b",
-    "in_passport": r"\b[A-PR-WY][1-9]\d{5}[1-9]\b",
-    "in_dl": r"\b[A-Z]{2}[ -]?\d{2}[ -]?(?:19|20)\d{2}[ -]?\d{7}\b",
     "ssn": r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)",
     "itin": r"(?<!\d)9\d{2}-\d{2}-\d{4}(?!\d)",
     "ein": r"(?<!\d)\d{2}-\d{7}(?!\d)",

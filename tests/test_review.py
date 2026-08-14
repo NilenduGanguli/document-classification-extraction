@@ -48,21 +48,21 @@ from dce.review import (  # noqa: E402
 )
 
 SETTINGS = Settings(_env_file=None)  # extract_accept_confidence = 0.60
-AADHAAR_BBOX = [0.1, 0.5, 0.6, 0.5, 0.6, 0.56, 0.1, 0.56]
+SIN_BBOX = [0.1, 0.5, 0.6, 0.5, 0.6, 0.56, 0.1, 0.56]
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-def aadhaar_spec() -> FieldSpec:
+def sin_spec() -> FieldSpec:
     """PII **and** a real check digit — the pair that earns blind double entry."""
     return FieldSpec(
-        name="aadhaar_number",
-        attribute_key="id.aadhaar",
+        name="sin_number",
+        attribute_key="id.sin",
         type="id",
         required=True,
         pii=True,
-        validator="verhoeff_aadhaar",
+        validator="sin_luhn",
     )
 
 
@@ -77,16 +77,16 @@ def address_spec() -> FieldSpec:
 
 def doctype() -> DocTypeSpec:
     return DocTypeSpec(
-        doctype_id="in_aadhaar",
-        label="Aadhaar Card",
-        country="IN",
-        fields=[aadhaar_spec(), name_spec(), address_spec()],
+        doctype_id="ca_sin_confirmation",
+        label="SIN Confirmation",
+        country="CA",
+        fields=[sin_spec(), name_spec(), address_spec()],
     )
 
 
 def result_with(*fields: ExtractedField, missing: list[str] | None = None) -> ExtractionResult:
     return ExtractionResult(
-        doctype_id="in_aadhaar",
+        doctype_id="ca_sin_confirmation",
         schema_version="1",
         fields=list(fields),
         missing_required=missing or [],
@@ -103,7 +103,7 @@ def one_pending(**overrides) -> tuple[InMemoryReviewQueue, ReviewItem]:
     fields = {
         "id": "doc-1:full_name",
         "doc_id": "doc-1",
-        "doctype_id": "in_aadhaar",
+        "doctype_id": "ca_sin_confirmation",
         "field_name": "full_name",
         "value": "ANNA ERIKSSON",
         "confidence": 0.41,
@@ -118,16 +118,20 @@ def one_pending(**overrides) -> tuple[InMemoryReviewQueue, ReviewItem]:
 # ---------------------------------------------------------------------------
 def test_a_missing_required_field_is_enqueued():
     result = result_with(
-        ExtractedField(name="aadhaar_number", value=None, validator_error="no_candidate_found"),
+        ExtractedField(name="sin_number", value=None, validator_error="no_candidate_found"),
         ExtractedField(name="full_name", value="ANNA ERIKSSON", confidence=0.91),
-        missing=["aadhaar_number"],
+        missing=["sin_number"],
     )
 
     items = enqueue_from_result(
-        result, doc_id="doc-1", doctype_id="in_aadhaar", field_specs=doctype(), settings=SETTINGS
+        result,
+        doc_id="doc-1",
+        doctype_id="ca_sin_confirmation",
+        field_specs=doctype(),
+        settings=SETTINGS,
     )
 
-    assert [i.field_name for i in items] == ["aadhaar_number"]
+    assert [i.field_name for i in items] == ["sin_number"]
     item = items[0]
     assert item.status is ReviewStatus.pending
     assert item.reason.startswith("missing_required")
@@ -138,25 +142,29 @@ def test_a_missing_required_field_is_enqueued():
 def test_a_below_threshold_value_is_enqueued_with_its_provenance():
     result = result_with(
         ExtractedField(
-            name="aadhaar_number",
+            name="sin_number",
             value="9999 9999 0011",
             confidence=0.42,
             verification="unverified",
             locator="regex",
             page=1,
-            bbox=AADHAAR_BBOX,
+            bbox=SIN_BBOX,
             pii=True,
         )
     )
 
     (item,) = enqueue_from_result(
-        result, doc_id="doc-1", doctype_id="in_aadhaar", field_specs=doctype(), settings=SETTINGS
+        result,
+        doc_id="doc-1",
+        doctype_id="ca_sin_confirmation",
+        field_specs=doctype(),
+        settings=SETTINGS,
     )
 
     assert item.reason.startswith("below_confidence_threshold")
     assert "0.42" in item.reason and "0.60" in item.reason
     assert item.page == 1
-    assert item.bbox == AADHAAR_BBOX, "the reviewer gets shown the pixels, not just the string"
+    assert item.bbox == SIN_BBOX, "the reviewer gets shown the pixels, not just the string"
     assert item.pii is True
 
 
@@ -173,7 +181,11 @@ def test_a_soft_validator_failure_is_enqueued_even_at_high_confidence():
     )
 
     (item,) = enqueue_from_result(
-        result, doc_id="doc-1", doctype_id="in_aadhaar", field_specs=doctype(), settings=SETTINGS
+        result,
+        doc_id="doc-1",
+        doctype_id="ca_sin_confirmation",
+        field_specs=doctype(),
+        settings=SETTINGS,
     )
 
     assert item.reason.startswith("validator_error")
@@ -182,7 +194,7 @@ def test_a_soft_validator_failure_is_enqueued_even_at_high_confidence():
 def test_a_clean_confident_field_is_not_enqueued():
     result = result_with(
         ExtractedField(
-            name="aadhaar_number",
+            name="sin_number",
             value="9999 9999 0011",
             confidence=0.95,
             verification="checksum_verified",
@@ -193,7 +205,7 @@ def test_a_clean_confident_field_is_not_enqueued():
         enqueue_from_result(
             result,
             doc_id="doc-1",
-            doctype_id="in_aadhaar",
+            doctype_id="ca_sin_confirmation",
             field_specs=doctype(),
             settings=SETTINGS,
         )
@@ -219,11 +231,11 @@ def test_enqueueing_into_a_queue_is_idempotent():
     """Re-processing a document must not resurrect a decision somebody already made."""
     queue = InMemoryReviewQueue()
     result = result_with(
-        ExtractedField(name="aadhaar_number", value=None), missing=["aadhaar_number"]
+        ExtractedField(name="sin_number", value=None), missing=["sin_number"]
     )
     kwargs = {
         "doc_id": "doc-1",
-        "doctype_id": "in_aadhaar",
+        "doctype_id": "ca_sin_confirmation",
         "queue": queue,
         "field_specs": doctype(),
         "settings": SETTINGS,
@@ -243,14 +255,14 @@ def test_without_a_queue_the_items_are_just_returned():
     """Storage-agnostic: a caller whose queue is Postgres still gets the items to insert."""
     result = result_with(ExtractedField(name="full_name", value=None), missing=["full_name"])
 
-    items = enqueue_from_result(result, doc_id="doc-1", doctype_id="in_aadhaar")
+    items = enqueue_from_result(result, doc_id="doc-1", doctype_id="ca_sin_confirmation")
 
     assert len(items) == 1
 
 
 def test_item_ids_are_stable_per_document_and_field():
     result = result_with(ExtractedField(name="full_name", value=None), missing=["full_name"])
-    kwargs = {"doc_id": "doc-1", "doctype_id": "in_aadhaar"}
+    kwargs = {"doc_id": "doc-1", "doctype_id": "ca_sin_confirmation"}
 
     assert (
         enqueue_from_result(result, **kwargs)[0].id
@@ -333,22 +345,26 @@ def test_a_correction_needs_a_value():
 # Blind double entry
 # ---------------------------------------------------------------------------
 def test_double_entry_applies_to_pii_checksum_fields_only():
-    assert requires_double_entry(aadhaar_spec()) is True, "PII + a real check digit"
+    assert requires_double_entry(sin_spec()) is True, "PII + a real check digit"
     assert requires_double_entry(name_spec()) is False, "PII, but 'name' is not a checksum"
     assert requires_double_entry(address_spec()) is False
-    assert requires_double_entry(FieldSpec(name="gstin", validator="gstin")) is False, (
-        "a checksum on a company number is not personal data"
+    assert requires_double_entry(FieldSpec(name="mrz", validator="mrz_td3")) is False, (
+        "a checksum on a field nobody flagged pii is not personal data"
     )
     assert requires_double_entry(None) is False, "no spec means no guessing"
 
 
 def test_a_pii_checksum_field_is_enqueued_needing_two_approvals():
     result = result_with(
-        ExtractedField(name="aadhaar_number", value=None), missing=["aadhaar_number"]
+        ExtractedField(name="sin_number", value=None), missing=["sin_number"]
     )
 
     (item,) = enqueue_from_result(
-        result, doc_id="doc-1", doctype_id="in_aadhaar", field_specs=doctype(), settings=SETTINGS
+        result,
+        doc_id="doc-1",
+        doctype_id="ca_sin_confirmation",
+        field_specs=doctype(),
+        settings=SETTINGS,
     )
 
     assert item.required_approvals == 2
@@ -357,7 +373,7 @@ def test_a_pii_checksum_field_is_enqueued_needing_two_approvals():
 
 
 def test_two_independent_approvals_are_required_and_the_first_does_not_decide():
-    queue, item = one_pending(required_approvals=2, field_name="aadhaar_number", pii=True)
+    queue, item = one_pending(required_approvals=2, field_name="sin_number", pii=True)
 
     first = approve(queue, item.id, reviewer="alice")
     assert first.status is ReviewStatus.pending, "one signature is not a decision"
@@ -389,7 +405,7 @@ def test_an_ordinary_field_still_needs_only_one_approval():
 
 
 def test_a_matching_second_entry_closes_a_double_entry_correction():
-    queue, item = one_pending(required_approvals=2, field_name="aadhaar_number", pii=True)
+    queue, item = one_pending(required_approvals=2, field_name="sin_number", pii=True)
 
     first = correct(queue, item.id, reviewer="alice", value="9999 9999 0011")
     assert first.status is ReviewStatus.pending, "one keying is not a correction"
@@ -402,7 +418,7 @@ def test_a_matching_second_entry_closes_a_double_entry_correction():
 
 def test_a_mismatched_second_entry_discards_both_and_raises():
     """The whole point of keying twice: disagreement means neither entry is trusted."""
-    queue, item = one_pending(required_approvals=2, field_name="aadhaar_number", pii=True)
+    queue, item = one_pending(required_approvals=2, field_name="sin_number", pii=True)
     correct(queue, item.id, reviewer="alice", value="9999 9999 0011")
 
     with pytest.raises(ReviewError, match="double-entry mismatch"):
@@ -435,12 +451,12 @@ def test_the_json_queue_survives_a_new_process(tmp_path: Path):
     path = tmp_path / "review" / "queue.json"
     queue = JsonFileReviewQueue(path)
     result = result_with(
-        ExtractedField(name="aadhaar_number", value=None), missing=["aadhaar_number"]
+        ExtractedField(name="sin_number", value=None), missing=["sin_number"]
     )
     (item,) = enqueue_from_result(
         result,
         doc_id="doc-1",
-        doctype_id="in_aadhaar",
+        doctype_id="ca_sin_confirmation",
         queue=queue,
         field_specs=doctype(),
         settings=SETTINGS,
@@ -558,7 +574,7 @@ def test_the_queues_also_expose_the_transitions():
     decided = queue.approve(item.id, reviewer="alice")
 
     assert decided.status is ReviewStatus.approved
-    assert queue.list(status=ReviewStatus.approved, doctype_id="in_aadhaar")
+    assert queue.list(status=ReviewStatus.approved, doctype_id="ca_sin_confirmation")
 
 
 # ---------------------------------------------------------------------------

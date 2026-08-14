@@ -9,8 +9,8 @@ Typical use::
 
     from dce.registry import all_specs, get, by_country
 
-    spec = get("in_aadhaar")
-    indian = by_country()["IN"]
+    spec = get("us_w9")
+    canadian = by_country()["CA"]
 
 Nothing in this package performs I/O or touches the network. That is not incidental: the
 registry is the entire classification knowledge base precisely so that classification can
@@ -22,19 +22,16 @@ from __future__ import annotations
 
 # Every pack is imported for its registration side-effect, and every pack must be imported
 # HERE: a pack that only gets imported by its own test module is a pack the running service
-# does not have. Import order does not matter — crosscountry imports india itself for the
-# field builders it reuses, so Python resolves the dependency whichever way this list is
-# sorted.
+# does not have. Import order does not matter — each pack defines its own field builders and
+# declares its own attribute keys, so no pack depends on another having been imported first.
 from dce.registry import canada as canada
 from dce.registry import crosscountry as crosscountry
-from dce.registry import india as india
 from dce.registry import mexico as mexico
 from dce.registry import usa as usa
 from dce.registry.loader import (
     ATTRIBUTE_KEYS,
     KNOWN_FIELD_TYPES,
     KNOWN_LOCATORS,
-    PENDING_VALIDATORS,
     VALIDATOR_CONTRACT,
     RegistryError,
     all_specs,
@@ -53,7 +50,6 @@ __all__ = [
     "ATTRIBUTE_KEYS",
     "KNOWN_FIELD_TYPES",
     "KNOWN_LOCATORS",
-    "PENDING_VALIDATORS",
     "VALIDATOR_CONTRACT",
     "RegistryError",
     "all_specs",
@@ -61,7 +57,6 @@ __all__ = [
     "canada",
     "crosscountry",
     "get",
-    "india",
     "mexico",
     "register",
     "register_all",

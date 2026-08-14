@@ -79,22 +79,22 @@ class StubExtractor:
         return self.result.model_copy(deep=True)
 
 
-PAN_SPEC = DocTypeSpec(
-    doctype_id="in_pan",
-    label="Permanent Account Number card",
-    country="IN",
+SIN_SPEC = DocTypeSpec(
+    doctype_id="ca_sin_confirmation",
+    label="Confirmation of SIN",
+    country="CA",
     category=Category.identity,
-    issuing_authority="Income Tax Department",
+    issuing_authority="Service Canada",
     officially_valid=True,
-    anchors=[Anchor(text="income tax department", decisive=True, zone=Zone.title)],
+    anchors=[Anchor(text="social insurance number", decisive=True, zone=Zone.title)],
     fields=[
         FieldSpec(
-            name="pan_number",
-            attribute_key="id.pan",
+            name="sin_number",
+            attribute_key="id.sin",
             type="id",
             required=True,
             pii=True,
-            validator="pan",
+            validator="sin_luhn",
             locators=["kv", "label", "regex"],
         ),
         FieldSpec(name="holder_name", attribute_key="identity.full_name", type="name", pii=True),
@@ -110,15 +110,15 @@ W9_SPEC = DocTypeSpec(
 )
 
 ACCEPTED = Classification(
-    doctype_id="in_pan",
-    label="Permanent Account Number card",
-    country="IN",
+    doctype_id="ca_sin_confirmation",
+    label="Confirmation of SIN",
+    country="CA",
     confidence=0.94,
     margin=0.61,
     coverage=0.55,
     abstained=False,
-    evidence=[Evidence(tier="anchor", detail="income tax department (title)", weight=3.0)],
-    runners_up=[("in_aadhaar", 0.33)],
+    evidence=[Evidence(tier="anchor", detail="social insurance number (title)", weight=3.0)],
+    runners_up=[("us_w2", 0.33)],
 )
 
 ABSTAINED = Classification(
@@ -128,24 +128,24 @@ ABSTAINED = Classification(
     coverage=0.10,
     abstained=True,
     reason="probability 0.41 < 0.65 and margin 0.06 < 0.25",
-    runners_up=[("in_pan", 0.41), ("in_aadhaar", 0.35)],
+    runners_up=[("ca_sin_confirmation", 0.41), ("us_w2", 0.35)],
 )
 
 EXTRACTED = ExtractionResult(
-    doctype_id="in_pan",
+    doctype_id="ca_sin_confirmation",
     fields=[
         ExtractedField(
-            name="pan_number",
-            attribute_key="id.pan",
-            value="ABCDE1234F",
-            normalized="ABCDE1234F",
+            name="sin_number",
+            attribute_key="id.sin",
+            value="12-3456789",
+            normalized="12-3456789",
             confidence=0.97,
             verification="checksum_verified",
             locator="kv",
             page=1,
             pii=True,
         ),
-        ExtractedField(name="holder_name", value="RAHUL SHARMA", confidence=0.9, locator="table"),
+        ExtractedField(name="holder_name", value="ANNA ERIKSSON", confidence=0.9, locator="table"),
     ],
 )
 
@@ -168,7 +168,7 @@ def build_app(
     app = create_app(Settings(api_key=api_key, allow_preclassification_egress=False))
     classifier = StubClassifier(classification or ACCEPTED)
     extractor = StubExtractor(extraction or EXTRACTED)
-    app.state.registry = RegistryPort(StubRegistry(specs if specs is not None else [PAN_SPEC]))
+    app.state.registry = RegistryPort(StubRegistry(specs if specs is not None else [SIN_SPEC]))
     app.state.classifier = ClassifierPort(classifier)
     app.state.extractor = ExtractorPort(extractor)
     return TestClient(app), classifier, extractor
@@ -185,9 +185,9 @@ AZURE_ANALYZE_RESULT: dict[str, Any] = {
         "apiVersion": "2024-11-30",
         "modelId": "prebuilt-layout",
         "content": (
-            "INCOME TAX DEPARTMENT\n"
-            "Permanent Account Number\n"
-            "Name\nRAHUL SHARMA\n"
+            "DEPARTMENT OF THE TREASURY\n"
+            "Employer identification number\n"
+            "Name\nANNA ERIKSSON\n"
             "Page 1 of 1"
         ),
         "pages": [
@@ -205,13 +205,13 @@ AZURE_ANALYZE_RESULT: dict[str, Any] = {
         "paragraphs": [
             {
                 "role": "title",
-                "content": "INCOME TAX DEPARTMENT",
+                "content": "DEPARTMENT OF THE TREASURY",
                 "spans": [{"offset": 0, "length": 21}],
                 "boundingRegions": [{"pageNumber": 1, "polygon": [0, 0, 3, 0, 3, 0.3, 0, 0.3]}],
             },
             {
                 "role": "sectionHeading",
-                "content": "Permanent Account Number",
+                "content": "Employer identification number",
                 "spans": [{"offset": 22, "length": 24}],
                 "boundingRegions": [{"pageNumber": 1, "polygon": [0, 1, 3, 1, 3, 1.3, 0, 1.3]}],
             },
@@ -221,7 +221,7 @@ AZURE_ANALYZE_RESULT: dict[str, Any] = {
                 "boundingRegions": [{"pageNumber": 1, "polygon": [0, 2, 1, 2, 1, 2.3, 0, 2.3]}],
             },
             {
-                "content": "RAHUL SHARMA",
+                "content": "ANNA ERIKSSON",
                 "spans": [{"offset": 52, "length": 12}],
                 "boundingRegions": [{"pageNumber": 1, "polygon": [1, 2, 3, 2, 3, 2.3, 1, 2.3]}],
             },
@@ -252,7 +252,7 @@ AZURE_ANALYZE_RESULT: dict[str, Any] = {
                     {
                         "rowIndex": 0,
                         "columnIndex": 1,
-                        "content": "RAHUL SHARMA",
+                        "content": "ANNA ERIKSSON",
                         "spans": [{"offset": 52, "length": 12}],
                         "boundingRegions": [
                             {"pageNumber": 1, "polygon": [1, 2, 3, 2, 3, 2.3, 1, 2.3]}
@@ -264,11 +264,11 @@ AZURE_ANALYZE_RESULT: dict[str, Any] = {
         "keyValuePairs": [
             {
                 "key": {
-                    "content": "PAN",
+                    "content": "EIN",
                     "boundingRegions": [{"pageNumber": 1, "polygon": [0, 3, 1, 3, 1, 3.2, 0, 3.2]}],
                 },
                 "value": {
-                    "content": "ABCDE1234F",
+                    "content": "12-3456789",
                     "boundingRegions": [{"pageNumber": 1, "polygon": [1, 3, 3, 3, 3, 3.2, 1, 3.2]}],
                 },
                 "confidence": 0.95,
@@ -295,7 +295,7 @@ def test_readyz_reports_registry_bert_and_the_egress_invariant() -> None:
     body = client.get("/readyz").json()
 
     assert body["ready"] is True
-    assert body["registry"] == {"loaded": True, "doctypes": 1, "countries": ["IN"]}
+    assert body["registry"] == {"loaded": True, "doctypes": 1, "countries": ["CA"]}
     assert body["bert"]["enabled"] is False and body["bert"]["loaded"] is False
     assert body["egress"] == {
         "preclassification_allowed": False,
@@ -354,7 +354,7 @@ def test_readyz_reports_registry_bert_and_the_egress_invariant() -> None:
 def test_readyz_is_503_when_the_egress_invariant_is_off() -> None:
     """Allowing pre-classification egress takes the service out of rotation, loudly."""
     app = create_app(Settings(allow_preclassification_egress=True))
-    app.state.registry = RegistryPort(StubRegistry([PAN_SPEC]))
+    app.state.registry = RegistryPort(StubRegistry([SIN_SPEC]))
     response = TestClient(app).get("/readyz")
 
     assert response.status_code == 503
@@ -396,12 +396,15 @@ def test_metrics_exposes_the_abstention_signal() -> None:
 def test_classify_plain_text(client: TestClient) -> None:
     response = client.post(
         "/api/v1/classify",
-        json={"doc_id": "doc-1", "text": "INCOME TAX DEPARTMENT\nPermanent Account Number"},
+        json={
+            "doc_id": "doc-1",
+            "text": "DEPARTMENT OF THE TREASURY\nEmployer identification number",
+        },
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["doctype_id"] == "in_pan"
+    assert body["doctype_id"] == "ca_sin_confirmation"
     assert body["abstained"] is False
     assert body["evidence"][0]["tier"] == "anchor"
     assert body["ms"] >= 0
@@ -410,10 +413,10 @@ def test_classify_plain_text(client: TestClient) -> None:
 def test_classify_plain_text_is_all_body_zone() -> None:
     """The degraded path stays honest: nothing is promoted to title on a guess."""
     client, classifier, _ = build_app()
-    client.post("/api/v1/classify", json={"text": "INCOME TAX DEPARTMENT\nName: RAHUL"})
+    client.post("/api/v1/classify", json={"text": "DEPARTMENT OF THE TREASURY\nName: ANNA"})
 
     view = classifier.views[0]
-    assert [b.text for b in view.blocks] == ["INCOME TAX DEPARTMENT", "Name: RAHUL"]
+    assert [b.text for b in view.blocks] == ["DEPARTMENT OF THE TREASURY", "Name: ANNA"]
     assert {b.zone for b in view.blocks} == {Zone.body}
 
 
@@ -426,18 +429,18 @@ def test_classify_adapts_an_azure_layout_payload() -> None:
 
     view = classifier.views[0]
     zones = {block.text: block.zone for block in view.blocks}
-    assert zones["INCOME TAX DEPARTMENT"] is Zone.title
-    assert zones["Permanent Account Number"] is Zone.heading
+    assert zones["DEPARTMENT OF THE TREASURY"] is Zone.title
+    assert zones["Employer identification number"] is Zone.heading
     assert zones["Page 1 of 1"] is Zone.furniture
     # Paragraphs whose spans fall inside a table are re-zoned rather than emitted twice.
-    assert zones["Name"] is Zone.table and zones["RAHUL SHARMA"] is Zone.table
+    assert zones["Name"] is Zone.table and zones["ANNA ERIKSSON"] is Zone.table
     assert len(view.blocks) == 5
 
     assert view.pages[0].unit == "inch" and view.pages[0].width == 8.5
-    assert [(kv.key, kv.value) for kv in view.key_values] == [("PAN", "ABCDE1234F")]
+    assert [(kv.key, kv.value) for kv in view.key_values] == [("EIN", "12-3456789")]
     assert len(view.marks) == 1 and view.marks[0].selected
     assert view.languages == ["en"]
-    assert view.tables[0].cell_at(0, 1).text == "RAHUL SHARMA"
+    assert view.tables[0].cell_at(0, 1).text == "ANNA ERIKSSON"
 
 
 def test_classify_adapts_a_des_ocr_page_envelope() -> None:
@@ -488,22 +491,22 @@ def test_process_abstention_does_not_extract() -> None:
 def test_process_extracts_after_an_accepted_classification() -> None:
     client, _, extractor = build_app()
 
-    body = client.post("/api/v1/process", json={"text": "INCOME TAX DEPARTMENT"}).json()
+    body = client.post("/api/v1/process", json={"text": "DEPARTMENT OF THE TREASURY"}).json()
 
     assert body["needs_review"] is False
-    assert body["extraction"]["doctype_id"] == "in_pan"
+    assert body["extraction"]["doctype_id"] == "ca_sin_confirmation"
     assert body["extraction"]["fields"][0]["verification"] == "checksum_verified"
     assert body["extraction"]["schema_version"].startswith("reg-")
     assert body["timings"]["total_ms"] >= 0
     assert len(extractor.calls) == 1
-    assert extractor.calls[0][1].doctype_id == "in_pan"
+    assert extractor.calls[0][1].doctype_id == "ca_sin_confirmation"
 
 
 def test_process_flags_review_when_a_required_field_is_missing() -> None:
-    incomplete = ExtractionResult(doctype_id="in_pan", missing_required=["pan_number"])
+    incomplete = ExtractionResult(doctype_id="ca_sin_confirmation", missing_required=["sin_number"])
     client, _, _ = build_app(extraction=incomplete)
 
-    body = client.post("/api/v1/process", json={"text": "INCOME TAX DEPARTMENT"}).json()
+    body = client.post("/api/v1/process", json={"text": "DEPARTMENT OF THE TREASURY"}).json()
 
     assert body["needs_review"] is True
     assert body["detail"] == "missing required fields"
@@ -514,7 +517,7 @@ def test_process_does_not_extract_for_a_doctype_outside_the_registry() -> None:
     not something to paper over with a guessed spec."""
     client, _, extractor = build_app(specs=[W9_SPEC])
 
-    body = client.post("/api/v1/process", json={"text": "INCOME TAX DEPARTMENT"}).json()
+    body = client.post("/api/v1/process", json={"text": "DEPARTMENT OF THE TREASURY"}).json()
 
     assert body["needs_review"] is True
     assert "not in the registry" in body["detail"]
@@ -537,11 +540,12 @@ def test_extract_with_a_pinned_doctype_skips_classification() -> None:
     client, classifier, extractor = build_app()
 
     body = client.post(
-        "/api/v1/extract", json={"text": "INCOME TAX DEPARTMENT", "doctype_id": "in_pan"}
+        "/api/v1/extract",
+        json={"text": "SOCIAL INSURANCE NUMBER", "doctype_id": "ca_sin_confirmation"},
     ).json()
 
-    assert body["doctype_id"] == "in_pan"
-    assert [f["name"] for f in body["fields"]] == ["pan_number", "holder_name"]
+    assert body["doctype_id"] == "ca_sin_confirmation"
+    assert [f["name"] for f in body["fields"]] == ["sin_number", "holder_name"]
     assert classifier.views == []
     assert len(extractor.calls) == 1
 
@@ -565,38 +569,38 @@ def test_doctypes_lists_the_registry(client: TestClient) -> None:
 
     assert body["count"] == 1
     entry = body["doctypes"][0]
-    assert entry["doctype_id"] == "in_pan"
-    assert entry["country"] == "IN"
+    assert entry["doctype_id"] == "ca_sin_confirmation"
+    assert entry["country"] == "CA"
     assert entry["category"] == "identity"
     assert entry["officially_valid"] is True
-    assert entry["fields"] == ["pan_number", "holder_name"]
+    assert entry["fields"] == ["sin_number", "holder_name"]
 
 
 def test_doctypes_filters_by_country() -> None:
-    client, _, _ = build_app(specs=[PAN_SPEC, W9_SPEC])
+    client, _, _ = build_app(specs=[SIN_SPEC, W9_SPEC])
 
     assert client.get("/api/v1/doctypes?country=US").json()["count"] == 1
-    assert client.get("/api/v1/doctypes?country=IN").json()["count"] == 1
+    assert client.get("/api/v1/doctypes?country=CA").json()["count"] == 1
     assert client.get("/api/v1/doctypes?category=tax").json()["doctypes"][0]["doctype_id"] == (
         "us_w9"
     )
 
 
 def test_doctype_detail_carries_anchors_and_field_locators(client: TestClient) -> None:
-    body = client.get("/api/v1/doctypes/in_pan").json()
+    body = client.get("/api/v1/doctypes/ca_sin_confirmation").json()
 
     assert body["anchors"][0]["decisive"] is True
-    assert body["fields"][0]["validator"] == "pan"
+    assert body["fields"][0]["validator"] == "sin_luhn"
     assert client.get("/api/v1/doctypes/nope").status_code == 404
 
 
 def test_schema_falls_back_to_the_registry_spec(client: TestClient) -> None:
-    body = client.get("/api/v1/schemas/in_pan").json()
+    body = client.get("/api/v1/schemas/ca_sin_confirmation").json()
 
     assert body["source"] == "registry"
     assert body["active"] is True
     assert body["schema_version"].startswith("reg-")
-    assert [f["name"] for f in body["fields"]] == ["pan_number", "holder_name"]
+    assert [f["name"] for f in body["fields"]] == ["sin_number", "holder_name"]
     assert client.get("/api/v1/schemas/nope").status_code == 404
 
 
@@ -606,7 +610,7 @@ def test_induced_schemas_are_never_active(client: TestClient) -> None:
     sample = {"azure_analyze_result": AZURE_ANALYZE_RESULT}
     response = client.post(
         "/api/v1/schemas/induce",
-        json={"doctype_id": "in_pan_draft", "samples": [sample, sample], "min_support": 0.5},
+        json={"doctype_id": "us_w9_draft", "samples": [sample, sample], "min_support": 0.5},
     )
 
     assert response.status_code == 200
@@ -615,7 +619,7 @@ def test_induced_schemas_are_never_active(client: TestClient) -> None:
     assert body["source"] == "induced"
     assert body["sample_count"] == 2
     names = [f["name"] for f in body["fields"]]
-    assert "pan" in names  # from the key-value pair
+    assert "ein" in names  # from the key-value pair
     assert "name" in names  # from the table's column header
 
 

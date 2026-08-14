@@ -292,7 +292,6 @@ def run_under_tripwire(make_coro: Any) -> tuple[Any, list[str]]:
         ("us_passport", "prebuilt-idDocument"),
         ("ca_passport", "prebuilt-idDocument"),
         ("mx_passport", "prebuilt-idDocument"),
-        ("in_passport", "prebuilt-idDocument"),
         ("us_drivers_license", "prebuilt-idDocument"),
         ("us_state_id", "prebuilt-idDocument"),
         ("ca_drivers_license", "prebuilt-idDocument"),
@@ -311,10 +310,10 @@ def test_specialist_mapping_resolves(doctype_id: str, model: str) -> None:
 
 @pytest.mark.parametrize(
     "doctype_id",
-    ["in_aadhaar", "in_pan", "mx_ine", "us_utility_bill", "ca_pr_card", UNKNOWN, ""],
+    ["us_green_card", "us_passport_card", "mx_ine", "us_utility_bill", "ca_pr_card", UNKNOWN, ""],
 )
 def test_doctypes_without_a_specialist_resolve_to_none(doctype_id: str) -> None:
-    """``None`` means "stay on T1" — the common, correct answer for 107 of 121 doctypes.
+    """``None`` means "stay on T1" — the common, correct answer for 116 of 129 doctypes.
 
     ``mx_ine`` and ``ca_pr_card`` are the interesting entries: they are photo IDs, and mapping
     them onto ``prebuilt-idDocument`` (which is trained on passports and North-American
@@ -560,7 +559,7 @@ def test_t3_disabled_returns_nothing_and_opens_no_socket() -> None:
             PDF,
             ["landlord_name"],
             settings=stub_settings(t3_enabled=False),
-            doctype_id="in_rent_agreement",
+            doctype_id="us_lease_agreement",
         )
     )
 
@@ -591,7 +590,7 @@ def test_a_doctype_with_no_specialist_is_a_silent_no_op(
 ) -> None:
     fake = install(monkeypatch, FakeAzure(analyze_result=ID_DOCUMENT_RESULT))
 
-    assert run(extract_with_specialist(PDF, "in_aadhaar", settings=stub_settings())) == []
+    assert run(extract_with_specialist(PDF, "mx_ine", settings=stub_settings())) == []
     assert fake.requests == []
 
 
@@ -629,7 +628,7 @@ def test_query_fields_caps_at_twenty_and_names_what_it_dropped(
     with caplog.at_level(logging.WARNING, logger="dce.extract.query_fields"):
         run(
             extract_query_fields(
-                PDF, wanted, settings=stub_settings(), doctype_id="in_rent_agreement"
+                PDF, wanted, settings=stub_settings(), doctype_id="us_lease_agreement"
             )
         )
 
@@ -667,7 +666,7 @@ def test_a_lower_configured_cap_is_honoured(monkeypatch: pytest.MonkeyPatch) -> 
             PDF,
             ["a", "b", "c"],
             settings=stub_settings(t3_max_query_fields=2),
-            doctype_id="in_rent_agreement",
+            doctype_id="us_lease_agreement",
         )
     )
 
@@ -705,7 +704,7 @@ def test_query_field_values_come_back_under_the_name_that_was_asked_for(
             PDF,
             ["landlord_name", "MonthlyRent", "notary_stamp"],
             settings=stub_settings(),
-            doctype_id="in_rent_agreement",
+            doctype_id="us_lease_agreement",
         )
     )
 
@@ -723,7 +722,7 @@ def test_asking_for_nothing_calls_nothing(monkeypatch: pytest.MonkeyPatch) -> No
     assert (
         run(
             extract_query_fields(
-                PDF, ["", "  "], settings=stub_settings(), doctype_id="in_rent_agreement"
+                PDF, ["", "  "], settings=stub_settings(), doctype_id="us_lease_agreement"
             )
         )
         == []
@@ -739,7 +738,7 @@ def test_query_fields_tolerates_a_result_with_no_documents(
 
     fields = run(
         extract_query_fields(
-            PDF, ["landlord_name"], settings=stub_settings(), doctype_id="in_rent_agreement"
+            PDF, ["landlord_name"], settings=stub_settings(), doctype_id="us_lease_agreement"
         )
     )
 

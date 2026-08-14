@@ -252,9 +252,9 @@ def get_schema(doctype_id: str, version: str = "latest") -> DocSchema | None:
 def default_schema_for(spec: DocTypeSpec, *, version: str = DEFAULT_VERSION) -> DocSchema:
     """Derive a schema from a doctype's own declared fields.
 
-    This is what makes declaring a doctype sufficient: the knowledge of what an Aadhaar
-    card contains already lives on :class:`~dce.models.DocTypeSpec`, and duplicating it in
-    a separate schema file is how the two drift apart.
+    This is what makes declaring a doctype sufficient: the knowledge of what a driver's
+    licence contains already lives on :class:`~dce.models.DocTypeSpec`, and duplicating it
+    in a separate schema file is how the two drift apart.
 
     Args:
         spec: The doctype specification.

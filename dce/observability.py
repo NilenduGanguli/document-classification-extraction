@@ -489,7 +489,7 @@ def observe_validator_failure(doctype: str, field: str, validator: str) -> None:
     Args:
         doctype: Doctype id the field belongs to.
         field: Field name.
-        validator: Validator that rejected the value (e.g. ``verhoeff_aadhaar``).
+        validator: Validator that rejected the value (e.g. ``sin_luhn``).
     """
     metrics = _METRICS
     if metrics is None:

@@ -64,14 +64,24 @@ NEW_MX = (
 #: ``(specific, generic)``. Every specific here predates this round, so the pairing does not
 #: depend on any other pack landing — except ``mx_reporte_anual_cnbv``, which is added by the
 #: same change as the generic it is paired against.
+#:
+#: Three pairs were dropped when the India pack was removed from the registry:
+#: ``in_ckyc_record``/``xx_sanctions_screening_report``,
+#: ``in_certificate_incorporation``/``xx_lei_certificate`` and
+#: ``in_gst_certificate``/``xx_iso_certificate``. A pair whose specific half no longer
+#: exists cannot be measured, and substituting an unrelated doctype to keep the row would
+#: be a regression test for a regression nobody observed. The LEI rivalry is kept under a
+#: specific that does exist: ``us_articles_incorporation`` is what an LEI record must never
+#: be mistaken for, and ``xx_lei_certificate`` declares it in ``confusable_with``.
+#: ``xx_sanctions_screening_report`` and ``xx_iso_certificate`` now have no country-pack
+#: rival in this registry at all; they are still covered by
+#: ``test_each_new_generic_still_wins_its_own_document`` below.
 RIVALS = (
     ("us_fincen_boir", "xx_ubo_declaration"),
     ("us_w8bene", "xx_fatca_crs_self_certification"),
-    ("in_ckyc_record", "xx_sanctions_screening_report"),
     ("us_certificate_good_standing", "xx_duns_record"),
-    ("in_certificate_incorporation", "xx_lei_certificate"),
+    ("us_articles_incorporation", "xx_lei_certificate"),
     ("mx_reporte_anual_cnbv", "xx_audited_financial_statements"),
-    ("in_gst_certificate", "xx_iso_certificate"),
     ("us_operating_agreement", "xx_isda_master_agreement"),
     # The original inversion, kept as a standing regression.
     ("us_bank_statement", "xx_bank_statement"),
@@ -320,10 +330,10 @@ def test_adding_these_doctypes_changes_no_existing_verdict() -> None:
     It is not hypothetical. ``xx_certificate_of_insurance``, first drafted with ACORD's full
     twenty-word legend as an anchor and a bare "Date" label, took
     ``corpus/ca/ca_cra_noa.pdf`` from CORRECT to an abstention — fifteen ordinary English
-    terms entered the profile vocabulary, ``ca_cra_noa`` and ``in_itr_acknowledgement``
-    swapped places in the lexical channel, the two channels stopped agreeing and the cascade
-    declined. The spec never scored on that document and was never a candidate on it. It
-    degraded it purely by existing.
+    terms entered the profile vocabulary, ``ca_cra_noa`` and a foreign tax acknowledgement
+    (in the India pack, since removed) swapped places in the lexical channel, the two
+    channels stopped agreeing and the cascade declined. The spec never scored on that
+    document and was never a candidate on it. It degraded it purely by existing.
 
     This test replays that measurement: classify the whole reference corpus against the
     registry with these doctypes and without them, and require that no document was

@@ -398,9 +398,9 @@ view = LayoutView(
     doc_id="bert-tripwire",
     pages=[PageInfo(page=1, width=8.5, height=11.0)],
     blocks=[
-        TextBlock(text="INCOME TAX DEPARTMENT", zone=Zone.title),
-        TextBlock(text="Permanent Account Number Card", zone=Zone.heading),
-        TextBlock(text="ABCDE1234F", zone=Zone.body),
+        TextBlock(text="Form W-2 Wage and Tax Statement", zone=Zone.title),
+        TextBlock(text="Wages, tips, other compensation", zone=Zone.heading),
+        TextBlock(text="Employer identification number (EIN)", zone=Zone.body),
     ],
 )
 specs = load_registry()

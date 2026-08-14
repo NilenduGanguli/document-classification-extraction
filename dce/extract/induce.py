@@ -227,7 +227,7 @@ def suggest_type(values: list[str]) -> tuple[str, str | None]:
     """Guess ``(type, validator)`` from the shapes of the values seen under a label.
 
     Identifier shapes are checked first and only accepted when the *validator agrees* —
-    a run of digits that fails its checksum is not evidence of an Aadhaar column. That
+    a run of digits that fails its checksum is not evidence of a SIN column. That
     keeps induction from proposing a validator that will reject every real value.
     """
     samples = [v for v in values if v.strip()][:20]

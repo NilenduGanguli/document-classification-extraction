@@ -17,7 +17,8 @@ decided once, with the deciding reviewer and the timestamp recorded on the item.
 that cannot say *who* accepted a value and *when* is a spreadsheet, not a control.
 
 **Blind double entry, where it actually matters.** A field that is both PII and backed by a real
-checksum — an Aadhaar number, a CURP, a SIN — takes **two independent approvals** before it is
+checksum — a SIN, a CURP, an MRZ-borne document number — takes **two independent approvals**
+before it is
 accepted, and a *correction* to one must be typed twice, by different people, matching. That is
 the classic four-eyes control for keyed identifiers, and it is enforced in :func:`approve` and
 :func:`correct` rather than left to a UI: a control that lives only in the frontend is a
@@ -130,8 +131,8 @@ class ReviewItem(BaseModel):
         required_approvals: How many independent approvals this item needs. Stored on the item
             rather than recomputed, because the reason for it (a PII checksum field) comes from
             a :class:`~dce.models.FieldSpec` the queue does not otherwise hold.
-        pii: Whether the value is personal data — a UI must mask it (UIDAI requires it for
-            Aadhaar) and a log must not carry it.
+        pii: Whether the value is personal data — a UI must mask it and a log must not
+            carry it.
         decision_note: Free text from the reviewer.
     """
 

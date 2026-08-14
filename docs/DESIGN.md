@@ -13,7 +13,7 @@ scanners, email attachments, partner SFTP drops. At the moment of arrival, nobod
 any of them are. Downstream systems — a KYC engine, a records archive, an LLM summariser —
 all need to know two things before they can do anything useful:
 
-1. **What is this document?** A PAN card, a W-9, a passport page, a utility bill, an internal
+1. **What is this document?** A W-9, a passport page, a utility bill, a SIN letter, an internal
    memo that should never have been uploaded at all.
 2. **What does it say?** The specific fields that document type carries, with enough
    provenance that a human reviewer can check them.
@@ -290,7 +290,8 @@ merely looks like one is how the registry-normalised softmax got into the accept
 **`p` is no longer an accept condition, and could not be repaired into one.** Every doctype in
 the registry contributes a strictly positive term to that softmax denominator, related to the
 document or not, so `p` is a function of registry size as well as of the document: the same
-US W-9, on identical evidence, scored 0.900 against 25 doctypes and 0.411 against 121. Every
+US W-9, on identical evidence, scored 0.900 against 25 doctypes and 0.411 against 121 (the
+registry size when that was measured; it is 129 today, minus the India pack). Every
 country pack shipped degraded every doctype already installed. Lowering the floor would have
 relocated the defect, not removed it. `classify_accept_probability` has now been **removed**
 from `config.py` — it was kept there, deprecated, on the grounds that "the short-circuit still
@@ -327,7 +328,7 @@ Because the verdict reads five numbers — `S[1]`, `S[2]`, the winner's coverage
 argmaxes of `A` and `L` — adding a doctype can change it only by entering the top two of a
 channel, which requires that doctype to carry real evidence *for this document*.
 `tests/test_registry_scale_invariance.py` pins the property. Re-measured after the accept-path
-rewrite, in the harder form (registry sizes 5/10/25/50/121 with the term profiles rebuilt at
+rewrite, in the harder form (registry sizes 5/10/25/50/181 with the term profiles rebuilt at
 each size, so idf drift is included rather than held fixed): the `(doctype, abstained)` verdict
 is unchanged on **60 of 61** documents, with a maximum confidence swing of **0.038**. The one
 exception sits 0.002 above the accept boundary and the drift tips it across. That residual is
@@ -404,7 +405,7 @@ a location on the page is not reviewable, and an unreviewable extraction is not 
 
 **The verification ladder** — `unverified` → `format_valid` → `checksum_verified` →
 `cross_verified` → `human_verified` — is a first-class field, not a confidence score. A
-checksum-verified Aadhaar number and a 0.97-confidence regex match are different kinds of
+checksum-verified SIN and a 0.97-confidence regex match are different kinds of
 claim, and collapsing them into one number loses exactly the distinction a reviewer needs.
 
 **Prefer a validator over a longer regex.** A shape regex accepts OCR noise of the right shape;
@@ -514,18 +515,22 @@ frontend is a suggestion.
 ## 8. The doctype registry
 
 A `DocTypeSpec` declares *how to recognise* a document type and *what to pull out of it* in
-one object. That is deliberate. "This is an Aadhaar card" and "an Aadhaar card has a 12-digit
-UID with a Verhoeff check" are the same knowledge; split across two files, they drift within a
+one object. That is deliberate. "This is a Canadian SIN confirmation" and "a SIN is nine
+Luhn-checked digits" are the same knowledge; split across two files, they drift within a
 quarter.
 
 | Country | Total | Identity | Address proof | Tax | Corporate | Financial | Other |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| India | 36 | 12 | 7 | 4 | 7 | 5 | 1 |
-| United States | 35 | 12 | 2 | 9 | 8 | 4 | — |
-| Canada | 25 | 11 | 3 | 4 | 6 | 1 | — |
-| Mexico | 20 | 8 | 5 | 4 | 2 | 1 | — |
-| Cross-country | 5 | 2 | 1 | — | — | 1 | 1 |
-| **Total** | **121** | **45** | **18** | **21** | **23** | **12** | **2** |
+| United States | 50 | 11 | 2 | 9 | 22 | 6 | — |
+| Canada | 37 | 11 | 3 | 4 | 18 | 1 | — |
+| Mexico | 27 | 8 | 5 | 4 | 5 | 4 | 1 |
+| Cross-country | 15 | 2 | 1 | 1 | 4 | 3 | 4 |
+| **Total** | **129** | **32** | **11** | **18** | **49** | **14** | **5** |
+
+An India pack of 52 doctypes was part of this registry until 2026-08-14 and was removed at the
+owner's request; it survives on the `archive/india-doctypes` branch. Measurements elsewhere in
+this document that quote a registry size of 181 (or a corpus of 158 documents) were taken while
+it was present and are dated rather than restated.
 
 Rules the registry enforces at import time, not at request time:
 
@@ -534,8 +539,9 @@ Rules the registry enforces at import time, not at request time:
   worse than one that refuses to start.
 * **Decisive anchors must stay distinguishing.** Two doctypes claiming the same decisive
   anchor make each other unclassifiable at the tier that matters most. Where the collision is
-  genuine (a masked and a full Aadhaar really do share the UIDAI header), both must declare
-  each other in `confusable_with` and each must keep a decisive anchor of its own.
+  genuine (a card and its masked reprint really do share the issuer's header), both must
+  declare each other in `confusable_with` and each must keep a decisive anchor of its own.
+  Nothing in the registry relies on that permission today.
 * **Attribute keys reuse the fleet ontology** (`identity.*`, `id.*`, `address.*`, `doc.*`,
   `entity.*`, `ownership.*`), so a fact extracted here merges with the same fact from another
   document instead of becoming a parallel truth.

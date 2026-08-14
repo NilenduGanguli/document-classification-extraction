@@ -106,9 +106,11 @@ RETIRED: Mapping[str, RetiredMethod] = {
         mechanism=(
             "Keypoints land on GLYPH SHAPES, not on layout. Any two pages of text share a "
             "vast vocabulary of letterforms and RANSAC happily fits a homography aligning "
-            "rows of type, so unrelated documents outscore related ones: in_ckyc_record x "
-            "us_articles_organization_llc scored 761 inliers while in_utility_electricity x "
-            "its own sibling scored 23. Separately disqualifying: the score is a function of "
+            "rows of type, so unrelated documents outscore related ones: a KYC registry "
+            "record paired with an unrelated LLC operating agreement scored 761 inliers, "
+            "while an electricity bill paired with its own sibling scored 23 (measured on "
+            "the 181-doctype registry, before the India pack was removed). Separately "
+            "disqualifying: the score is a function of "
             "MATCH ORDER — permuting the same 1130 correspondences gave inlier counts from "
             "17 to 50 — so the same document does not reliably give the same answer."
         ),

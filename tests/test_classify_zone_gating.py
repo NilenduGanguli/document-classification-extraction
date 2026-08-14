@@ -12,6 +12,15 @@ left to match — but it un-gated all 21 title-gated decisive anchors *everywher
 masthead label silently made them audible in body text. Both cases below are the measured
 consequence: each classified correctly with no roles, and became a confident cross-jurisdiction
 identity determination once an unrelated, correct ``title`` label was added.
+
+.. note::
+
+   Doctype ids beginning ``in_`` in the prose below cite the India pack, which was removed
+   from the registry on 2026-08-14 and is preserved on the ``archive/india-doctypes``
+   branch. The measurements they belong to were taken while it was present (181
+   doctypes, 158 corpus documents) and are kept as taken rather than restated. The
+   assertions in this file are all against doctypes that exist; only the narration is
+   historical.
 """
 from __future__ import annotations
 

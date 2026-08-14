@@ -7,6 +7,16 @@ iterated a fifth time. What shipped is the *evaluation apparatus and the honest 
 coverage, and an empty-by-construction registry in `dce/visual/` that hands back the measurement
 when somebody configures a retired method.
 
+> **Dated against a registry that no longer exists (added 2026-08-14).** Every measurement
+> below was taken against the 181-doctype registry, which included an India pack of 52
+> `in_*` doctypes and 41 Indian corpus documents. That pack was removed at the owner's
+> request and is preserved on the `archive/india-doctypes` branch; the registry is 129
+> doctypes and the corpus 117 documents today. Doctype ids beginning `in_` below are
+> citations of the removed pack, not live doctypes, and the numbers are kept as they were
+> measured rather than restated — the conclusion (the visual avenue does not ship) does not
+> turn on registry size, and re-stating figures nobody re-measured would be worse than
+> carrying a dated one.
+
 - §5A — spike 1 (SIFT + homography). NO-GO.
 - **§5B — spikes 2, 3 and 4** (structure, layout signature, emblem). All NO-GO. **Read this one.**
 - **§10 — what shipped, and why an empty registry is a deliverable.**

@@ -14,7 +14,7 @@ carries the lowest prior. Two things make it worth having:
 Pattern sources, in order: the field's own ``pattern``; the default shape for the field's
 ``validator``; and — only for ``type="id"`` fields with neither — the doctype's declared
 ``id_patterns``. That last fallback is narrow on purpose: sweeping every doctype identifier
-into every field is how an Aadhaar number ends up in a name field.
+into every field is how a licence number ends up in a name field.
 """
 from __future__ import annotations
 
@@ -109,10 +109,10 @@ def _doctype_fallback(field: FieldSpec, ctx: LocatorContext) -> list[str]:
     which field a match belongs to. Borrowing one for extraction is only safe when the
     answer is unambiguous, which needs both of:
 
-    * the pattern is **unclaimed** — no other field on the doctype declares it. An Aadhaar
-      card lists the UID shape at doctype level *and* on ``aadhaar_number``; letting
-      ``enrolment_number`` borrow it too makes the UID come back twice, once under a field
-      it does not belong to.
+    * the pattern is **unclaimed** — no other field on the doctype declares it. A card that
+      lists its number shape at doctype level *and* on ``card_number`` would, if another id
+      field could borrow it too, return the same number twice, once under a field it does
+      not belong to.
     * this is the **only** id field with nothing of its own, so there is exactly one field
       the leftover patterns could describe.
 

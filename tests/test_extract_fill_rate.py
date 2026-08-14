@@ -451,16 +451,16 @@ def test_a_shaped_field_is_left_empty_rather_than_filled_with_prose():
 def test_an_identifier_that_fails_its_checksum_still_reaches_the_reviewer():
     """The line the filter above must not cross.
 
-    A UID whose Verhoeff digit fails *has* the shape. It is the identifier printed on the
+    A SIN whose Luhn digit fails *has* the shape. It is the identifier printed on the
     document, the reviewer needs to see exactly it, and dropping it would hide a real
     finding behind an empty field.
     """
     field = FieldSpec(
-        name="aadhaar_number", type="id", labels={"en": ["Aadhaar"]},
-        validator="verhoeff_aadhaar", locators=["label"],
+        name="sin_number", type="id", labels={"en": ["SIN"]},
+        validator="sin_luhn", locators=["label"],
     )
-    extracted = resolve_field(field, one_line("Aadhaar: 9999 9999 0019"), ctx())[0]
-    assert extracted.value == "9999 9999 0019"
+    extracted = resolve_field(field, one_line("SIN: 193 000 000"), ctx())[0]
+    assert extracted.value == "193 000 000"
     assert extracted.verification == "unverified"
     assert extracted.validator_error
 
@@ -477,37 +477,38 @@ def test_a_bare_id_field_needs_a_digit_before_it_is_an_identifier():
 # 7. A blank form stays blank
 # ---------------------------------------------------------------------------
 def test_a_blank_form_fills_nothing_at_all():
-    """The GST REG-06 template, as the corpus ships it.
+    """The Form W-9 (Rev. March 2024) template, as the corpus ships it.
 
-    0/11 is the correct answer here: there is nothing printed to extract. It used to report
-    six fields — ``2.``, ``4.``, ``8.``, ``Designation``, ``Signature`` and a run of Annexure
-    row numbers — every one of them the form's own furniture.
+    Zero filled is the correct answer here: there is nothing printed to extract. The failure
+    this pins is a locator that binds a form's *own furniture* — a line number, the word
+    ``Signature``, a section heading — as if it were somebody's answer.
     """
     fields = [
-        FieldSpec(name="gstin", type="id", labels={"en": ["Registration Number"]},
-                  validator="gstin", locators=["label"]),
-        FieldSpec(name="legal_name", type="name", labels={"en": ["Legal Name"]},
+        FieldSpec(name="ein", type="id", labels={"en": ["Employer identification number"]},
+                  validator="ein", locators=["label"]),
+        FieldSpec(name="legal_name", type="name", labels={"en": ["Name of entity/individual"]},
                   validator="name", locators=["label"]),
-        FieldSpec(name="trade_name", labels={"en": ["Trade Name"]}, locators=["label"]),
-        FieldSpec(name="registration_type", labels={"en": ["Type of Registration"]},
-                  locators=["label"]),
+        FieldSpec(
+            name="business_name",
+            labels={"en": ["Business name/disregarded entity name, if different from above."]},
+            locators=["label"],
+        ),
+        FieldSpec(name="tax_classification",
+                  labels={"en": ["federal tax classification"]}, locators=["label"]),
     ]
-    spec = DocTypeSpec(doctype_id="in_gst_certificate", label="GST", country="IN",
-                       fields=fields)
+    spec = DocTypeSpec(doctype_id="us_w9", label="Form W-9", country="US", fields=fields)
     doc = stacked(
-        "Registration Certificate",
-        "Registration Number:<GSTIN/UIN >",
-        "1.",
-        "Legal Name",
-        "2.",
-        "Trade Name, if any",
-        "7.",
-        "Type of Registration",
-        "8.",
-        "Particulars of Approving Authority",
-        "Signature",
-        "Name",
-        "Designation",
+        "Request for Taxpayer Identification Number and Certification",
+        "1",
+        "Name of entity/individual. An entry is required.",
+        "2",
+        "Business name/disregarded entity name, if different from above.",
+        "3a",
+        "Check the appropriate box for federal tax classification of the entity/individual",
+        "Employer identification number",
+        "Sign Here",
+        "Signature of U.S. person",
+        "Date",
     )
     for field in fields:
         extracted = resolve_field(field, doc, ctx(spec=spec))[0]

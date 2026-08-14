@@ -49,6 +49,15 @@ claim is true.
 Scanned documents with no text layer are skipped, exactly as ``tools/corpus_test.py`` skips
 them: absence of a text layer is absence of evidence, and OCR error would make a failure here
 un-diagnosable.
+
+.. note::
+
+   Doctype ids beginning ``in_`` in the prose below cite the India pack, which was removed
+   from the registry on 2026-08-14 and is preserved on the ``archive/india-doctypes``
+   branch. The measurements they belong to were taken while it was present (181
+   doctypes, 158 corpus documents) and are kept as taken rather than restated. The
+   assertions in this file are all against doctypes that exist; only the narration is
+   historical.
 """
 from __future__ import annotations
 

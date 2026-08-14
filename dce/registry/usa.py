@@ -81,7 +81,7 @@ except ImportError:  # pragma: no cover - the pack stays importable on its own
 # ---------------------------------------------------------------------------
 # Namespace declarations
 #
-# The registry ships with the India pack's attribute-key catalog and validator contract,
+# The loader ships a jurisdiction-neutral attribute-key catalog and validator contract,
 # and rejects anything it has not been told about — deliberately, so that a typo in a pack
 # fails at import instead of silently producing a field nothing can merge. Its own error
 # message says to declare the key first. A pack is the right place for that declaration:
@@ -1931,11 +1931,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
             # plus "For-Profit Corporation" is the real US signature, and it is a
             # combination, which is the lexical tier's job rather than L1's.
             _a("ARTICLES OF INCORPORATION"),
-            # NOT decisive: "Certificate of Incorporation" is the exact registered title of
-            # the Indian MCA's incorporation certificate, which has the stronger claim on
-            # the string. Delaware and New York do title their filing that way, so the
-            # anchor is kept — it contributes lexically and the Secretary of State
-            # vocabulary below carries the rest.
+            # NOT decisive: "Certificate of Incorporation" is the registered title of the
+            # entity-formation instrument across the Commonwealth too — a registrar in
+            # England, Ontario or Delhi issues a document under exactly this heading, and
+            # this registry models none of them, so a decisive claim here would identify a
+            # foreign filing as a US one. Delaware and New York do title their filing that
+            # way, so the anchor is kept — it contributes lexically and the Secretary of
+            # State vocabulary below carries the rest.
             _a("CERTIFICATE OF INCORPORATION"),
             # Same reasoning, and it should have been applied here the first time.
             # "Certificate of Formation" is the shared statutory title of the entity-formation
@@ -1969,11 +1971,6 @@ SPECS: tuple[DocTypeSpec, ...] = (
             "ca_articles_incorporation_federal": "the Canadian federal articles cite the "
             "Canada Business Corporations Act and are "
             "bilingual (STATUTS CONSTITUTIFS)",
-            "in_certificate_incorporation": "Delaware and New York also title the filing "
-            "CERTIFICATE OF INCORPORATION; the Indian "
-            "certificate names the Ministry of Corporate "
-            "Affairs and carries a CIN, the US one names a "
-            "Secretary of State",
         },
         negative_anchors=[
             "ARTICLES OF ORGANIZATION",
@@ -4105,9 +4102,13 @@ SPECS: tuple[DocTypeSpec, ...] = (
         confusable_with={
             "us_bylaws": "the bylaws create the offices; the certificate names who currently "
             "holds them on a stated date",
-            "in_board_resolution": "the Indian instrument is headed CERTIFIED TRUE COPY OF "
-            "THE RESOLUTION, cites the Companies Act and carries DINs",
         },
+        # These four repel the Commonwealth board resolution — headed CERTIFIED TRUE COPY OF
+        # THE RESOLUTION, citing the Companies Act and carrying director identification
+        # numbers. No such doctype is registered, which is exactly why the negatives stay: an
+        # unmodelled document must abstain, and without them this spec's vocabulary
+        # ("duly elected", "the foregoing resolutions") would happily claim one as a US
+        # secretary's certificate.
         negative_anchors=[
             "CERTIFIED TRUE COPY OF THE RESOLUTION",
             "Ministry of Corporate Affairs",

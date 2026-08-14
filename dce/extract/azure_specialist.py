@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 #:
 #: Deliberately conservative. ``prebuilt-idDocument`` is trained on passport photo pages and
 #: North-American driving licences / state IDs; pointing it at a document it was not trained on
-#: (``mx_ine``, ``us_green_card``, ``ca_pr_card``, ``in_aadhaar``) returns fields with a
+#: (``mx_ine``, ``us_green_card``, ``ca_pr_card``) returns fields with a
 #: plausible confidence and the wrong values, which is worse than returning nothing. Those
 #: doctypes stay on T1 until someone has measured a specialist on them. Extending this map is a
 #: deliberate act, one doctype at a time.
@@ -87,7 +87,6 @@ SPECIALIST_MODELS: dict[str, str] = {
     "us_passport": "prebuilt-idDocument",
     "ca_passport": "prebuilt-idDocument",
     "mx_passport": "prebuilt-idDocument",
-    "in_passport": "prebuilt-idDocument",
     "us_drivers_license": "prebuilt-idDocument",
     "us_state_id": "prebuilt-idDocument",
     "ca_drivers_license": "prebuilt-idDocument",

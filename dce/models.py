@@ -8,9 +8,9 @@ Every module codes against these. Two shapes carry the weight:
   business units use the service without adopting our OCR stack.
 * :class:`DocTypeSpec` — one document type's *classification anchors* and its *extraction
   fields*, declared together. Keeping them in one object is deliberate: the thing that
-  tells you "this is an Aadhaar card" and the thing that tells you "an Aadhaar card has a
-  12-digit UID with a Verhoeff check" are the same knowledge, and they drift apart the
-  moment you split them across two files.
+  tells you "this is a Canadian SIN confirmation" and the thing that tells you "a SIN is
+  nine Luhn-checked digits" are the same knowledge, and they drift apart the moment you
+  split them across two files.
 """
 from __future__ import annotations
 
@@ -152,8 +152,8 @@ class Category(enum.StrEnum):
 class FieldSpec(BaseModel):
     """One extractable field on a document type."""
 
-    name: str                                   # snake_case, e.g. "aadhaar_number"
-    attribute_key: str = ""                     # maps into the fleet ontology, e.g. "id.aadhaar"
+    name: str                                   # snake_case, e.g. "sin_number"
+    attribute_key: str = ""                     # maps into the fleet ontology, e.g. "id.sin"
     type: str = "string"                        # string|date|number|name|address|id|bool
     required: bool = False
     pii: bool = False
@@ -163,7 +163,7 @@ class FieldSpec(BaseModel):
     #: Value-shape regex; also used to reject a wrong binding (an address must not bind
     #: to a date just because the label matched).
     pattern: str | None = None
-    #: Named validator in dce.extract.validate (e.g. "verhoeff_aadhaar", "pan", "curp").
+    #: Named validator in dce.extract.validate (e.g. "sin_luhn", "ssn", "curp").
     validator: str | None = None
     #: Locator hints in priority order, e.g. ["kv", "label", "table", "regex", "mrz"].
     locators: list[str] = Field(default_factory=lambda: ["kv", "label", "regex"])
@@ -213,8 +213,8 @@ class Controls(enum.StrEnum):
 
     #: The name of the body that issues this document, or a proper name it coined and owns —
     #: a programme, a trade name, or an identifier scheme it alone operates:
-    #: ``UNIQUE IDENTIFICATION AUTHORITY OF INDIA``, ``HYDRO-QUÉBEC``, ``TELMEX``, ``NEXUS``,
-    #: ``Udyam Registration Number``. Note what this value does **not** license: an issuer
+    #: ``HYDRO-QUÉBEC``, ``TELMEX``, ``NEXUS``, ``INSTITUTO NACIONAL ELECTORAL``. Note what
+    #: this value does **not** license: an issuer
     #: name that heads *several* doctypes in this registry proves the issuer, not the
     #: document, and :func:`dce.registry.loader._check_issuer_name_not_shared` rejects it.
     ISSUER_NAME = "issuer_name"
@@ -271,7 +271,7 @@ class Anchor(BaseModel):
 class DocTypeSpec(BaseModel):
     """A document type: how to recognise it, and what to pull out of it."""
 
-    doctype_id: str                              # e.g. "in_aadhaar", "us_w9", "mx_ine"
+    doctype_id: str                              # e.g. "ca_sin_confirmation", "us_w9", "mx_ine"
     label: str
     country: str                                 # IN | US | CA | MX | XX (cross-country)
     category: Category = Category.other
@@ -289,7 +289,8 @@ class DocTypeSpec(BaseModel):
     negative_anchors: list[str] = Field(default_factory=list)
 
     fields: list[FieldSpec] = Field(default_factory=list)
-    #: Handling constraints that are legal, not technical (e.g. UIDAI Aadhaar masking).
+    #: Handling constraints that are legal, not technical (e.g. an SSN may not be stored
+    #: in full outside the encrypted store).
     handling: str = ""
 
     def anchor_texts(self, lang: str | None = None) -> list[str]:
@@ -357,11 +358,11 @@ class ExtractionResult(BaseModel):
 
 
 #: Combining marks (Unicode categories Mn/Mc). Python's ``re`` has no ``\p{M}``, and
-#: ``\w`` does NOT include marks, so a naive ``[^\W_]+`` splits every Indic word at each
-#: matra: "आधार" tokenised to ["आध", "र"]. Since the India pack carries 123 Devanagari
-#: anchors, that silently breaks classification for every bilingual Indian document — the
-#: exact failure this service exists to avoid. These ranges cover the Indic blocks plus
-#: general/Latin/Arabic/Hebrew combining marks.
+#: ``\w`` does NOT include marks, so a naive ``[^\W_]+`` splits a word at every combining
+#: mark: an Indic vowel sign, a Hebrew point or a decomposed Latin accent each cut a token
+#: in half, and a half-token matches nothing. The registered packs are Latin-script today,
+#: where the exposure is decomposed accents ("QUE" + combining acute + "BEC"); the wider
+#: ranges are here so the next non-Latin pack is not a silent classification outage.
 _MARKS = (
     # Generated from unicodedata: every Mn/Mc codepoint in the Latin/Greek/Cyrillic/
     # Hebrew/Arabic combining blocks and the whole Indic range U+0900-U+0DFF

@@ -14,6 +14,19 @@ L3           Optional local BERT kNN. Off by default, imported only when on.
 L4           Abstain → ``UNKNOWN`` → human queue.
 ===========  =====================================================================
 
+.. note::
+
+   **Every measurement quoted in this module was taken against the 181-doctype registry,
+   which included an India pack (52 ``in_*`` doctypes) and 41 Indian documents in the
+   corpus. That pack and those documents have since been removed: the registry is 129
+   doctypes and the corpus 117 documents.** The records are kept verbatim rather than
+   restated, because restating a number that was not re-measured is worse than carrying a
+   dated one — and the reasoning they support (why there is one accept rule, why
+   concurrence is pairwise, why a tie is not an opinion) does not turn on which doctypes
+   were registered when the measurement was made. **A doctype id beginning ``in_`` anywhere
+   below is a citation of that removed pack, not a live doctype.** Re-measure before
+   quoting any figure here as current.
+
 **There is exactly one accept rule and exactly one confidence number.** There used to be
 two-and-a-half: a checksum short-circuit, a decisive-anchor short-circuit — both of which
 returned a :class:`~dce.models.Classification` *before* the accept rule was ever evaluated,
@@ -186,7 +199,7 @@ ambiguity belongs to the registry and to page segmentation.
 
 Of the five accepts that used to ship below the coverage floor, three are now abstentions —
 including a Canadian permanent-resident card being accepted as a US green card and a US
-operating agreement being accepted as an Indian memorandum of association, both at the
+operating agreement being accepted as a foreign memorandum of association, both at the
 hard-coded 0.90 — and two are still accepted but now report an honest coverage number: the
 short-circuit reported *anchor* coverage alone because it never ran the lexical tier, so the
 number it published understated them.
@@ -370,8 +383,9 @@ a KYC control.
 *Normalising over the top-k instead of the whole registry.* Scale-invariant, and it recovers
 more documents (26 → 32 correct) — but it admits two new WRONG answers, because the fused
 runner-up is not reliably the real competitor. On ``ca_articles_incorporation_provincial`` the
-true class ranked #3, so a top-2 test compared the winner against an irrelevant Indian doctype
-and passed it. Channel *agreement* is what buys the precision here, not the scale-invariance:
+true class ranked #3, so a top-2 test compared the winner against an irrelevant foreign
+doctype and passed it. Channel *agreement* is what buys the precision here, not the
+scale-invariance:
 both of those failures had the winner leading on the saturated anchor channel while the
 lexical channel pointed somewhere else. Do not "optimise" the absolute bar into a top-k.
 
@@ -837,10 +851,11 @@ def _contested_decisive_claims(
     letting a pack author declare their way past it.
 
     What this rule is for is the *same-jurisdiction* case, which is legitimate and must keep
-    working: a masked and an unmasked Aadhaar genuinely share the UIDAI header, and the correct
-    handling is exactly this — decline the near-proof route and let the two-channel rule
-    arbitrate on the full evidence. It is also the backstop for a future overlap nobody
-    noticed, since it derives from the registry itself rather than from a maintained list.
+    working: two documents of one issuer's family — a card and its masked reprint — genuinely
+    share the issuing authority's header, and the correct handling is exactly this — decline
+    the near-proof route and let the two-channel rule arbitrate on the full evidence. It is
+    also the backstop for a future overlap nobody noticed, since it derives from the registry
+    itself rather than from a maintained list.
 
     Args:
         doctype_id: The doctype whose decisive hits are being audited.
@@ -898,15 +913,16 @@ def _conclusive_l1(
 
     Why keep the route at all, rather than requiring concurrence of everything. Concurrence
     asks the lexical tier to hold evidence for the class and to prefer it to the runner-up, and
-    a photo ID carries almost no text: an Aadhaar card whose 12-digit number has one
-    OCR-damaged digit has the UIDAI header and little else, and there is no term profile that
-    can beat a chatty utility bill's on such a page — the tier may well score it at zero, which
-    the positivity half of concurrence reads as "this tier has nothing to say", correctly.
+    a photo ID carries almost no text: a permanent-resident card whose document number has one
+    OCR-damaged character has the issuing authority's header and little else, and there is no
+    term profile that can beat a chatty utility bill's on such a page — the tier may well score
+    it at zero, which the positivity half of concurrence reads as "this tier has nothing to
+    say", correctly.
     Deleting the route entirely was measured on the reference corpus by
     stubbing this function to return nothing: it costs 3 of 37 accepted answers (36 correct
     down to 33) and changes the wrong-answer count not at all. The document's issuer printed a
-    string that means "this is an Aadhaar"; refusing to read it because BM25 is unimpressed is
-    not conservatism, it is discarding the strongest evidence on the page.
+    string that means "this is a permanent-resident card"; refusing to read it because BM25 is
+    unimpressed is not conservatism, it is discarding the strongest evidence on the page.
 
     **The audibility guard.** A decisive anchor is a claim of uniqueness *in the world*.
     ``len(decisive_doctypes()) == 1`` proves only uniqueness in the registry's bookkeeping, and

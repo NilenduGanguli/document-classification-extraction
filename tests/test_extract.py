@@ -48,9 +48,10 @@ from dce.models import (  # noqa: E402
 )
 
 PAGE_W, PAGE_H = 1000.0, 1400.0
-#: A Verhoeff-valid synthetic UID (see tests/test_validate.py for the hand computation).
-GOOD_UID = "9999 9999 0011"
-BAD_UID = "9999 9999 0019"
+#: A Luhn-valid synthetic Canadian SIN, and the same number with a broken check digit.
+#: Synthetic on purpose — see the note at the top of tests/test_validate.py.
+GOOD_SIN = "193 000 007"
+BAD_SIN = "193 000 000"
 
 TD3_LINE1 = "P<UTOERIKSSON<<ANNA<MARIA".ljust(44, "<")
 TD3_LINE2 = "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
@@ -223,16 +224,16 @@ def test_a_value_failing_the_fields_pattern_is_rejected():
 def test_a_pattern_narrows_a_noisy_value_instead_of_dropping_it():
     doc = view(
         blocks=[
-            TextBlock(text="UID", page=1, bbox=q(100, 200, 160, 220)),
-            TextBlock(text=f"{GOOD_UID} (masked)", page=1, bbox=q(200, 200, 500, 220)),
+            TextBlock(text="SIN", page=1, bbox=q(100, 200, 160, 220)),
+            TextBlock(text=f"{GOOD_SIN} (masked)", page=1, bbox=q(200, 200, 500, 220)),
         ]
     )
     field = FieldSpec(
-        name="aadhaar_number", labels={"en": ["UID"]}, locators=["label"],
-        pattern=r"\d{4}\s?\d{4}\s?\d{4}",
+        name="sin_number", labels={"en": ["SIN"]}, locators=["label"],
+        pattern=r"\d{3}\s?\d{3}\s?\d{3}",
     )
     best = label_locator.locate(field, doc, ctx())[0]
-    assert best.value == GOOD_UID
+    assert best.value == GOOD_SIN
     assert "narrowed to pattern" in best.detail
 
 
@@ -392,22 +393,22 @@ def test_unselected_options_never_become_a_group_answer():
 def test_regex_sweeps_in_zone_order_and_prefers_the_title():
     doc = view(
         blocks=[
-            TextBlock(text="PAN AAPFU0939F", zone=Zone.title, page=1, bbox=q(0, 0, 300, 30)),
-            TextBlock(text="ABCPZ1234A", zone=Zone.furniture, page=1, bbox=q(0, 1350, 300, 1380)),
+            TextBlock(text="SSN 123-45-6789", zone=Zone.title, page=1, bbox=q(0, 0, 300, 30)),
+            TextBlock(text="987-65-4321", zone=Zone.furniture, page=1, bbox=q(0, 1350, 300, 1380)),
         ]
     )
-    field = FieldSpec(name="pan", type="id", validator="pan", locators=["regex"])
+    field = FieldSpec(name="ssn", type="id", validator="ssn", locators=["regex"])
     found = regex_locator.locate(field, doc, ctx())
-    assert found[0].value == "AAPFU0939F"
+    assert found[0].value == "123-45-6789"
     assert "title" in found[0].detail
-    assert found[-1].value == "ABCPZ1234A"     # furniture is penalised, not discarded
+    assert found[-1].value == "987-65-4321"    # furniture is penalised, not discarded
 
 
 def test_regex_falls_back_to_the_doctype_id_patterns_only_for_id_fields():
-    doc = view(blocks=[TextBlock(text=f"UID {GOOD_UID}", page=1)])
-    context = ctx(id_patterns=(r"\d{4}\s\d{4}\s\d{4}",))
+    doc = view(blocks=[TextBlock(text=f"SIN {GOOD_SIN}", page=1)])
+    context = ctx(id_patterns=(r"\d{3}\s\d{3}\s\d{3}",))
     id_field = FieldSpec(name="uid", type="id", locators=["regex"])
-    assert regex_locator.locate(id_field, doc, context)[0].value == GOOD_UID
+    assert regex_locator.locate(id_field, doc, context)[0].value == GOOD_SIN
     name_field = FieldSpec(name="full_name", type="name", locators=["regex"])
     assert regex_locator.locate(name_field, doc, context) == []
 
@@ -515,19 +516,19 @@ def test_resolve_prefers_a_checksum_verified_candidate_over_a_fuzzy_label_match(
     """
     doc = view(
         blocks=[
-            TextBlock(text="Aadhaar No", page=1, bbox=q(100, 200, 250, 220)),
-            TextBlock(text=BAD_UID, page=1, bbox=q(300, 200, 450, 220)),
-            TextBlock(text=f"UID {GOOD_UID}", page=1, bbox=q(100, 600, 450, 620)),
+            TextBlock(text="Social Insurance Number", page=1, bbox=q(100, 200, 250, 220)),
+            TextBlock(text=BAD_SIN, page=1, bbox=q(300, 200, 450, 220)),
+            TextBlock(text=GOOD_SIN, page=1, bbox=q(100, 600, 450, 620)),
         ]
     )
     field = FieldSpec(
-        name="aadhaar_number", attribute_key="id.aadhaar", type="id", required=True,
-        pii=True, labels={"en": ["Aadhaar No"]}, validator="verhoeff_aadhaar",
+        name="sin_number", attribute_key="id.sin", type="id", required=True,
+        pii=True, labels={"en": ["Social Insurance Number"]}, validator="sin_luhn",
         locators=["label", "regex"],
     )
     extracted = resolve_field(field, doc, ctx())[0]
-    assert extracted.value == GOOD_UID
-    assert extracted.normalized == "999999990011"
+    assert extracted.value == GOOD_SIN
+    assert extracted.normalized == "193-000-007"
     assert extracted.verification == "checksum_verified"
     assert extracted.locator == "regex"
     assert extracted.confidence >= 0.9
@@ -537,12 +538,12 @@ def test_resolve_prefers_a_checksum_verified_candidate_over_a_fuzzy_label_match(
 def test_resolve_stops_at_the_first_checksum_verified_candidate():
     """Nothing beats a value that carries its own proof, so nothing else is run."""
     doc = view(
-        key_values=[KeyValue(key="Aadhaar No", value=GOOD_UID, page=1)],
-        blocks=[TextBlock(text=f"UID {BAD_UID}", page=1, bbox=q(100, 600, 450, 620))],
+        key_values=[KeyValue(key="SIN", value=GOOD_SIN, page=1)],
+        blocks=[TextBlock(text=f"SIN {BAD_SIN}", page=1, bbox=q(100, 600, 450, 620))],
     )
     field = FieldSpec(
-        name="aadhaar_number", type="id", labels={"en": ["Aadhaar No"]},
-        validator="verhoeff_aadhaar", locators=["kv", "label", "regex"],
+        name="sin_number", type="id", labels={"en": ["SIN"]},
+        validator="sin_luhn", locators=["kv", "label", "regex"],
     )
     extracted = resolve_field(field, doc, ctx())[0]
     assert extracted.locator == "kv"
@@ -553,18 +554,18 @@ def test_resolve_reports_a_rejected_value_rather_than_a_silent_blank():
     """A reviewer needs to see what was on the page and why it was not trusted."""
     doc = view(
         blocks=[
-            TextBlock(text="Aadhaar No", page=1, bbox=q(100, 200, 250, 220)),
-            TextBlock(text=BAD_UID, page=1, bbox=q(300, 200, 450, 220)),
+            TextBlock(text="SIN", page=1, bbox=q(100, 200, 250, 220)),
+            TextBlock(text=BAD_SIN, page=1, bbox=q(300, 200, 450, 220)),
         ]
     )
     field = FieldSpec(
-        name="aadhaar_number", type="id", required=True, labels={"en": ["Aadhaar No"]},
-        validator="verhoeff_aadhaar", locators=["label"],
+        name="sin_number", type="id", required=True, labels={"en": ["SIN"]},
+        validator="sin_luhn", locators=["label"],
     )
     extracted = resolve_field(field, doc, ctx())[0]
-    assert extracted.value == BAD_UID
+    assert extracted.value == BAD_SIN
     assert extracted.verification == "unverified"
-    assert extracted.validator_error == "verhoeff_check_failed"
+    assert extracted.validator_error == "luhn_check_failed"
     assert extracted.confidence < 0.4
 
 
@@ -576,16 +577,20 @@ def test_resolve_reports_a_field_nothing_was_found_for():
 
 
 def test_resolve_soft_validator_failure_stays_usable_but_flagged():
-    """An EPIC that fails its Luhn digit is still an EPIC; it is never checksum-verified."""
-    doc = view(key_values=[KeyValue(key="EPIC No", value="ABC1234567", page=1)])
+    """An RFC whose homoclave does not check out is still an RFC; never checksum-verified.
+
+    OCR mangles the homoclave constantly, so the shape is strict and the check digit is
+    advisory. Hard-rejecting here would throw away real taxpayer identifiers.
+    """
+    doc = view(key_values=[KeyValue(key="RFC", value="AAA010101AA9", page=1)])
     field = FieldSpec(
-        name="epic_number", type="id", labels={"en": ["EPIC No"]},
-        validator="epic_voter", locators=["kv"],
+        name="rfc", type="id", labels={"en": ["RFC"]},
+        validator="rfc", locators=["kv"],
     )
     extracted = resolve_field(field, doc, ctx())[0]
-    assert extracted.value == "ABC1234567"
+    assert extracted.value == "AAA010101AA9"
     assert extracted.verification == "format_valid"
-    assert "epic_luhn_soft_fail" in extracted.validator_error
+    assert "check_digit_soft_fail" in extracted.validator_error
 
 
 def test_resolve_multi_field_deduplicates_values():
@@ -613,17 +618,17 @@ def test_resolve_multi_field_deduplicates_values():
 def test_resolve_populates_missing_required_and_needs_review():
     doc = view(blocks=[TextBlock(text="Nothing useful here", page=1, bbox=q(0, 0, 10, 10))])
     schema = DocSchema(
-        doctype_id="in_aadhaar", version="2",
+        doctype_id="ca_sin_confirmation", version="2",
         fields=[
-            FieldSpec(name="aadhaar_number", required=True, validator="verhoeff_aadhaar",
+            FieldSpec(name="sin_number", required=True, validator="sin_luhn",
                       locators=["regex"]),
             FieldSpec(name="full_name", locators=["label"]),
         ],
     )
     result = resolve(doc, schema)
-    assert result.doctype_id == "in_aadhaar"
+    assert result.doctype_id == "ca_sin_confirmation"
     assert result.schema_version == "2"
-    assert result.missing_required == ["aadhaar_number"]
+    assert result.missing_required == ["sin_number"]
     assert result.needs_review is True
     assert result.fill_rate == 0.0
     assert result.ms >= 0
@@ -654,13 +659,13 @@ def test_a_misbehaving_locator_cannot_take_the_field_down():
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
-def aadhaar_spec() -> DocTypeSpec:
+def sin_spec() -> DocTypeSpec:
     return DocTypeSpec(
-        doctype_id="in_aadhaar", label="Aadhaar Card", country="IN",
+        doctype_id="ca_sin_confirmation", label="SIN Confirmation", country="CA",
         category=Category.identity, officially_valid=True,
         fields=[
-            FieldSpec(name="aadhaar_number", attribute_key="id.aadhaar", type="id",
-                      required=True, pii=True, validator="verhoeff_aadhaar"),
+            FieldSpec(name="sin_number", attribute_key="id.sin", type="id",
+                      required=True, pii=True, validator="sin_luhn"),
             FieldSpec(name="full_name", attribute_key="identity.full_name", type="name"),
         ],
     )
@@ -668,49 +673,49 @@ def aadhaar_spec() -> DocTypeSpec:
 
 def test_default_schema_is_derived_from_the_doctype_spec():
     """Declaring a doctype gives you a working schema for free."""
-    schema = default_schema_for(aadhaar_spec())
-    assert schema.doctype_id == "in_aadhaar"
+    schema = default_schema_for(sin_spec())
+    assert schema.doctype_id == "ca_sin_confirmation"
     assert schema.source == "derived"
-    assert schema.field_names == ["aadhaar_number", "full_name"]
-    assert schema.required_fields == ["aadhaar_number"]
+    assert schema.field_names == ["sin_number", "full_name"]
+    assert schema.required_fields == ["sin_number"]
     # A copy, not a reference: mutating the schema must not edit the doctype registry.
     schema.fields[0].required = False
-    assert aadhaar_spec().fields[0].required is True
+    assert sin_spec().fields[0].required is True
 
 
 def test_load_from_registry_accepts_an_explicit_spec_and_a_duck_typed_registry():
-    assert load_from_registry("in_aadhaar", spec=aadhaar_spec()).field_names == [
-        "aadhaar_number", "full_name",
+    assert load_from_registry("ca_sin_confirmation", spec=sin_spec()).field_names == [
+        "sin_number", "full_name",
     ]
 
     class FakeRegistry:
         @staticmethod
         def get_doctype(doctype_id: str) -> DocTypeSpec | None:
-            return aadhaar_spec() if doctype_id == "in_aadhaar" else None
+            return sin_spec() if doctype_id == "ca_sin_confirmation" else None
 
-    loaded = load_from_registry("in_aadhaar", doctype_registry=FakeRegistry)
-    assert loaded is not None and loaded.doctype_id == "in_aadhaar"
+    loaded = load_from_registry("ca_sin_confirmation", doctype_registry=FakeRegistry)
+    assert loaded is not None and loaded.doctype_id == "ca_sin_confirmation"
     assert load_from_registry("nope", doctype_registry=FakeRegistry) is None
 
 
 def test_schema_registry_latest_resolution_orders_versions_numerically():
     reg = SchemaRegistry()
     for version in ("1", "2", "10", "1.5"):
-        reg.register(DocSchema(doctype_id="in_pan", version=version))
-    assert reg.versions("in_pan") == ["1", "1.5", "2", "10"]
-    assert reg.get("in_pan").version == "10"
-    assert reg.get("in_pan", "2").version == "2"
-    assert reg.get("in_pan", "99") is None
-    assert reg.doctypes() == ["in_pan"]
+        reg.register(DocSchema(doctype_id="us_w9", version=version))
+    assert reg.versions("us_w9") == ["1", "1.5", "2", "10"]
+    assert reg.get("us_w9").version == "10"
+    assert reg.get("us_w9", "2").version == "2"
+    assert reg.get("us_w9", "99") is None
+    assert reg.doctypes() == ["us_w9"]
 
 
 def test_adding_a_field_within_a_version_is_allowed():
     reg = SchemaRegistry()
     reg.register(
-        DocSchema(doctype_id="in_pan", version="1", fields=[FieldSpec(name="pan_number")])
+        DocSchema(doctype_id="us_w9", version="1", fields=[FieldSpec(name="pan_number")])
     )
     grown = DocSchema(
-        doctype_id="in_pan", version="1",
+        doctype_id="us_w9", version="1",
         fields=[FieldSpec(name="pan_number"), FieldSpec(name="father_name")],
     )
     assert reg.register(grown).field_names == ["pan_number", "father_name"]
@@ -727,43 +732,43 @@ def test_adding_a_field_within_a_version_is_allowed():
 def test_changing_a_field_within_a_version_is_refused(change, expected):
     """Consumers cache by version string; changing one under them is the bug this stops."""
     reg = SchemaRegistry()
-    original = FieldSpec(name="pan_number", type="id", validator="pan")
-    reg.register(DocSchema(doctype_id="in_pan", version="1", fields=[original]))
+    original = FieldSpec(name="ssn_number", type="id", validator="ssn")
+    reg.register(DocSchema(doctype_id="us_w9", version="1", fields=[original]))
     mutated = DocSchema(
-        doctype_id="in_pan", version="1", fields=[original.model_copy(update=change)]
+        doctype_id="us_w9", version="1", fields=[original.model_copy(update=change)]
     )
     with pytest.raises(SchemaCompatibilityError) as excinfo:
         reg.register(mutated)
     assert expected in str(excinfo.value)
     assert "new version" in str(excinfo.value)
     # The registered version is untouched by the rejected attempt.
-    assert reg.get("in_pan", "1").fields[0].type == "id"
+    assert reg.get("us_w9", "1").fields[0].type == "id"
 
 
 def test_removing_a_field_within_a_version_is_refused():
     reg = SchemaRegistry()
     reg.register(
-        DocSchema(doctype_id="in_pan", version="1",
+        DocSchema(doctype_id="us_w9", version="1",
                   fields=[FieldSpec(name="pan_number"), FieldSpec(name="father_name")])
     )
     with pytest.raises(SchemaCompatibilityError, match="was removed"):
         reg.register(
-            DocSchema(doctype_id="in_pan", version="1", fields=[FieldSpec(name="pan_number")])
+            DocSchema(doctype_id="us_w9", version="1", fields=[FieldSpec(name="pan_number")])
         )
 
 
 def test_a_new_version_is_the_escape_hatch_for_a_breaking_change():
     reg = SchemaRegistry()
     reg.register(
-        DocSchema(doctype_id="in_pan", version="1",
+        DocSchema(doctype_id="us_w9", version="1",
                   fields=[FieldSpec(name="pan_number", type="id")])
     )
     reg.register(
-        DocSchema(doctype_id="in_pan", version="2",
+        DocSchema(doctype_id="us_w9", version="2",
                   fields=[FieldSpec(name="pan_number", type="string")])
     )
-    assert reg.get("in_pan", "1").fields[0].type == "id"
-    assert reg.get("in_pan").fields[0].type == "string"
+    assert reg.get("us_w9", "1").fields[0].type == "id"
+    assert reg.get("us_w9").fields[0].type == "string"
 
 
 def test_inactive_schemas_are_invisible_until_a_human_activates_them():
@@ -894,9 +899,9 @@ def test_induce_survives_being_given_nothing():
 
 
 def test_suggest_type_only_proposes_a_validator_the_values_actually_pass():
-    """A digit run that fails its checksum is not evidence of an Aadhaar column."""
-    assert suggest_type([GOOD_UID, GOOD_UID]) == ("id", "verhoeff_aadhaar")
-    assert suggest_type([BAD_UID, BAD_UID])[1] != "verhoeff_aadhaar"
+    """A digit run that fails its checksum is not evidence of a SIN column."""
+    assert suggest_type([GOOD_SIN, GOOD_SIN]) == ("id", "sin_luhn")
+    assert suggest_type([BAD_SIN, BAD_SIN])[1] != "sin_luhn"
     assert suggest_type(["27/04/1956", "01/11/1974"]) == ("date", "generic_date")
     assert suggest_type(["$1,234.56", "98,000.00"]) == ("number", "amount")
     assert suggest_type(["Anna Eriksson", "Bo Nilsson"]) == ("name", "name")
@@ -907,13 +912,13 @@ def test_suggest_type_only_proposes_a_validator_the_values_actually_pass():
 # The public entry point the API layer binds to
 # ---------------------------------------------------------------------------
 def test_extract_accepts_a_doctype_id_and_derives_a_schema_from_the_spec():
-    doc = view(blocks=[TextBlock(text=f"UID {GOOD_UID}", page=1, bbox=q(100, 100, 400, 130))])
-    result = extract(doc, "in_aadhaar", spec=aadhaar_spec())
-    assert result.doctype_id == "in_aadhaar"
+    doc = view(blocks=[TextBlock(text=f"SIN {GOOD_SIN}", page=1, bbox=q(100, 100, 400, 130))])
+    result = extract(doc, "ca_sin_confirmation", spec=sin_spec())
+    assert result.doctype_id == "ca_sin_confirmation"
     assert result.schema_version == "1"
     by_name = {f.name: f for f in result.fields}
-    assert by_name["aadhaar_number"].normalized == "999999990011"
-    assert by_name["aadhaar_number"].verification == "checksum_verified"
+    assert by_name["sin_number"].normalized == "193-000-007"
+    assert by_name["sin_number"].verification == "checksum_verified"
 
 
 def test_extract_accepts_the_call_shape_the_api_layer_uses():
@@ -931,12 +936,12 @@ def test_extract_accepts_the_call_shape_the_api_layer_uses():
     params = inspect.signature(entry_point).parameters
     assert "settings" in params and "schema_version" in params
 
-    doc = view(blocks=[TextBlock(text=f"UID {GOOD_UID}", page=1, bbox=q(100, 100, 400, 130))])
+    doc = view(blocks=[TextBlock(text=f"SIN {GOOD_SIN}", page=1, bbox=q(100, 100, 400, 130))])
     result = entry_point(
-        doc, aadhaar_spec(), settings=get_settings(), schema_version="latest"
+        doc, sin_spec(), settings=get_settings(), schema_version="latest"
     )
-    assert result.doctype_id == "in_aadhaar"
-    assert result.fields[0].normalized == "999999990011"
+    assert result.doctype_id == "ca_sin_confirmation"
+    assert result.fields[0].normalized == "193-000-007"
 
 
 def test_extract_on_an_unknown_doctype_flags_review_instead_of_raising(monkeypatch):
@@ -955,35 +960,35 @@ def test_extract_on_an_unknown_doctype_flags_review_instead_of_raising(monkeypat
 
 
 def test_regex_will_not_borrow_a_pattern_another_field_already_claims():
-    """A real defect this caught on the shipped in_aadhaar pack.
+    """A real defect this caught on a shipped identity pack.
 
-    The doctype lists the UID shape in ``id_patterns`` for classification, and
-    ``aadhaar_number`` declares the same shape as its own pattern. Without this guard,
-    ``enrolment_number`` — an id field with no pattern of its own — borrowed the doctype
-    pattern and reported the UID a second time under the wrong field name.
+    The doctype lists the identifier shape in ``id_patterns`` for classification, and the
+    identifier field declares the same shape as its own pattern. Without this guard, a
+    second id field with no pattern of its own borrowed the doctype pattern and reported
+    the same number again under the wrong field name.
     """
-    uid_pattern = r"\b[2-9]\d{3}\s?\d{4}\s?\d{4}\b"
+    uid_pattern = r"\b[1-79]\d{2}\s?\d{3}\s?\d{3}\b"
     spec = DocTypeSpec(
-        doctype_id="in_aadhaar", label="Aadhaar", country="IN",
+        doctype_id="ca_sin_confirmation", label="SIN Confirmation", country="CA",
         id_patterns=[uid_pattern],
         fields=[
-            FieldSpec(name="aadhaar_number", type="id", pattern=uid_pattern,
-                      validator="verhoeff_aadhaar", locators=["regex"]),
-            FieldSpec(name="enrolment_number", type="id", locators=["regex"]),
+            FieldSpec(name="sin_number", type="id", pattern=uid_pattern,
+                      validator="sin_luhn", locators=["regex"]),
+            FieldSpec(name="application_number", type="id", locators=["regex"]),
         ],
     )
-    doc = view(blocks=[TextBlock(text=f"UID {GOOD_UID}", page=1, bbox=q(100, 100, 400, 130))])
+    doc = view(blocks=[TextBlock(text=f"SIN {GOOD_SIN}", page=1, bbox=q(100, 100, 400, 130))])
     context = LocatorContext.for_view(doc, spec=spec)
 
     claimed_field = spec.fields[0]
     borrower = spec.fields[1]
-    assert regex_locator.locate(claimed_field, doc, context)[0].value == GOOD_UID
+    assert regex_locator.locate(claimed_field, doc, context)[0].value == GOOD_SIN
     assert regex_locator.locate(borrower, doc, context) == []
 
     result = resolve(doc, default_schema_for(spec), spec=spec)
     by_name = {f.name: f for f in result.fields}
-    assert by_name["aadhaar_number"].value == GOOD_UID
-    assert by_name["enrolment_number"].value is None
+    assert by_name["sin_number"].value == GOOD_SIN
+    assert by_name["application_number"].value is None
 
 
 def test_regex_still_borrows_a_doctype_pattern_when_exactly_one_field_can_own_it():
@@ -991,7 +996,7 @@ def test_regex_still_borrows_a_doctype_pattern_when_exactly_one_field_can_own_it
     spec = DocTypeSpec(
         doctype_id="some_form", label="Form", country="IN",
         id_patterns=[lone_pattern],
-        fields=[FieldSpec(name="enrolment_number", type="id", locators=["regex"])],
+        fields=[FieldSpec(name="application_number", type="id", locators=["regex"])],
     )
     doc = view(blocks=[TextBlock(text="Ref EN123456 issued", page=1, bbox=q(0, 0, 400, 30))])
     context = LocatorContext.for_view(doc, spec=spec)

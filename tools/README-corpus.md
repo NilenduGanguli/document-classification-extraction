@@ -15,14 +15,14 @@ Allowed:
 
 | Kind | What it means | Examples |
 | --- | --- | --- |
-| `blank_form` | An empty form published by the issuing authority itself | IRS Form W-9 from irs.gov, CRA T1 from canada.ca, SAT/RFC forms from sat.gob.mx, ITR/Form 60 from incometax.gov.in, MCA forms from mca.gov.in |
-| `specimen` | A sample image the authority published for public education, carrying fabricated names and numbers | UIDAI sample Aadhaar letter, a government "specimen" driving licence, a Wikimedia Commons image explicitly marked *specimen* |
+| `blank_form` | An empty form published by the issuing authority itself | IRS Form W-9 from irs.gov, CRA T1 from canada.ca, SAT/RFC forms from sat.gob.mx, SEC forms from sec.gov |
+| `specimen` | A sample image the authority published for public education, carrying fabricated names and numbers | The INE credential specimen, a state DMV "sample" driving licence, a Wikimedia Commons image explicitly marked *specimen* |
 | `sample` | A vendor sample document published for developers | Azure AI Document Intelligence sample invoices/IDs, AWS Textract samples |
 
 Never, under any circumstance:
 
-- A filled-in identity document belonging to a real person — Aadhaar, passport, driving
-  licence, SSN card, PAN, INE, health card.
+- A filled-in identity document belonging to a real person — passport, driving licence,
+  SSN card, SIN letter, INE, health card.
 - A real bank statement, payslip, utility bill, tax notice or KYC packet, however
   "anonymised" it looks. Redaction boxes are not deletion, and a name in the letterhead is
   still a name.
@@ -55,9 +55,8 @@ Two operational consequences:
 ```
 corpus/
   us/  manifest.jsonl  us_w9.pdf  us_1040.pdf  …
-  in/  manifest.jsonl  in_pan.pdf  in_form60.pdf  …
-  ca/  manifest.jsonl  …
-  mx/  manifest.jsonl  …
+  ca/  manifest.jsonl  ca_sin_confirmation.pdf  …
+  mx/  manifest.jsonl  mx_ine.pdf  …
 reports/
   corpus-results.json      # full per-document detail, machine-readable
   corpus-results.md        # the human table
@@ -78,11 +77,11 @@ warn about it.
 curl -s http://localhost:8200/api/v1/doctypes | python3 -m json.tool | less
 # or just the ids for one country:
 curl -s http://localhost:8200/api/v1/doctypes \
-  | python3 -c "import json,sys; [print(d['doctype_id']) for d in json.load(sys.stdin)['doctypes'] if d['country']=='IN']"
+  | python3 -c "import json,sys; [print(d['doctype_id']) for d in json.load(sys.stdin)['doctypes'] if d['country']=='CA']"
 ```
 
-(IDs are not always what you would guess — India's PAN card is `in_pan`, not
-`in_pan_card`.)
+(IDs are not always what you would guess — the Canadian SIN letter is
+`ca_sin_confirmation`, not `ca_sin`.)
 
 **2. Save the file as `corpus/<cc>/<doctype_id>.pdf`.** Prefer PDF: official blank forms
 are usually digital PDFs with a real text layer, which is exactly what the harness wants.
@@ -136,7 +135,7 @@ Then, with the service running on `http://localhost:8200`:
 ```bash
 python tools/corpus_test.py                       # everything: classify + extract
 python tools/corpus_test.py --verbose             # one line per document as it goes
-python tools/corpus_test.py --country in          # one country
+python tools/corpus_test.py --country ca          # one country
 python tools/corpus_test.py --only us_w9,us_1040  # named doctypes
 python tools/corpus_test.py --classify-only       # POST /api/v1/classify, no extraction
 python tools/corpus_test.py --layout              # send page geometry, not flat text
@@ -166,8 +165,8 @@ threshold should read `reports/corpus-results.json` and decide for itself.
 ## 4a. `--ocr` — measuring the scans and photo IDs
 
 Most official forms are digital PDFs. Identity documents are not: passports, PR cards,
-Aadhaar and ration cards reach a KYC system as photographs and scans, which is why they are
-in the corpus as `.pdf` scans and `.jpg` images. Without `--ocr` they have no text layer to
+green cards and driving licences reach a KYC system as photographs and scans, which is why
+they are in the corpus as `.pdf` scans and `.jpg` images. Without `--ocr` they have no text layer to
 read, so they are recorded `NEEDS_OCR` (or `ERROR`, for an image) and **excluded from every
 rate** — which quietly leaves the least-tested path in the service unmeasured.
 
@@ -243,11 +242,11 @@ because a fake pass is worse than a known gap:
 
 - **Latin-script documents (US, CA, MX) are measured honestly.** Spanish loses diacritics
   and nothing else material; `mx_acta_nacimiento` reaches coverage 0.80 through the mock.
-- **Documents whose text is primarily Devanagari — Aadhaar, ration cards, NPR letters —
-  come back as Latin transliteration noise.** Their results measure the mock's missing
-  language pack, not the classifier. Real Azure Read recognises Devanagari; the mock does
-  not. Do not draw conclusions about Indian-language documents from a mock run, and do not
-  file registry defects from one.
+- **A document in a script the mock's `eng`-only Tesseract cannot read comes back as
+  transliteration noise.** Every corpus document is Latin-script today, so this does not
+  currently bite — but the moment a non-Latin pack is added, its results through the mock
+  measure the missing language pack and not the classifier. Do not draw conclusions about
+  non-Latin documents from a mock run, and do not file registry defects from one.
 
 The harness prints this warning at start-up and writes it into the report whenever the OCR
 endpoint is a loopback address, so the caveat travels with the numbers.
@@ -330,7 +329,7 @@ That is the file to diff between runs when you change anchors.
 | `image has no text layer to read` | An image in the manifest and `--ocr` is off. That is correct behaviour, not a fault — rerun with `--ocr`. |
 | `cannot reach OCR endpoint` | The Azure mock is not up. It ships with the DES stack: `docker compose up azure-ocr-mock` in `document-enrichment-services/`, then check `http://localhost:5006/health`. |
 | `OCR analyze returned HTTP 401` | Real Azure without a key. Set `$AZURE_VISION_KEY` or pass `--ocr-key`. |
-| OCR text is garbage on an Indian document | Expected against the local mock — its Tesseract is `eng`-only and cannot read Devanagari. Point `--ocr-endpoint` at real Azure. Do not file a registry defect from a mock run on a non-Latin document. |
+| OCR text is garbage on a non-Latin document | Expected against the local mock — its Tesseract is `eng`-only. Point `--ocr-endpoint` at real Azure. Do not file a registry defect from a mock run on a non-Latin document. |
 | `is not a registry doctype_id` | Typo, or a guessed ID. Get the exact string from `GET /api/v1/doctypes`. |
 | `file not found` | The manifest's `file` path is wrong. Use the repo-root-relative form: `corpus/us/us_w9.pdf`. |
 | Report paths look absolute | The corpus is outside the repo (a `/tmp` fixture). Cosmetic only. |

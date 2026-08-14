@@ -149,10 +149,10 @@ def text_image() -> bytes:
     fitz = pytest.importorskip("fitz", reason="PyMuPDF is the optional .[pdf] extra")
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text((72, 90), "INCOME TAX DEPARTMENT", fontsize=26)
-    page.insert_text((72, 130), "GOVT. OF INDIA", fontsize=18)
-    page.insert_text((72, 180), "Permanent Account Number Card", fontsize=13)
-    page.insert_text((72, 210), "ABCDE1234F", fontsize=13)
+    page.insert_text((72, 90), "Form W-2 Wage and Tax Statement", fontsize=26)
+    page.insert_text((72, 130), "Department of the Treasury", fontsize=18)
+    page.insert_text((72, 180), "Wages, tips, other compensation", fontsize=13)
+    page.insert_text((72, 210), "Employer identification number (EIN)", fontsize=13)
     return page.get_pixmap(dpi=150).tobytes("png")
 
 
@@ -976,7 +976,7 @@ def test_a_live_mock_drives_a_real_end_to_end_classification(
     assert (Zone.title in zones) is zoned, f"{provider} zones: {zones}"
 
     classification = classify(result.view, load_registry(), settings=Settings(_env_file=None))
-    assert classification.doctype_id == "in_pan"
+    assert classification.doctype_id == "us_w2"
     assert classification.abstained is False
 
 

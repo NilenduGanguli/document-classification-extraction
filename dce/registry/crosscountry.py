@@ -8,7 +8,7 @@ whose issuing state we do not model, a form that is plainly a form and nothing m
 ``_check_anchor``: ``country == "XX"`` forbids the decisive flag). That is the entire
 design constraint of this module. A decisive anchor carries ``fuse_weight_anchor`` (3.0),
 so a decisive ``PASSPORT`` on ``xx_passport_generic`` would let the generic spec draw with
-``in_passport`` on a genuine Indian passport and push the pair below
+``us_passport`` on a genuine US passport and push the pair below
 ``classify_min_margin`` — turning a confident answer into an abstention. Weak anchors mean
 a country-specific doctype always outranks the generic one when both fire, and the generic
 one still wins when nothing else does.
@@ -48,8 +48,8 @@ carry ``handling`` text saying they satisfy no requirement on their own.
 Wolfsberg questionnaire, the ISDA Master Agreement, the ISO certificate, the D-U-N-S
 record and the rest. These are **not** fallbacks. They live here because their issuer is a
 single global body (GLEIF, the OECD, the Wolfsberg Group, ISDA, ISO, Dun & Bradstreet, the
-IASB/IAASB) rather than a state, so filing them under any one country would be a lie: an
-Indian counterparty and a Mexican one present the identical document. Their anchors are
+IASB/IAASB) rather than a state, so filing them under any one country would be a lie: a
+Canadian counterparty and a Mexican one present the identical document. Their anchors are
 consequently *stronger* than a shape fallback's, not weaker — the strings below are
 controlled by their issuing body in exactly the sense a decisive anchor requires.
 
@@ -69,24 +69,7 @@ that ground.
 
 from __future__ import annotations
 
-from dce.models import Anchor, Category, DocTypeSpec
-from dce.registry.india import (
-    LABELS_ACCOUNT_NO,
-    LABELS_ADDRESS,
-    LABELS_BANK,
-    LABELS_BILL_AMOUNT,
-    LABELS_BILL_PERIOD,
-    LABELS_CONSUMER,
-    LABELS_DUE_DATE,
-    LABELS_NAME,
-    address_field,
-    build_field,
-    dob_field,
-    expiry_field,
-    issue_date_field,
-    name_field,
-    sex_field,
-)
+from dce.models import Anchor, Category, DocTypeSpec, FieldSpec
 from dce.registry.loader import ATTRIBUTE_KEYS, register_all
 
 #: Attribute keys the globally-issued instruments below need and the base namespace does
@@ -110,6 +93,184 @@ for _key, _description in {
     ATTRIBUTE_KEYS.setdefault(_key, _description)
 del _key, _description
 
+
+# ---------------------------------------------------------------------------
+# Field builders and label vocabularies.
+#
+# Each country pack defines its own ``_f`` and its own label lists, because what a form
+# calls a field is knowledge about that jurisdiction's forms. This pack defines its own for
+# the same reason, and its lists are deliberately jurisdiction-neutral: a generic doctype
+# exists for a document whose issuer is *not* modelled, so a label list tuned to one
+# country's phrasing would make the fallback quietly better at that country and no other.
+# ---------------------------------------------------------------------------
+LABELS_NAME = {
+    "en": [
+        "Name",
+        "Full Name",
+        "Name of Holder",
+        "Holder Name",
+        "Applicant Name",
+        "Name of Applicant",
+    ],
+}
+LABELS_ADDRESS = {
+    "en": ["Address", "Residential Address", "Permanent Address", "Present Address", "Addr"],
+}
+LABELS_ACCOUNT_NO = {
+    "en": ["Account Number", "Account No", "A/C No", "A/c Number", "Acct No"],
+}
+LABELS_BANK = {"en": ["Bank", "Bank Name", "Name of Bank"]}
+LABELS_CONSUMER = {
+    "en": [
+        "Consumer Number",
+        "Consumer No",
+        "Consumer ID",
+        "Connection Number",
+        "CA Number",
+        "Service Number",
+        "K Number",
+        "Account ID",
+    ],
+}
+LABELS_BILL_AMOUNT = {
+    "en": ["Amount Payable", "Bill Amount", "Total Amount", "Net Payable", "Current Bill Amount"],
+}
+LABELS_BILL_PERIOD = {
+    "en": ["Bill Period", "Billing Period", "Bill Month", "Period", "Reading Period"],
+}
+LABELS_DUE_DATE = {"en": ["Due Date", "Pay by Date", "Last Date of Payment"]}
+_L_DOB = {"en": ["Date of Birth", "DOB", "D.O.B.", "Birth Date", "Date Of Birth"]}
+_L_SEX = {"en": ["Gender", "Sex", "MALE", "FEMALE"]}
+_L_ISSUE = {"en": ["Date of Issue", "Issue Date", "Issued on", "DOI", "Date of Issuance"]}
+_L_EXPIRY = {
+    "en": ["Date of Expiry", "Valid Till", "Valid Upto", "Valid Up to", "Expiry Date", "DOE"],
+}
+
+
+def build_field(
+    name: str,
+    attribute_key: str = "",
+    *,
+    kind: str = "string",
+    required: bool = False,
+    pii: bool = False,
+    multi: bool = False,
+    labels: dict[str, list[str]] | None = None,
+    pattern: str | None = None,
+    validator: str | None = None,
+    locators: tuple[str, ...] = ("kv", "label"),
+    notes: str = "",
+) -> FieldSpec:
+    """Build a :class:`~dce.models.FieldSpec` with the pack's defaults.
+
+    Args:
+        name: snake_case field name, unique within its doctype.
+        attribute_key: Canonical dotted key from ``loader.ATTRIBUTE_KEYS``; empty for
+            fields that are genuinely doc-local and do not belong in the merge view.
+        kind: ``FieldSpec.type`` — spelled ``kind`` here to avoid shadowing ``type``.
+        required: Whether absence should surface in ``missing_required``.
+        pii: Whether the value must be masked at every boundary.
+        multi: Whether several concurrent values are legitimate.
+        labels: Per-language label strings for the label-anchored locator.
+        pattern: Value-shape regex, used to reject a wrong binding.
+        validator: Name declared in ``loader.VALIDATOR_CONTRACT``. Left unset on a
+            ``name`` or ``address`` field, the matching generic validator is applied —
+            see below.
+        locators: Locator hints in priority order.
+        notes: Anything a reviewer needs to know — especially format uncertainty.
+
+    Returns:
+        The constructed FieldSpec.
+    """
+    # Name and address fields get their generic validator by default. This is not
+    # convenience: the failure it prevents is specific and common. The label-anchored
+    # locator searches right-of and below a label, so on a form where a date sits to the
+    # right of "Address" it will happily bind "12/03/1999" to the address field, and a
+    # bare digit run to a name field. The `name` and `address` validators exist precisely
+    # to reject those two bindings. Pass an explicit validator to override.
+    if validator is None:
+        validator = {"name": "name", "address": "address"}.get(kind)
+    return FieldSpec(
+        name=name,
+        attribute_key=attribute_key,
+        type=kind,
+        required=required,
+        pii=pii,
+        multi=multi,
+        labels=dict(labels or {}),
+        pattern=pattern,
+        validator=validator,
+        locators=list(locators),
+        notes=notes,
+    )
+
+
+def name_field(*, required: bool = True) -> FieldSpec:
+    """The holder's name — present on almost every individual document."""
+    return build_field(
+        "name", "identity.full_name", kind="name", required=required, pii=True, labels=LABELS_NAME
+    )
+
+
+def dob_field(*, required: bool = False) -> FieldSpec:
+    return build_field(
+        "date_of_birth",
+        "identity.date_of_birth",
+        kind="date",
+        required=required,
+        pii=True,
+        labels=_L_DOB,
+        validator="generic_date",
+    )
+
+
+def sex_field() -> FieldSpec:
+    return build_field(
+        "gender",
+        "identity.sex",
+        labels=_L_SEX,
+        pattern=r"(?i)^(m|f|t|male|female|transgender)$",
+        notes="A third marker is printed by several issuers and must not be rejected as a "
+        "bad binding.",
+    )
+
+
+def address_field(
+    attribute_key: str = "address.residential", *, required: bool = False
+) -> FieldSpec:
+    return build_field(
+        "address",
+        attribute_key,
+        kind="address",
+        required=required,
+        pii=True,
+        labels=LABELS_ADDRESS,
+        locators=("kv", "label", "regex"),
+    )
+
+
+def issue_date_field(*, required: bool = False) -> FieldSpec:
+    return build_field(
+        "issue_date",
+        "doc.issue_date",
+        kind="date",
+        required=required,
+        labels=_L_ISSUE,
+        validator="generic_date",
+    )
+
+
+def expiry_field(*, required: bool = False) -> FieldSpec:
+    return build_field(
+        "expiry_date",
+        "doc.expiry_date",
+        kind="date",
+        required=required,
+        labels=_L_EXPIRY,
+        validator="generic_date",
+    )
+
+
 #: LEI — ISO 17442: 18 alphanumerics plus two ISO 7064 MOD 97-10 check digits.
 LEI_PATTERN = r"\b[A-Z0-9]{18}\d{2}\b"
 #: D-U-N-S — nine digits, printed hyphenated on D&B's own output.
@@ -125,8 +286,9 @@ _SPECS: list[DocTypeSpec] = [
         applies_to="both",
         officially_valid=False,
         # Shape words only. "Service Address", "Billing Period", "Amount Due" and
-        # "Meter Reading" were removed: ca_utility_bill, us_utility_bill and the three
-        # in_utility_* specs claim them, and a generic that repeats a pack's vocabulary
+        # "Meter Reading" were removed: ca_utility_bill and us_utility_bill claim them
+        # (as did three utility specs of the since-removed India pack), and a generic that
+        # repeats a pack's vocabulary
         # competes with the pack instead of catching what the pack misses. "Statement" and
         # "Account Number" went for the same reason plus a second one — they were shared
         # with xx_bank_statement, so they told the classifier nothing about which of the two
@@ -146,12 +308,10 @@ _SPECS: list[DocTypeSpec] = [
         ],
         id_patterns=[],
         confusable_with={
-            "in_utility_electricity": "an Indian electricity bill names a DISCOM and meters kWh",
-            "in_utility_water": "an Indian water bill names a jal board / water supply board",
-            "in_utility_gas": "an Indian gas bill names a city gas distributor and meters SCM",
-            "in_utility_telephone": (
-                "an Indian telephone bill names a telecom operator and prints call/rental charges"
-            ),
+            "us_utility_bill": "a US bill names a named utility and a service address in a "
+            "US state",
+            "ca_utility_bill": "a Canadian bill names a provincial utility and prints a "
+            "postal code in the A1A 1A1 form",
         },
         negative_anchors=[],
         handling=(
@@ -213,8 +373,9 @@ _SPECS: list[DocTypeSpec] = [
         # does not model. Everything a bank-statement pack claims was removed:
         # "Account Summary"/"Beginning Balance"/"Ending Balance"/"Statement Period" and
         # "Routing Number" (us_bank_statement, us_voided_check), "Opening Balance"/
-        # "Closing Balance"/"Withdrawal"/"Deposit" (ca_bank_statement, in_bank_statement,
-        # in_bank_passbook). Those five US strings were the whole bug: the generic matched
+        # "Closing Balance"/"Withdrawal"/"Deposit" (ca_bank_statement, plus the statement
+        # and passbook specs of the since-removed India pack). Those five US strings were
+        # the whole bug: the generic matched
         # more of us_bank_statement's vocabulary than us_bank_statement did, so a Bank of
         # America statement landed on "issuer not modelled". "Routing Number" is an ABA
         # routing transit number, i.e. the single most issuer-identifying string on a US
@@ -235,12 +396,10 @@ _SPECS: list[DocTypeSpec] = [
         ],
         id_patterns=[],
         confusable_with={
-            "in_bank_statement": (
-                "an Indian statement carries an IFSC and NEFT/RTGS/UPI/IMPS narrations"
-            ),
-            "in_bank_passbook": (
-                "a passbook is titled PASSBOOK and carries an account-opening block"
-            ),
+            "us_bank_statement": "a US statement carries an ABA routing number and a "
+            "Member FDIC line",
+            "ca_bank_statement": "a Canadian statement carries a branch transit number and "
+            "names a Schedule I bank",
         },
         negative_anchors=[],
         handling=(
@@ -292,8 +451,9 @@ _SPECS: list[DocTypeSpec] = [
         applies_to="individual",
         officially_valid=False,
         # The document-naming noun in the three languages this registry covers, plus the
-        # TD3 MRZ pattern below. Nothing else — not even "Passport No", which in_passport
-        # claims and which the ``passport_number`` field label already contributes.
+        # TD3 MRZ pattern below. Nothing else — not even "Passport No", which every
+        # passport pack claims and which the ``passport_number`` field label already
+        # contributes.
         #
         # Removed: "Type", "Code", "Authority", "Nationality", "Surname", "Date of birth",
         # "Place of birth", "Date of issue". Those are ICAO 9303 visual-inspection-zone
@@ -315,10 +475,12 @@ _SPECS: list[DocTypeSpec] = [
         ],
         id_patterns=[r"P[<K][A-Z]{3}"],
         confusable_with={
-            "in_passport": (
-                "the Indian book prints 'REPUBLIC OF INDIA' / 'भारत गणराज्य' and an MRZ issuing "
-                "code of IND"
-            ),
+            "us_passport": "the US book prints 'UNITED STATES OF AMERICA' and an MRZ "
+            "issuing code of USA",
+            "ca_passport": "the Canadian book is bilingual (PASSPORT / PASSEPORT) with an "
+            "MRZ issuing code of CAN",
+            "mx_passport": "the Mexican book prints 'ESTADOS UNIDOS MEXICANOS' and an MRZ "
+            "issuing code of MEX",
         },
         negative_anchors=[],
         handling=(
@@ -400,13 +562,12 @@ _SPECS: list[DocTypeSpec] = [
         ],
         id_patterns=[],
         confusable_with={
-            "in_voter_epic": (
-                "the EPIC names the Election Commission of India and an assembly constituency"
-            ),
-            "in_driving_licence": (
-                "the Indian licence is headed 'DRIVING LICENCE' and lists vehicle classes"
-            ),
-            "in_aadhaar": "an Aadhaar names the Unique Identification Authority of India",
+            "mx_ine": "the INE credential names the Instituto Nacional Electoral and prints "
+            "a CURP and a clave de elector",
+            "us_state_id": "a US state ID names the issuing state's DMV and prints a REAL "
+            "ID marking",
+            "ca_provincial_photo_id": "a provincial card names the province and its issuing "
+            "ministry",
         },
         negative_anchors=[],
         handling=(
@@ -540,11 +701,12 @@ _SPECS: list[DocTypeSpec] = [
         ],
         id_patterns=[LEI_PATTERN],
         confusable_with={
-            "in_certificate_incorporation": (
-                "an incorporation certificate is issued by a national registrar and "
-                "creates the company; an LEI record only identifies a company that "
-                "already exists, and never confers legal status"
-            ),
+            "us_articles_incorporation": "articles of incorporation are filed with a "
+            "Secretary of State and create the company; an LEI record only identifies a "
+            "company that already exists, and never confers legal status",
+            "ca_articles_incorporation_federal": "the federal articles cite the Canada "
+            "Business Corporations Act and create the corporation; an LEI record confers "
+            "nothing",
         },
         negative_anchors=[],
         handling=(
@@ -780,10 +942,6 @@ _SPECS: list[DocTypeSpec] = [
         ],
         id_patterns=[],
         confusable_with={
-            "in_ckyc_record": (
-                "a CKYC record is a national registry's own record of a customer; this is "
-                "an institution's self-description and carries no registry's authority"
-            ),
             "xx_sanctions_screening_report": (
                 "the questionnaire is what an institution says about its own controls; a "
                 "screening report is what a vendor found about a counterparty"
@@ -968,10 +1126,11 @@ _SPECS: list[DocTypeSpec] = [
         # publish them, and every vendor must name them the same way to be intelligible.
         # Those list names are the anchors.
         #
-        # "Politically Exposed Person" was a candidate and was dropped: in_ckyc_record
-        # already claims it, so declaring it here would be precisely the greedy overlap
-        # _check_generic_not_greedy forbids, and a CKYC record is a document this doctype
-        # must never outrank.
+        # "Politically Exposed Person" was a candidate and was dropped: a national KYC
+        # registry record already claimed it (in the since-removed India pack), so declaring
+        # it here would have been precisely the greedy overlap _check_generic_not_greedy
+        # forbids. It stays dropped: a registry's own record of a customer is a document
+        # this doctype must never outrank, in whatever jurisdiction models one next.
         anchors=[
             Anchor(text="Specially Designated Nationals"),
             Anchor(text="Consolidated Sanctions List"),
@@ -986,11 +1145,6 @@ _SPECS: list[DocTypeSpec] = [
         ],
         id_patterns=[],
         confusable_with={
-            "in_ckyc_record": (
-                "the CKYC record claims 'Politically Exposed Person' and is a registry's "
-                "record of a real customer; this is a vendor's search output, and it must "
-                "never outrank the record"
-            ),
             "xx_wolfsberg_questionnaire": (
                 "the questionnaire is a self-description of controls; this is a result "
                 "produced by running a name against published lists"
@@ -1194,12 +1348,13 @@ _SPECS: list[DocTypeSpec] = [
         #
         # The weight sits on the IFRS side and that is not an accident. "Key Audit Matters"
         # (ISA 701) and "Basis for Opinion" (ISA 700) were declared here and removed —
-        # us_auditor_report and in_statutory_auditor_report claim them, and this module's
-        # rule is that a string a country pack claims belongs to that pack. Losing them is
-        # the right outcome rather than a compromise: those two doctypes model the auditor's
-        # report of a named jurisdiction, and this one has to be beaten by them on their own
-        # documents. What is left is the statements' own vocabulary, which is what remains
-        # when the country pack has taken the report.
+        # us_auditor_report claims them (as did a statutory auditor's report in the
+        # since-removed India pack), and this module's rule is that a string a country pack
+        # claims belongs to that pack. Losing them is the right outcome rather than a
+        # compromise: that doctype models the auditor's report of a named jurisdiction, and
+        # this one has to be beaten by it on its own documents. What is left is the
+        # statements' own vocabulary, which is what remains when the country pack has taken
+        # the report.
         anchors=[
             Anchor(
                 text=(
@@ -1324,10 +1479,11 @@ _SPECS: list[DocTypeSpec] = [
         # so a spec that keeps that many common terms in its profile lowers their idf for
         # every doctype already relying on them. Measured over the 59-document reference
         # corpus, adding this doctype with the full legend took ``corpus/ca/ca_cra_noa.pdf``
-        # from CORRECT to an abstention: the Canadian notice of assessment and
-        # in_itr_acknowledgement swapped places in the lexical channel, the two channels
-        # stopped agreeing, and the cascade declined. This spec was never a candidate on that
-        # document and never scored on it — it degraded it purely by being in the registry,
+        # from CORRECT to an abstention: the Canadian notice of assessment and a foreign tax
+        # acknowledgement (in the since-removed India pack) swapped places in the lexical
+        # channel, the two channels stopped agreeing, and the cascade declined. This spec
+        # was never a candidate on that document and never scored on it — it degraded it
+        # purely by being in the registry,
         # which is precisely the defect the scale-invariance work exists to prevent.
         #
         # "General Liability" went for the same reason ("general" is on eleven other
@@ -1460,11 +1616,6 @@ _SPECS: list[DocTypeSpec] = [
             "xx_certificate_of_insurance": (
                 "both are one-page third-party attestations with a holder, a number and an "
                 "expiry; only this one names an ISO standard and a scope"
-            ),
-            "in_gst_certificate": (
-                "a GST registration certificate is a tax authority registering the "
-                "enterprise; this is a private body auditing one of its management systems "
-                "and confers no registration of any kind"
             ),
         },
         negative_anchors=[],

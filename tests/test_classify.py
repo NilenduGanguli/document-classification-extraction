@@ -4,6 +4,15 @@ The first test is the one that matters. This service exists because a substring 
 classified ordinary English prose as a driving licence, an EIN letter and a SIN card at the
 same time, and a real passport at 0.5335 — below its own 0.55 floor. Both halves of that
 failure are pinned below.
+
+.. note::
+
+   Doctype ids beginning ``in_`` in the prose below cite the India pack, which was removed
+   from the registry on 2026-08-14 and is preserved on the ``archive/india-doctypes``
+   branch. The measurements they belong to were taken while it was present (181
+   doctypes, 158 corpus documents) and are kept as taken rather than restated. The
+   assertions in this file are all against doctypes that exist; only the narration is
+   historical.
 """
 from __future__ import annotations
 

@@ -44,7 +44,6 @@ TD2_BLOCK = "\n".join(
 def test_every_named_validator_is_registered():
     """The names doctype declarations are allowed to use, all present."""
     expected = {
-        "verhoeff_aadhaar", "pan", "epic_voter", "gstin", "in_passport", "in_dl",
         "ssn", "ein", "itin", "sin_luhn", "curp", "rfc",
         "mrz_td1", "mrz_td2", "mrz_td3",
         "iso_date", "generic_date", "name", "address", "amount",
@@ -52,9 +51,24 @@ def test_every_named_validator_is_registered():
     assert expected <= set(V.list_validators())
 
 
+def test_the_india_validators_are_gone_not_merely_unreferenced():
+    """The India pack was removed, so its six identifier validators were too.
+
+    Two of them — ``pan`` and ``in_dl`` — are plain English words in another jurisdiction's
+    vocabulary, so a later pack could re-register the name meaning something else. Asserting
+    absence rather than trusting it is what makes that a visible decision.
+    """
+    for gone in ("verhoeff_aadhaar", "pan", "epic_voter", "gstin", "in_passport", "in_dl"):
+        assert gone not in V.list_validators()
+        assert gone not in V.ID_PATTERNS
+        assert gone not in V.CHECKSUM_VALIDATORS
+    for helper in ("verhoeff_ok", "verhoeff_check_digit", "gstin_check_char"):
+        assert not hasattr(V, helper), f"{helper} outlived its only caller"
+
+
 def test_unknown_validator_is_soft_not_destructive():
     """A typo in a doctype declaration must be visible, not data-destroying."""
-    result = V.validate("verhoef_adhar", "some value")
+    result = V.validate("sinn_luhn", "some value")
     assert result.ok is True
     assert result.normalized == "some value"
     assert "unknown_validator" in result.error
@@ -73,107 +87,14 @@ def test_validators_never_raise_on_hostile_input():
 
 
 def test_verification_level_separates_checksums_from_format_checks():
-    assert V.verification_level("verhoeff_aadhaar") == "checksum"
+    assert V.verification_level("sin_luhn") == "checksum"
     assert V.verification_level("curp") == "checksum"
-    # PAN's 10th character is a check character whose algorithm was never published, and
-    # neither Indian passport nor DL numbers carry one at all.
-    assert V.verification_level("pan") == "format"
-    assert V.verification_level("in_passport") == "format"
-    assert V.verification_level("in_dl") == "format"
+    assert V.verification_level("mrz_td3") == "checksum"
+    # The SSA publishes area/group/serial rules and no check digit; an EIN can only have
+    # its campus prefix checked. Both are shapes, not proof.
+    assert V.verification_level("ssn") == "format"
+    assert V.verification_level("ein") == "format"
     assert V.verification_level("nope") == "none"
-
-
-# ---------------------------------------------------------------------------
-# India
-# ---------------------------------------------------------------------------
-def test_verhoeff_aadhaar_accepts_a_checksum_valid_number():
-    ok, normalized, error = V.validate("verhoeff_aadhaar", "9999 9999 0011")
-    assert (ok, normalized, error) == (True, "999999990011", "")
-
-
-def test_verhoeff_aadhaar_rejects_a_wrong_check_digit():
-    assert V.validate("verhoeff_aadhaar", "999999990019").error == "verhoeff_check_failed"
-
-
-def test_verhoeff_aadhaar_rejects_leading_zero_or_one():
-    """UIDAI has never allocated a UID starting 0 or 1, checksum notwithstanding."""
-    for prefix in ("0", "1"):
-        payload = prefix + "9999999001"
-        number = payload + V.verhoeff_check_digit(payload)
-        assert V.verhoeff_ok(number)
-        assert V.validate("verhoeff_aadhaar", number).error == "invalid_leading_digit"
-
-
-def test_verhoeff_check_digit_round_trips():
-    for payload in ("23456789012", "99999999001", "78901234567"):
-        assert V.verhoeff_ok(payload + V.verhoeff_check_digit(payload))
-
-
-def test_pan_entity_code_is_enforced():
-    assert V.validate("pan", "ABCPZ1234A").ok          # P = individual
-    assert V.validate("pan", "AAPFU0939F").ok          # F = firm
-    # 'D' is not an allocated entity code — this is the most-copied fake PAN on the web.
-    assert V.validate("pan", "ABCDE1234F").error == "invalid_entity_code:D"
-
-
-def test_pan_rejects_malformed_shapes():
-    for bad in ("ABCP1234A", "ABCPZ1234", "12345P678A", "ABCPZ12345"):
-        assert V.validate("pan", bad).ok is False
-
-
-def test_pan_surname_initial_mismatch_is_soft():
-    """OCR swaps given name and surname constantly; a good PAN survives that."""
-    assert V.validate("pan", "ABCPZ1234A", {"surname": "Zaveri"}).error == ""
-    soft = V.validate("pan", "ABCPZ1234A", {"surname": "Kumar"})
-    assert soft.ok is True
-    assert "surname_initial_mismatch" in soft.error
-
-
-def test_epic_checksum_failure_lowers_confidence_but_does_not_reject():
-    """stdnum enforces a Luhn digit that genuine EPICs reportedly fail. Never hard-reject."""
-    result = V.validate("epic_voter", "ABC1234567")
-    assert V.luhn_ok("1234567") is False           # the digit genuinely does not check out
-    assert result.ok is True                       # ...and the value is still usable
-    assert result.normalized == "ABC1234567"
-    assert "epic_luhn_soft_fail" in result.error
-    assert V.verification_level("epic_voter") == "format"   # never checksum_verified
-
-
-def test_epic_rejects_a_shape_that_is_not_an_epic():
-    for bad in ("AB1234567", "ABCD123", "1234567890"):
-        assert V.validate("epic_voter", bad).ok is False
-
-
-def test_gstin_checksum_and_embedded_pan():
-    ok, normalized, error = V.validate("gstin", "27AAPFU0939F1ZV")
-    assert (ok, normalized, error) == (True, "27AAPFU0939F1ZV", "")
-    # Break only the check character.
-    assert "check_char_failed" in V.validate("gstin", "27AAPFU0939F1ZA").error
-    # Break the embedded PAN's entity code (position 4 of the PAN, 'F' -> 'D').
-    assert "embedded_pan_invalid" in V.validate("gstin", "27AAPDU0939F1ZQ").error
-
-
-def test_gstin_check_char_helper_agrees_with_the_validator():
-    assert V.gstin_check_char("27AAPFU0939F1Z") == "V"
-
-
-def test_in_passport_is_a_format_heuristic():
-    assert V.validate("in_passport", "A1234567").ok
-    assert V.validate("in_passport", "Q1234567").ok is False   # Q is not issued
-    assert V.validate("in_passport", "A0234567").ok is False   # first digit may not be 0
-    assert V.validate("in_passport", "A123456").ok is False    # too short
-
-
-def test_in_dl_has_no_checksum_and_says_so():
-    """No national standard, no checksum — and never an identity or dedup key."""
-    structured = V.validate("in_dl", "MH14 2011 0062821")
-    assert structured.ok is True
-    assert "no_checksum_exists" in structured.error
-    loose = V.validate("in_dl", "KA0119990001234")
-    assert loose.ok is True
-    assert "no_checksum_exists" in loose.error
-    assert V.validate("in_dl", "12345").ok is False
-    assert "no checksum" in (V.VALIDATORS["in_dl"].__doc__ or "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -407,28 +328,28 @@ def test_amount_rejects_non_numbers():
 # ---------------------------------------------------------------------------
 def test_sweep_finds_only_valid_identifiers():
     text = (
-        "GSTIN 27AAPFU0939F1ZV was issued against PAN AAPFU0939F. "
-        "UID 9999 9999 0011 is genuine but 9999 9999 0019 is not. "
+        "CURP BEML920529HDFRRS03 on file. "
+        "SIN 046 454 286 is Luhn-valid but 046 454 287 is not. "
         "EIN 12-3456789 valid; EIN 07-1234567 has no such IRS prefix."
     )
     hits = {(h.validator, h.normalized) for h in V.sweep(text)}
-    assert ("gstin", "27AAPFU0939F1ZV") in hits
-    assert ("pan", "AAPFU0939F") in hits
-    assert ("verhoeff_aadhaar", "999999990011") in hits
+    assert ("curp", "BEML920529HDFRRS03") in hits
+    assert ("sin_luhn", "046-454-286") in hits
     assert ("ein", "12-3456789") in hits
-    assert not any(n == "999999990019" for _v, n in hits)
+    assert not any(n.replace("-", "") == "046454287" for _v, n in hits)
     assert not any(n == "07-1234567" for _v, n in hits)
 
 
 def test_sweep_marks_soft_hits_as_unverified():
-    hits = V.sweep("EPIC ABC1234567", ["epic_voter"])
+    """RFC is the surviving soft-failure identifier: strict shape, advisory check digit."""
+    hits = V.sweep("RFC AAA010101AA9", ["rfc"])
     assert len(hits) == 1
     assert hits[0].checksum_verified is False
-    assert "epic_luhn_soft_fail" in hits[0].soft_error
+    assert "check_digit" in hits[0].soft_error
 
 
 def test_sweep_can_be_restricted_and_is_order_preserving():
-    text = "first 12-3456789 then 27AAPFU0939F1ZV"
-    assert [h.validator for h in V.sweep(text, ["ein", "gstin"])] == ["ein", "gstin"]
-    assert V.sweep(text, ["curp"]) == []
+    text = "first 12-3456789 then BEML920529HDFRRS03"
+    assert [h.validator for h in V.sweep(text, ["ein", "curp"])] == ["ein", "curp"]
+    assert V.sweep(text, ["sin_luhn"]) == []
     assert V.sweep("") == []

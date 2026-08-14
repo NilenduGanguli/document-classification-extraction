@@ -148,6 +148,21 @@ export interface IngestOptions {
    * is, and the console renders that refusal rather than working around it.
    */
   ocr_provider?: string | null;
+  /**
+   * How the document should be READ, before anything classifies it.
+   *
+   * `auto` is what every caller got before this existed: the text layer where the file has one,
+   * recognition where it does not. `lexical` takes the text layer only, so a scan comes back
+   * `needs_ocr` even where a recogniser is willing. `optical` recognises the page even when a
+   * text layer is sitting right there.
+   *
+   * The last is the one worth having. A PDF with a text layer can be read both ways and the two
+   * readings are not the same document: the text layer has no paragraph roles, so a zone-gated
+   * anchor cannot fire on it, while Document Intelligence supplies roles and it can. Same bytes,
+   * different evidence, sometimes a different doctype — and the only way to see that is to run
+   * both.
+   */
+  read_channel?: 'auto' | 'lexical' | 'optical';
 }
 
 /**

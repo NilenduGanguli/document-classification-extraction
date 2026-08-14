@@ -473,7 +473,20 @@ export function resolveOcrId(options: OcrOption[], wanted: string | null): strin
 export interface IngestOcrFields {
   local_ocr?: false;
   ocr_provider?: string;
+  read_channel?: ReadChannel;
 }
+
+/**
+ * How the document gets turned into text at all — the choice *above* which recogniser.
+ *
+ * `auto` is the service's own behaviour and what every caller got before this existed. The other
+ * two force a reading the file would not otherwise have had, and `optical` is the one worth
+ * having: a PDF with a text layer can be read both ways, and the two readings are not the same
+ * document. The text layer carries no paragraph roles, so a zone-gated anchor cannot fire on it;
+ * Document Intelligence supplies roles and it can. Running both on one file is how an operator
+ * sees that on their own documents instead of taking it on trust.
+ */
+export type ReadChannel = 'auto' | 'lexical' | 'optical';
 
 /**
  * Turn a picker choice into ingest options.
@@ -485,10 +498,15 @@ export interface IngestOcrFields {
  *   anything → `ocr_provider: <the service's own name for it>`. The service is still the one
  *   else       that decides whether that provider may run; this only asks.
  */
-export function ingestFieldsFor(id: string): IngestOcrFields {
-  if (id === NONE_ID) return { local_ocr: false };
-  if (id === LOCAL_ID) return {};
-  return { ocr_provider: id };
+export function ingestFieldsFor(id: string, channel: ReadChannel = 'auto'): IngestOcrFields {
+  // `lexical` is a refusal, and it outranks the provider choice: a caller asking for the text
+  // layer and nothing else has said something about THIS document, so sending a provider pin
+  // alongside it would be asking the service to honour two contradictory instructions.
+  if (channel === 'lexical') return { local_ocr: false, read_channel: 'lexical' };
+  const chan = channel === 'auto' ? {} : { read_channel: channel };
+  if (id === NONE_ID) return { local_ocr: false, ...chan };
+  if (id === LOCAL_ID) return { ...chan };
+  return { ocr_provider: id, ...chan };
 }
 
 /* --------------------------------------------------- reading the provenance */

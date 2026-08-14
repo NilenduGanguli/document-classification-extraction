@@ -84,6 +84,26 @@ class IngestOptions(BaseModel):
     #: The provider this request wants, e.g. ``azure_layout``. See the class docstring: chosen
     #: from :meth:`IngestSettings.configured_providers`, never able to extend it.
     ocr_provider: str | None = Field(default=None, max_length=64)
+    #: How the document should be READ, before anything classifies it.
+    #:
+    #: * ``auto`` (default, and what every caller got before this field existed) — read the
+    #:   text layer where the file has one, recognise it where it does not.
+    #: * ``lexical`` — the text layer only. A file without one comes back ``needs_ocr`` even
+    #:   where a recogniser is configured and willing.
+    #: * ``optical`` — recognise it, even when a perfectly good text layer is sitting there.
+    #:
+    #: ``optical`` is why this field exists rather than being inferred. A PDF with a text layer
+    #: can be read BOTH ways, and the two readings are not the same document: the text layer
+    #: carries the publisher's own characters and no paragraph roles, while Document
+    #: Intelligence returns roles — so title and heading zones exist on one reading and not the
+    #: other, and the registry's zone-gated anchors can only fire on one of them. Being able to
+    #: force the comparison is how an operator finds that out on their own documents instead of
+    #: taking it on trust.
+    #:
+    #: It keeps the asymmetry the other flags have: it selects among what the deployment has
+    #: already configured and cannot grant anything. Asking for ``optical`` where no recogniser
+    #: is available is a ``needs_ocr`` refusal, exactly as if the file had been a scan.
+    read_channel: str = Field(default="auto", pattern="^(auto|lexical|optical)$")
 
 
 def _selected_provider(settings: IngestSettings, pinned: str | None) -> str:
@@ -377,6 +397,7 @@ def ingest(
     local_ocr: bool | None = None,
     ocr_service: bool | None = None,
     ocr_provider: str | None = None,
+    read_channel: str = "auto",
 ) -> IngestResult:
     """Turn an uploaded file into a :class:`~dce.models.LayoutView`, or say why not.
 
@@ -411,7 +432,12 @@ def ingest(
     settings = settings or get_ingest_settings()
     limits = limits or settings.limits()
     selected = _selected_provider(settings, ocr_provider)
-    declined = _declined(local_ocr, ocr_service)
+    # ``lexical`` declines recognition for this request as firmly as ``local_ocr=False`` does:
+    # the caller asked for the text layer and nothing else, so a file without one is a refusal
+    # rather than an invitation to go and recognise it. Folding it into ``declined`` rather than
+    # branching later means every downstream message — which engine, why not, what to do — is
+    # the one the existing refusal path already composes.
+    declined = _declined(local_ocr, ocr_service) or read_channel == "lexical"
 
     if len(data) > limits.max_bytes:
         raise PayloadTooLarge(
@@ -465,6 +491,23 @@ def ingest(
     # -- PDF: text layer, or a scan --------------------------------------------
     elif media_type is MediaType.pdf:
         from dce.ingest.pdf import parse_pdf, scanned_reason
+
+        # ``optical`` skips the text layer even where there is one, so the recogniser reads the
+        # page the way it would read a scan. This is the only branch where the two readings of
+        # one file diverge, and the divergence is the point: the text layer has no paragraph
+        # roles, so a zone-gated anchor cannot fire on it, while Document Intelligence supplies
+        # roles and it can. Same bytes, different evidence, sometimes a different doctype.
+        if read_channel == "optical":
+            if service is not None:
+                return _service_ingest(
+                    data, media_type, service, settings, limits, deadline, result,
+                    doc_id=doc_id, detection_basis=detection.basis, started=started,
+                )
+            if provider is None:
+                return _no_ocr(
+                    "optical reading was requested for this pdf, but no recogniser is "
+                    "available on this deployment, so there is nothing to read it with"
+                )
 
         outcome = parse_pdf(data, builder, limits, deadline, provider=provider)
         result.page_count = outcome.page_count

@@ -97,6 +97,7 @@ import {
   type OcrOption,
   type OcrStructure,
   type Provenance,
+  type ReadChannel,
 } from '../ocr';
 import type {
   Anchor,
@@ -596,17 +597,78 @@ const STRUCTURE_TAG: Record<OcrStructure, string> = {
   unknown: '',
 };
 
+/**
+ * How the document gets turned into text at all — the choice *above* which recogniser.
+ *
+ * It is a separate control from the provider grid because it answers a different question.
+ * The grid asks "which recogniser", and only matters once something is being recognised; this
+ * asks whether recognition happens at all on a file that did not need it.
+ *
+ * `optical` is the one with teeth. A PDF with a text layer can be read both ways and the two
+ * readings are not the same document: the text layer carries no paragraph roles, so a
+ * zone-gated anchor cannot fire on it, while Document Intelligence supplies roles and it can.
+ * Same bytes, different evidence, sometimes a different doctype. Running one file both ways is
+ * the only way to see that on your own documents rather than take it on trust.
+ */
+function ReadChannelToggle({
+  value,
+  onChange,
+}: {
+  value: ReadChannel;
+  onChange: (next: ReadChannel) => void;
+}) {
+  const choices: { id: ReadChannel; label: string; note: string }[] = [
+    { id: 'auto', label: 'auto', note: 'text layer where there is one, recognise where there is not' },
+    { id: 'lexical', label: 'lexical', note: 'the text layer only — a scan comes back needs_ocr' },
+    { id: 'optical', label: 'optical', note: 'recognise the page even when a text layer exists' },
+  ];
+  const active = choices.find((c) => c.id === value) ?? choices[0];
+  return (
+    <div className="az-ocr">
+      <div className="az-ocr-head">
+        <span className="label">how the document is read</span>
+        <span className="faint">
+          applies to <span className="mono">classify</span> and{' '}
+          <span className="mono">process</span> alike — it decides what the classifier is given,
+          not what it does with it.
+        </span>
+      </div>
+      <div className="az-seg" role="radiogroup" aria-label="read channel">
+        {choices.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            role="radio"
+            aria-checked={c.id === value}
+            className={`az-seg-btn${c.id === value ? ' is-active' : ''}`}
+            onClick={() => onChange(c.id)}
+            title={c.note}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      <div className="az-note faint">{active.note}</div>
+    </div>
+  );
+}
+
 function OcrPicker({
   options,
   value,
   onChange,
   declaration,
+  disabled = false,
 }: {
   options: OcrOption[];
   value: string;
   onChange: (id: string) => void;
   /** What this deployment declares about its remote OCR endpoint, and who says so. */
   declaration: BoundaryDeclaration;
+  /** Greyed out when the read channel is `lexical`: nothing is being recognised, so there is
+   *  no recogniser to choose. Shown rather than hidden, so the choice does not appear to
+   *  vanish and the reason is legible. */
+  disabled?: boolean;
 }) {
   const selected = findOcrOption(options, value);
   const onPremises = declaration.boundary === 'on_premises';
@@ -647,7 +709,7 @@ function OcrPicker({
                 type="radio"
                 name="az-ocr"
                 checked={active}
-                disabled={!option.available}
+                disabled={disabled || !option.available}
                 onChange={() => onChange(option.id)}
               />
               <span className="az-ocr-body">
@@ -2001,6 +2063,16 @@ export default function Analyze({ readiness }: PageProps) {
      link from a deployment that has Azure enabled does not arm anything on one that does not. */
   const ocrChoices = useMemo(() => ocrOptions(readiness), [readiness]);
   const ocrId = resolveOcrId(ocrChoices, params.get('ocr'));
+  const readChannel = ((): ReadChannel => {
+    const v = params.get('read');
+    return v === 'lexical' || v === 'optical' ? v : 'auto';
+  })();
+  const setReadChannel = (next: ReadChannel) => {
+    const p = new URLSearchParams(params);
+    if (next === 'auto') p.delete('read');
+    else p.set('read', next);
+    setParams(p, { replace: true });
+  };
   const ocrOption = findOcrOption(ocrChoices, ocrId);
 
   const setParam = useCallback(
@@ -2176,7 +2248,7 @@ export default function Analyze({ readiness }: PageProps) {
       }
       return api.documentRequestFromFile(file, {
         docId: id || file.name,
-        ingestOcr: ingestFieldsFor(chosen.id),
+        ingestOcr: ingestFieldsFor(chosen.id, readChannel),
       });
     }
     if (source === 'text') {
@@ -2195,7 +2267,7 @@ export default function Analyze({ readiness }: PageProps) {
     if (source === 'azure') return { ...base, azure_analyze_result: parsed };
     if (source === 'des') return { ...base, des_ocr: parsed };
     return { ...base, layout: parsed as unknown as DocumentRequest['layout'] };
-  }, [source, file, text, json, docId, ocrChoices, ocrId]);
+  }, [source, file, text, json, docId, ocrChoices, ocrId, readChannel]);
 
   const run = useCallback(async () => {
     abort.current?.abort();
@@ -2388,11 +2460,13 @@ export default function Analyze({ readiness }: PageProps) {
                   onChange={(e) => takeFile(e.target.files?.[0] ?? null)}
                 />
               </div>
+              <ReadChannelToggle value={readChannel} onChange={setReadChannel} />
               <OcrPicker
                 options={ocrChoices}
                 value={ocrId}
                 onChange={(id) => setParam('ocr', id === LOCAL_ID ? '' : id)}
                 declaration={boundary}
+                disabled={readChannel === 'lexical'}
               />
             </>
           )}

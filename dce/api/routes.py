@@ -1638,6 +1638,7 @@ def _ingest_to_layout(req: DocumentRequest) -> LayoutView:
             local_ocr=options.local_ocr,
             ocr_service=options.ocr_service,
             ocr_provider=options.ocr_provider,
+            read_channel=options.read_channel,
         )
     except IngestError as exc:
         raise HTTPException(

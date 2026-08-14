@@ -458,3 +458,34 @@ tr.az-required-missing td:first-child {
   color: var(--fg);
   font-weight: 600;
 }
+
+/* --------------------------------------------------------------- read channel
+   A segmented control rather than another radio grid: three mutually exclusive
+   words, no descriptions to line up, and the choice sits ABOVE the provider grid
+   in the hierarchy — a different shape makes that legible without a heading
+   saying so. */
+.az-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--bg-raised);
+}
+.az-seg-btn {
+  appearance: none;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 0.85em;
+  padding: 0.35em 0.9em;
+  cursor: pointer;
+}
+.az-seg-btn:last-child { border-right: 0; }
+.az-seg-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.az-seg-btn.is-active {
+  background: var(--c-accent-soft);
+  color: var(--c-accent);
+  font-weight: 600;
+}

@@ -272,7 +272,14 @@ export function fileToBase64(file: File): Promise<string> {
  */
 export async function documentRequestFromFile(
   file: File,
-  opts: { docId?: string; ingestOcr?: { local_ocr?: false; ocr_provider?: string } } = {},
+  opts: {
+    docId?: string;
+    ingestOcr?: {
+      local_ocr?: false;
+      ocr_provider?: string;
+      read_channel?: 'auto' | 'lexical' | 'optical';
+    };
+  } = {},
 ): Promise<DocumentRequest> {
   return {
     doc_id: opts.docId ?? file.name,

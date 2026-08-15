@@ -325,6 +325,46 @@ file — the `OFF`/`ON` constants encode the current default posture),
 
 ---
 
+## 5a. What the measurement actually showed
+
+Like-for-like `--ingest` runs, same command, against the old image and then a verified
+rebuild (new image `sha256:b19da3c…`; `class PageVerdict` and `MAX_IMAGE_FRACTION` confirmed
+present inside the container, its `pdf.py` sha256 matching the host byte-for-byte, and
+`/readyz` reporting the new `text_layer_policy: verify`).
+
+| | BEFORE | AFTER |
+|---|---|---|
+| correct | 97 | 97 |
+| **wrong** | **0** | **0** |
+| abstained | 20 | 20 |
+| accuracy | 82.9% | 82.9% |
+| **precision when answered** | **100.0%** | **100.0%** |
+
+**Delta: exactly zero on every scored metric**, and a per-document diff across all 117
+records (status, text_source, doctype, confidence, margin, coverage) returned **0 changes**.
+The two reports differ in three cells, all OCR character counts on rows that were already
+being OCR'd — recognition-engine variance between two calls, not a classification change.
+
+**And the caveat matters more than the zero.** This corpus barely exercises the changed
+code. The harness decides PDF routing **host-side** (`tools/corpus_test.py`, a whole-document
+`alnum_chars` aggregate), so the 89 `text_layer` PDFs are read by the harness's own PyMuPDF
+and never reach the container's `pdf.py` at all. Of the 28 documents that do reach the
+service, 26 are `.htm` / `.xlsx` / `.jpg`, which never touch the PDF text-layer verdict.
+**Exactly 2 of 117 documents execute the changed code** — `ca_pr_card.pdf` and
+`mx_acta_nacimiento.pdf` — and both were already wholly scanned, already below the old floor,
+and already routed to recognition.
+
+So the zero delta is a genuine **no-regression** result and nothing more. It is not evidence
+that the fix works. The evidence that the fix works is the unit fixtures in
+`tests/test_ingest_mixed_pages.py`, which construct the mixed document the corpus does not
+contain. Reporting the zero as a success would be measuring an instrument that cannot see
+what changed.
+
+**What this means for a real measurement.** The corpus has no mixed typed-plus-scanned
+document in it. Until it does — and your KYC corpus is full of them — the corpus harness is
+the wrong instrument for this change. The right next step is corpus documents of that shape,
+not another run of this one.
+
 ## 6. Decisions I need from you
 
 1. **Default policy for your deployment** — `always_ocr` (what you asked for; bills every

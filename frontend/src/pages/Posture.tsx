@@ -536,6 +536,24 @@ function OcrReading({ posture }: { posture: ReadinessResponse }) {
       }
       stack
     >
+      {ocr.reported && ocr.textLayerPolicy ? (
+        <Finding tone={ocr.textLayerPolicy === 'trust' ? 'warn' : 'neutral'} glyph="i">
+          <strong>
+            A PDF&rsquo;s own text layer is{' '}
+            {ocr.textLayerPolicy === 'always_ocr'
+              ? 'never read here'
+              : ocr.textLayerPolicy === 'trust'
+                ? 'taken at face value here'
+                : 'checked page by page here'}{' '}
+            (<code className="mono">{ocr.textLayerPolicy}</code>).
+          </strong>{' '}
+          {ocr.textLayerAttribution}{' '}
+          <em>
+            This decides whether a document is recognised at all, before any provider below is
+            chosen: a page judged adequate never reaches them.
+          </em>
+        </Finding>
+      ) : null}
       {!ocr.reported ? (
         <Finding tone="warn" glyph="?">
           <strong>This deployment does not report its OCR posture.</strong> <code>/readyz</code>{' '}

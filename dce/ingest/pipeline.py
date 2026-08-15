@@ -7,6 +7,7 @@ parser's internals escapes.
 """
 from __future__ import annotations
 
+import contextlib
 import time
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -35,7 +36,12 @@ from dce.ingest.ocr import (
     provider_or_none,
 )
 from dce.ingest.result import IngestResult, IngestStatus, TextSource
-from dce.ingest.settings import IngestSettings, get_ingest_settings
+from dce.ingest.settings import (
+    TEXT_LAYER_ALWAYS_OCR,
+    TEXT_LAYER_TRUST,
+    IngestSettings,
+    get_ingest_settings,
+)
 from dce.models import LayoutView
 
 
@@ -330,6 +336,51 @@ def _service_ingest(
     return result
 
 
+#: Container members that are pictures. An OOXML package puts them under ``word/media/``,
+#: ``xl/media/`` or ``ppt/media/``; ODF uses ``Pictures/``.
+_MEDIA_SUFFIXES = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp")
+
+#: Embedded pictures examined in one container. A deck of a hundred photographs is a scan
+#: whichever ten of them are read, and the cap keeps one upload from becoming a hundred
+#: recognitions.
+MAX_EMBEDDED_IMAGES = 10
+
+
+def _embedded_images(
+    data: bytes, media_type: MediaType, limits: IngestLimits, deadline: Deadline
+) -> list[bytes]:
+    """Pictures inside a container whose own text came back empty.
+
+    The blind spot this closes: a ``.docx`` whose entire content is a pasted scan parses
+    perfectly and yields no text, and the empty-document refusal then called it a document
+    with nothing in it — a 415, telling a caller the format was unsupported when in truth the
+    format was fine and the content was pixels. For a KYC corpus "scan pasted into a Word
+    file" is an ordinary way to receive a document, and it deserves the same ``needs_ocr``
+    answer a bare JPEG gets.
+
+    Returns an empty list for formats with no container to look in, which keeps the
+    empty-document refusal for files that really are empty.
+    """
+    if media_type not in {MediaType.docx, MediaType.xlsx, MediaType.pptx, MediaType.odt}:
+        return []
+    from dce.ingest.zipsafe import open_archive
+
+    found: list[bytes] = []
+    try:
+        with open_archive(data, limits, deadline) as archive:
+            for name in archive.names():
+                if len(found) >= MAX_EMBEDDED_IMAGES:
+                    break
+                if name.lower().endswith(_MEDIA_SUFFIXES):
+                    with contextlib.suppress(Exception):
+                        found.append(archive.read(name))
+    except IngestError:
+        # The archive already parsed once to get here, so a failure now is not worth turning
+        # into a different error than the caller was about to receive.
+        return []
+    return found
+
+
 def _parse_native(
     data: bytes,
     media_type: MediaType,
@@ -490,49 +541,120 @@ def ingest(
 
     # -- PDF: text layer, or a scan --------------------------------------------
     elif media_type is MediaType.pdf:
-        from dce.ingest.pdf import parse_pdf, scanned_reason
+        from dce.ingest.pdf import parse_pdf, partial_reason, scanned_reason
 
         # ``optical`` skips the text layer even where there is one, so the recogniser reads the
         # page the way it would read a scan. This is the only branch where the two readings of
         # one file diverge, and the divergence is the point: the text layer has no paragraph
         # roles, so a zone-gated anchor cannot fire on it, while Document Intelligence supplies
         # roles and it can. Same bytes, different evidence, sometimes a different doctype.
-        if read_channel == "optical":
+        #
+        # ``text_layer_policy=always_ocr`` is the same instruction said by the deployment
+        # instead of the request, so it takes the same branch. It cannot override a caller who
+        # DECLINED recognition — `declined` has already been folded into `provider`/`service`
+        # being None, and the caller-may-decline-never-grant asymmetry outranks a deployment
+        # preference — but where recognition is available it means the text layer is not read.
+        always_ocr = settings.text_layer() == TEXT_LAYER_ALWAYS_OCR and not declined
+        if read_channel == "optical" or always_ocr:
             if service is not None:
                 return _service_ingest(
                     data, media_type, service, settings, limits, deadline, result,
                     doc_id=doc_id, detection_basis=detection.basis, started=started,
                 )
-            if provider is None:
+            if provider is None and read_channel == "optical":
                 return _no_ocr(
                     "optical reading was requested for this pdf, but no recogniser is "
                     "available on this deployment, so there is nothing to read it with"
                 )
 
-        outcome = parse_pdf(data, builder, limits, deadline, provider=provider)
+        outcome = parse_pdf(
+            data,
+            builder,
+            limits,
+            deadline,
+            provider=provider,
+            strict=settings.text_layer() != TEXT_LAYER_TRUST,
+            force_ocr=always_ocr,
+        )
         result.page_count = outcome.page_count
         result.pages_read = outcome.pages_read
-        if outcome.truncated:
+        if outcome.pages_read < outcome.page_count:
             builder.truncated = True
             builder.limits_hit.append("max_pages")
-        if outcome.needs_ocr:
-            # A scan. The service provider takes the PDF whole — both Azure products read
-            # PDFs natively — so nothing is rasterised and no page renderer is involved.
+        if outcome.ocr_truncated:
+            # Named separately from max_pages: "we read fewer pages than the file has" and
+            # "we recognised fewer pages than needed recognising" send a reader to different
+            # settings, and a single cap name would hide which one bit.
+            builder.truncated = True
+            builder.limits_hit.append("max_ocr_pages")
+        if outcome.needs_ocr or outcome.unread_pages:
+            # A scan, or a document that is partly one. The service provider takes the PDF
+            # WHOLE — both Azure products read PDFs natively — so nothing is rasterised and no
+            # page renderer is involved.
+            #
+            # Whole, and not just the unread pages, on purpose. azure_layout returns paragraph
+            # roles while a PDF text layer carries none, so a page-by-page merge would give one
+            # document two grades of evidence and let a zone-gated anchor fire or not according
+            # to which pages happened to be scanned. One document, one reading.
             if service is not None:
                 return _service_ingest(
                     data, media_type, service, settings, limits, deadline, result,
                     doc_id=doc_id, detection_basis=detection.basis, started=started,
                 )
-            return _no_ocr(scanned_reason(outcome))
+            if outcome.needs_ocr:
+                return _no_ocr(scanned_reason(outcome))
+            # Partly readable, and nothing here can read the rest. Keep what the text pages
+            # hold — a classification on part of a document beats none — but say so, because
+            # the alternative is the silent short read this whole branch exists to end.
+            builder.truncated = True
+            builder.limits_hit.append("unread_pages")
+            result.reason = partial_reason(outcome)
+            result.remedy = NEEDS_OCR_REMEDY
         if outcome.ocr_pages:
             ocr_pages_to_builder(outcome.ocr_pages, builder, limits)
-            result.text_source = TextSource.local_ocr
+            # `mixed` when some pages kept their own characters and others were recognised.
+            # Folding that into `local_ocr` would misreport the document's provenance, and
+            # provenance is the field a reviewer splits every accuracy rate on.
+            result.text_source = (
+                TextSource.mixed
+                if any(v.adequate for v in outcome.page_verdicts)
+                else TextSource.local_ocr
+            )
             result.ocr_engine = provider.name if provider else ""
 
     # -- everything else: native text ------------------------------------------
     else:
         result.page_count = _parse_native(data, media_type, builder, limits, deadline)
         result.pages_read = result.page_count
+
+        # A container whose own text came back empty may still be carrying the document as a
+        # picture — a scan pasted into a Word file, which for a KYC corpus is an ordinary way
+        # to receive one. Until now that reached the empty-document refusal below and came
+        # back 415 "unsupported format", which was false twice over: the format was fine, and
+        # the document was not empty.
+        if not builder.block_count:
+            embedded = _embedded_images(data, media_type, limits, deadline)
+            if embedded:
+                if service is not None:
+                    return _service_ingest(
+                        data, media_type, service, settings, limits, deadline, result,
+                        doc_id=doc_id, detection_basis=detection.basis, started=started,
+                    )
+                if provider is None:
+                    return _no_ocr(
+                        f"{media_type} carries no text of its own, but {len(embedded)} "
+                        "embedded image(s) — the document is a picture inside a container, "
+                        "so classifying it would require optical recognition"
+                    )
+                for number, image in enumerate(embedded, start=1):
+                    deadline.check(f"embedded.image{number}")
+                    with contextlib.suppress(IngestError):
+                        result_page = provider.recognize(image, page=number, deadline=deadline)
+                        ocr_pages_to_builder([result_page], builder, limits)
+                if builder.block_count:
+                    result.text_source = TextSource.local_ocr
+                    result.ocr_engine = provider.name
+                    result.pages_read = len(embedded)
 
     view = builder.build(
         doc_id=doc_id,

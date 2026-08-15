@@ -88,6 +88,8 @@ from dce.ingest import IngestError, IngestOptions
 from dce.ingest import ingest as ingest_bytes
 from dce.ingest.ocr import PROVIDERS, provider_info
 from dce.ingest.settings import (
+    TEXT_LAYER_ALWAYS_OCR,
+    TEXT_LAYER_TRUST,
     TRUST_BOUNDARY_ON_PREMISES,
     IngestSettings,
     get_ingest_settings,
@@ -1492,6 +1494,13 @@ class OcrStatus(BaseModel):
     #: Every recogniser this build supports, switched on or not. See
     #: :class:`OcrProviderStatus`.
     providers: list[OcrProviderStatus] = Field(default_factory=list)
+    #: ``trust`` | ``verify`` | ``always_ocr`` — how far a PDF's own text layer is believed
+    #: here. Reported because it decides, before any provider is chosen, whether a document
+    #: is recognised at all: a deployment on ``always_ocr`` bills a recognition for every
+    #: file, and one on ``trust`` will read a scanner's watermark as a document's text.
+    text_layer_policy: str = ""
+    #: What that policy means for a document, in one sentence a console can print.
+    text_layer_attribution: str = ""
 
 
 class TierStatus(BaseModel):
@@ -1700,6 +1709,34 @@ def _local_engine_installed(engine: str) -> bool:
     return module is not None and importlib.util.find_spec(module) is not None
 
 
+def _text_layer_attribution(resolved: IngestSettings) -> str:
+    """One sentence saying what this deployment's text-layer policy does to a document.
+
+    Printed on ``/readyz`` for the reason the trust boundary is: the value alone is a word,
+    and an operator needs to know what the word costs them.
+    """
+    policy = resolved.text_layer()
+    if policy == TEXT_LAYER_ALWAYS_OCR:
+        return (
+            "no PDF's text layer is read here (DCE_INGEST_TEXT_LAYER_POLICY=always_ocr): every "
+            "document is handed to the recogniser whatever characters it already carries, "
+            "which costs a recognition on every file including born-digital ones"
+        )
+    if policy == TEXT_LAYER_TRUST:
+        return (
+            "a page's own characters are taken at face value wherever it has enough of them "
+            "(DCE_INGEST_TEXT_LAYER_POLICY=trust). A page is not escalated for being mostly one "
+            "image or for carrying a previous recogniser's garbage, so a scanned page with a "
+            "bad OCR layer is classified on that layer"
+        )
+    return (
+        "each page is judged on its own characters, and a page that is mostly one image or "
+        "carries a previous recogniser's garbage is recognised rather than believed "
+        "(DCE_INGEST_TEXT_LAYER_POLICY=verify). Where no recogniser is available such pages "
+        "are reported as unread rather than dropped"
+    )
+
+
 def _ocr_providers(resolved: IngestSettings) -> list[OcrProviderStatus]:
     """Every recogniser this build supports, each with whether it is usable *here* and why not.
 
@@ -1840,6 +1877,8 @@ def _ocr_status(ingest_settings: IngestSettings | None = None) -> OcrStatus:
         "trust_boundary": resolved.trust_boundary(),
         "trust_boundary_declared": resolved.trust_boundary_declared(),
         "trust_boundary_attribution": resolved.trust_boundary_attribution(),
+        "text_layer_policy": resolved.text_layer(),
+        "text_layer_attribution": _text_layer_attribution(resolved),
     }
     default = resolved.default_provider()
     info = provider_info(default)

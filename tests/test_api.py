@@ -321,6 +321,10 @@ def test_readyz_reports_registry_bert_and_the_egress_invariant() -> None:
         "trust_boundary": "external",
         "trust_boundary_declared": False,
         "trust_boundary_attribution": "",
+        # How far a PDF's own text layer is believed here, reported for the same reason:
+        # it decides whether a document is recognised at all, before any provider is chosen.
+        "text_layer_policy": "verify",
+        "text_layer_attribution": body["ocr"]["text_layer_attribution"],
         "problem": "",
         "summary": body["ocr"]["summary"],
         "local_ocr_enabled": False,

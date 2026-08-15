@@ -80,6 +80,24 @@ def docx(
     return zip_bytes(members)
 
 
+def docx_of_one_scan(*, images: int = 1) -> bytes:
+    """A DOCX whose whole content is a pasted picture: no text, ``word/media/`` populated.
+
+    An ordinary way to receive a KYC document — somebody photographs an ID, pastes it into
+    Word and sends that. The file parses perfectly and yields not one character.
+    """
+    members: dict[str, bytes | str] = {
+        "[Content_Types].xml": _CONTENT_TYPES,
+        "word/document.xml": (
+            f'<?xml version="1.0"?><w:document xmlns:w="{W_NS}"><w:body>'
+            "<w:p><w:r><w:drawing/></w:r></w:p></w:body></w:document>"
+        ),
+    }
+    for index in range(1, images + 1):
+        members[f"word/media/image{index}.png"] = png(200, 260)
+    return zip_bytes(members)
+
+
 S_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -458,10 +476,96 @@ def scanned_pdf(*, pages: int = 1) -> bytes:
     return data
 
 
+def mixed_pdf(
+    lines: list[str] | None = None,
+    *,
+    text_pages: int = 1,
+    image_pages: int = 1,
+) -> bytes:
+    """A PDF that is partly a text layer and partly a scan — the shape a KYC corpus is full of.
+
+    The first ``text_pages`` carry real characters; the remaining ``image_pages`` carry one
+    full-bleed image each and no text at all. A typed cover page in front of photographed
+    attachments, an e-filed wrapper around a scanned ID: the text pages are the boilerplate
+    and the image pages are the payload.
+
+    Neither existing fixture covers this shape. :func:`text_pdf` writes the same lines onto
+    every page and :func:`scanned_pdf` puts an image on every page, so the branch where one
+    document is both was never exercised — which is how a whole-document character floor
+    survived review.
+    """
+    import fitz
+
+    lines = lines or ["Invoice number 4471 issued by Acme Corporation Ltd."]
+    document = fitz.open()
+    for _ in range(text_pages):
+        page = document.new_page()
+        y = 72
+        for line in lines:
+            page.insert_text((72, y), line, fontsize=12)
+            y += 18
+    image = png(200, 260)
+    for _ in range(image_pages):
+        page = document.new_page()
+        page.insert_image(page.rect, stream=image)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+def hidden_text_pdf(text: str = "hidden marker text here", *, pages: int = 1) -> bytes:
+    """A PDF whose only text is drawn invisibly (render mode 3), over a full-page image.
+
+    What a scan carrying a previous tool's OCR layer looks like: a picture of a document,
+    plus characters nobody can see. ``get_text`` returns them like any others, so a
+    character count alone cannot tell this from a genuine text layer.
+    """
+    import fitz
+
+    document = fitz.open()
+    image = png(200, 260)
+    for _ in range(pages):
+        page = document.new_page()
+        page.insert_image(page.rect, stream=image)
+        page.insert_text((72, 72), text, fontsize=12, render_mode=3)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+def garbage_text_pdf(*, pages: int = 1) -> bytes:
+    """A PDF whose text layer is a bad prior OCR's output — long enough, and meaningless.
+
+    Clears any character-count floor comfortably while carrying no word a classifier could
+    anchor on. The point of the fixture is that length is not quality.
+    """
+    import fitz
+
+    document = fitz.open()
+    garbage = (
+        "lllllllllllllllllllllllll",
+        "llllllllllllllllllllllllll",
+        "lllllllllllllllllllllllll",
+    )
+    for _ in range(pages):
+        page = document.new_page()
+        y = 72
+        for line in garbage:
+            page.insert_text((72, y), line, fontsize=12)
+            y += 18
+    data = document.tobytes()
+    document.close()
+    return data
+
+
 __all__ = [
     "compound_file",
     "docx",
+    "docx_of_one_scan",
+    "garbage_text_pdf",
+    "hidden_text_pdf",
     "jpeg",
+    "mixed_pdf",
     "msg",
     "multipage_tiff",
     "odt",

@@ -55,6 +55,24 @@ TRUST_BOUNDARY_ON_PREMISES = "on_premises"
 #: how the posture reads.
 TRUST_BOUNDARIES = frozenset({TRUST_BOUNDARY_EXTERNAL, TRUST_BOUNDARY_ON_PREMISES})
 
+#: Take a page's own characters whenever it has enough of them. The narrowest rule: only the
+#: per-page character floor applies, and a page is never escalated for looking like a picture
+#: or for carrying a previous recogniser's mistakes.
+TEXT_LAYER_TRUST = "trust"
+#: **The code default.** Judge each page on every signal — character floor, glyph sanity,
+#: image dominance — and recognise the pages that fail. A document that is partly typed and
+#: partly scanned gets both halves read.
+TEXT_LAYER_VERIFY = "verify"
+#: Never read the text layer at all. Every document goes to the recogniser whatever it
+#: carries, for a deployment whose documents are overwhelmingly scans and whose text layers,
+#: where they exist, are some previous tool's output rather than the publisher's own
+#: characters. Costs a recognition on every document, including the born-digital ones that
+#: needed nothing — which is why it is a declared posture and not the default.
+TEXT_LAYER_ALWAYS_OCR = "always_ocr"
+#: The complete set. A fourth value is a typo, and a typo here would decide how every
+#: document in the deployment is read.
+TEXT_LAYER_POLICIES = frozenset({TEXT_LAYER_TRUST, TEXT_LAYER_VERIFY, TEXT_LAYER_ALWAYS_OCR})
+
 #: Old environment variable → the name it is now called. Read by
 #: :func:`legacy_env_aliases_in_use`; every one of these is still honoured.
 LEGACY_ENV_ALIASES: dict[str, str] = {
@@ -111,6 +129,23 @@ class IngestSettings(BaseSettings):
     local_ocr_enabled: bool = False
     #: ``rapidocr`` (ONNX, genuinely in-process) or ``tesseract`` (a local subprocess).
     local_ocr_engine: str = "rapidocr"
+
+    # ---- HOW MUCH A TEXT LAYER IS TRUSTED -----------------------------------
+    #: ``trust`` | ``verify`` (default) | ``always_ocr`` — how far this deployment believes a
+    #: PDF that claims to carry text.
+    #:
+    #: The question is not rhetorical. A text layer can be the publisher's own characters, or
+    #: it can be a scanner's watermark, a previous OCR's garbage, or a caption under a picture
+    #: of the actual document — and the three are indistinguishable by length alone. This
+    #: setting says how much evidence a page must offer before its characters are taken at
+    #: face value, and it is per PAGE: the floor was once a document-wide sum, which let one
+    #: typed cover page vouch for nine photographed ones and dropped their content silently.
+    #:
+    #: ``verify`` is the default because it is the only value that is right when nobody has
+    #: thought about it. ``trust`` reads a shade more text layer and asks fewer questions;
+    #: ``always_ocr`` asks none of the text layer at all and bills a recognition for every
+    #: document, which is the correct posture for a scan-only corpus and a waste for any other.
+    text_layer_policy: str = TEXT_LAYER_VERIFY
     #: Tesseract language packs, e.g. ``eng+hin``. Ignored by RapidOCR.
     local_ocr_languages: str = "eng"
 
@@ -270,6 +305,16 @@ class IngestSettings(BaseSettings):
                 f"ocr_service_provider={self.ocr_service_provider!r} is not an OCR service "
                 f"provider; supported: {', '.join(sorted(SERVICE_ENGINES))}"
             )
+        if self.text_layer_policy.strip().lower() not in TEXT_LAYER_POLICIES:
+            raise ValueError(
+                f"text_layer_policy={self.text_layer_policy!r} is not a policy; supported: "
+                f"{', '.join(sorted(TEXT_LAYER_POLICIES))}. This field decides how every "
+                "document in this deployment is read, and an unrecognised value would have to "
+                "fall back to something: to 'verify' and a deployment that asked for "
+                "'always_ocr' silently reads text layers it does not trust, to 'always_ocr' "
+                "and a typo bills a recognition for every document. Refusing is the only "
+                "option that cannot mislead."
+            )
         if self.ocr_service_trust_boundary.strip().lower() not in TRUST_BOUNDARIES:
             raise ValueError(
                 f"ocr_service_trust_boundary={self.ocr_service_trust_boundary!r} is not a "
@@ -277,6 +322,16 @@ class IngestSettings(BaseSettings):
                 "says where the OCR service endpoint sits relative to this deployment's own "
                 "network; a value that is not one of the two cannot be guessed at, because "
                 "both guesses misreport it."
+            )
+        if self.text_layer() == TEXT_LAYER_ALWAYS_OCR and not (
+            self.local_ocr_enabled or self.ocr_service_enabled
+        ):
+            raise ValueError(
+                "text_layer_policy='always_ocr' but this deployment has configured no "
+                "recogniser (local_ocr_enabled and ocr_service_enabled are both false). The "
+                "policy says never to read a text layer; with nothing able to read the pages "
+                "instead, every PDF would come back needs_ocr and the service would classify "
+                "nothing at all. Enable a recogniser, or use 'verify'."
             )
         configured = self.configured_providers()
         declared = self.ocr_default_provider.strip().lower()
@@ -423,6 +478,14 @@ class IngestSettings(BaseSettings):
         """The configured recognisers that run inside this process."""
         return tuple(p for p in self.configured_providers() if p in ENGINES)
 
+    def text_layer(self) -> str:
+        """The declared policy, normalised — ``trust`` | ``verify`` | ``always_ocr``.
+
+        Normalised here rather than at each call site so ``Always_OCR`` in a compose file and
+        ``always_ocr`` in a Helm chart cannot read differently.
+        """
+        return self.text_layer_policy.strip().lower()
+
     # ---- the declared boundary ----------------------------------------------
     def trust_boundary(self) -> str:
         """The declared boundary, normalised: ``external`` or ``on_premises``.
@@ -505,6 +568,10 @@ def get_ingest_settings() -> IngestSettings:
 
 __all__ = [
     "LEGACY_ENV_ALIASES",
+    "TEXT_LAYER_ALWAYS_OCR",
+    "TEXT_LAYER_POLICIES",
+    "TEXT_LAYER_TRUST",
+    "TEXT_LAYER_VERIFY",
     "TRUST_BOUNDARIES",
     "TRUST_BOUNDARY_EXTERNAL",
     "TRUST_BOUNDARY_ON_PREMISES",

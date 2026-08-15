@@ -43,6 +43,12 @@ class TextSource(enum.StrEnum):
     #: "ocr" bucket because which of the two read a document is a fact about the deployment
     #: that a reviewer must be able to see without inferring it from a provider's name.
     ocr_service = "ocr_service"
+    #: PART of the document carried its own text and part of it was recognised — a typed
+    #: cover page in front of photographed attachments, an e-filed wrapper around a scanned
+    #: ID. Distinct from both neighbours because it is neither: a rate split on ``native``
+    #: would be flattered by these documents and one split on ``local_ocr`` dragged down by
+    #: them, and this is precisely the shape most likely to be misread.
+    mixed = "mixed"
     #: Nothing was extracted.
     none = "none"
 

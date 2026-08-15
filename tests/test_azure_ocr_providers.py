@@ -761,6 +761,8 @@ def test_readyz_names_the_endpoint_when_this_deployment_ships_unclassified_docum
         "trust_boundary": "external",
         "trust_boundary_declared": False,
         "trust_boundary_attribution": body["ocr"]["trust_boundary_attribution"],
+        "text_layer_policy": "verify",
+        "text_layer_attribution": body["ocr"]["text_layer_attribution"],
         "problem": "",
         "summary": body["ocr"]["summary"],
         "local_ocr_enabled": False,

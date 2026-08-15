@@ -116,10 +116,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-TOOL_VERSION = "1.3.0"
+TOOL_VERSION = "1.4.0"
 
 #: Repo root, assuming this file stays at ``<repo>/tools/corpus_test.py``.
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The one import this otherwise self-contained harness takes from the service, and it is
+# deliberate: the usable-text floor must be the service's own number, not a copy that drifts.
+# See MIN_ALNUM_CHARS below. Unguarded on purpose — a harness that silently fell back to a
+# literal when the package was not importable would reproduce the exact divergence this
+# import exists to end.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from dce.ingest.pdf import MIN_ALNUM_CHARS as SERVICE_MIN_ALNUM_CHARS  # noqa: E402
 
 DEFAULT_BASE_URL = os.environ.get("DCE_URL", "http://localhost:8200")
 DEFAULT_CORPUS_ROOT = REPO_ROOT / "corpus"
@@ -135,9 +144,22 @@ MIN_PDF_BYTES = 5 * 1024
 #: lower than the PDF one. Same purpose: a 400-byte "us_passport.jpg" is a failed download.
 MIN_IMAGE_BYTES = 2 * 1024
 
-#: Below this many alphanumeric characters over the whole document there is no usable text
-#: layer — it is a scan (or an image-only form) and belongs in the ``needs_ocr`` bucket.
-MIN_ALNUM_CHARS = 60
+#: Below this many alphanumeric characters there is no usable text layer — it is a scan (or
+#: an image-only form) and belongs in the ``needs_ocr`` bucket.
+#:
+#: **Imported from the service rather than chosen here.** This was an independent 60 against
+#: the service's 40, while ``dce/ingest/pdf.py`` asserted in a comment that the two matched.
+#: They did not, so the harness dispatched documents down a different branch than the service
+#: would have, and every corpus figure was measured through a rule the deployment does not
+#: use. A harness that grades a service against a rule of its own is not measuring that
+#: service.
+#:
+#: One difference remains, deliberately: the service applies this floor **per page** and this
+#: harness applies it to the whole document, because the harness reads files itself and does
+#: not model per-page routing. Where the two can disagree — a document that is part text and
+#: part scan — the harness is the coarser instrument, and ``--ingest`` is how a run is put
+#: through the service's own parser instead of this one.
+MIN_ALNUM_CHARS = SERVICE_MIN_ALNUM_CHARS
 
 STATUS_CORRECT = "CORRECT"
 STATUS_WRONG = "WRONG"

@@ -194,6 +194,17 @@ export interface OcrPosture {
   /** The engine name the operator configured, when reported. */
   localEngine: string;
   providers: ReportedProvider[];
+  /**
+   * `trust` | `verify` | `always_ocr`, or `''` when the deployment reports none.
+   *
+   * How far a PDF's own text layer is believed here. It decides whether a document is
+   * recognised at all, *before* any provider is chosen — so a console showing only the
+   * provider grid would be describing the second half of a decision whose first half it
+   * never mentioned.
+   */
+  textLayerPolicy: string;
+  /** What that policy does to a document, in the service's own words. */
+  textLayerAttribution: string;
   /** Whatever block this was read out of, for the raw disclosure on /posture. */
   raw: unknown;
 }
@@ -283,6 +294,8 @@ export function readOcrPosture(readiness: ReadinessResponse | null): OcrPosture 
     localEnabled: null,
     localEngine: '',
     providers: [],
+    textLayerPolicy: '',
+    textLayerAttribution: '',
     raw: null,
   };
   if (!readiness) return empty;
@@ -316,6 +329,8 @@ export function readOcrPosture(readiness: ReadinessResponse | null): OcrPosture 
       localEnabled,
       localEngine,
       providers,
+      textLayerPolicy: firstString(source, ['text_layer_policy', 'text_layer']),
+      textLayerAttribution: firstString(source, ['text_layer_attribution']),
       raw: candidate,
     };
   }

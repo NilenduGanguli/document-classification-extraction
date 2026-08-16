@@ -308,6 +308,48 @@ export interface ProcessResponse {
   timings: Timings;
 }
 
+/* ------------------------------------------------------------- segmenting */
+
+/** Why one split was proposed, so a segmentation can be argued with rather than trusted. */
+export interface BoundaryEvidence {
+  /** First page of the new document, 1-based. */
+  page: number;
+  /** `adequacy` | `geometry` | `first_page_anchor`. */
+  signal: string;
+  detail: string;
+}
+
+/** One document found inside an upload. */
+export interface DocumentSegment {
+  start_page: number;
+  end_page: number;
+  page_count: number;
+  /** The classification of *these pages alone*, from classifying the span whole. */
+  classification: Classification;
+  /**
+   * Present on `/process/segments`; null when the span abstained — nothing is extracted from
+   * a document nobody has identified.
+   */
+  extraction?: ExtractionResult | null;
+  needs_review: boolean;
+}
+
+/**
+ * What an upload turned out to contain.
+ *
+ * `segments` always holds at least one entry: a file with no boundary evidence comes back as
+ * one segment covering every page. That uniformity is the point — nothing in the console has
+ * to branch on whether the user happened to pick a bundle.
+ */
+export interface SegmentsResponse {
+  segments: DocumentSegment[];
+  /** The plain answer to "is this a bundle?", so it need not be inferred from a list length. */
+  segmented: boolean;
+  boundaries: BoundaryEvidence[];
+  page_count: number;
+  ms: number;
+}
+
 /* --------------------------------------------------------------- registry */
 
 /** `Anchor` — a high-signal string that appears in this doctype's OCR dump. */

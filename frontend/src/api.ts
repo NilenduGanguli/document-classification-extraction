@@ -46,6 +46,7 @@ import type {
   ReviewListResponse,
   ReviewStatus,
   SchemaResponse,
+  SegmentsResponse,
   ValidationErrorItem,
 } from './types';
 
@@ -314,6 +315,32 @@ export function extract(body: ExtractRequest, signal?: AbortSignal): Promise<Ext
 /** `POST /api/v1/process` — classify + extract + tier ledger + review routing, one call. */
 export function process(body: DocumentRequest, signal?: AbortSignal): Promise<ProcessResponse> {
   return request<ProcessResponse>(`${API}/process`, { method: 'POST', body, signal });
+}
+
+/**
+ * `POST /api/v1/classify/segments` — for an upload that may hold more than one document.
+ *
+ * A KYC upload is routinely a bundle, and `/classify` answers for the whole file: send it a
+ * passport stapled to a bank statement and it returns one doctype, silently omitting the
+ * other. This splits first and classifies each document against its own pages.
+ *
+ * Safe to send a single document to. With no boundary evidence the reply is one segment
+ * covering every page, carrying exactly what `/classify` would have returned — so the console
+ * never has to know in advance which kind of file the user picked.
+ */
+export function classifySegments(
+  body: DocumentRequest,
+  signal?: AbortSignal,
+): Promise<SegmentsResponse> {
+  return request<SegmentsResponse>(`${API}/classify/segments`, { method: 'POST', body, signal });
+}
+
+/** `POST /api/v1/process/segments` — segment, then classify and extract each document. */
+export function processSegments(
+  body: DocumentRequest,
+  signal?: AbortSignal,
+): Promise<SegmentsResponse> {
+  return request<SegmentsResponse>(`${API}/process/segments`, { method: 'POST', body, signal });
 }
 
 /* --------------------------------------------------------------- registry */

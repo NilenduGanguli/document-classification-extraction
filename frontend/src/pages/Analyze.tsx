@@ -102,12 +102,13 @@ import {
 import type {
   Anchor,
   Classification,
+  BoundaryEvidence,
   DocTypeSpec,
   DocumentRequest,
+  DocumentSegment,
   Evidence,
   ExtractedField,
   ExtractionResult,
-  ProcessResponse,
   TierRun,
   Timings,
 } from '../types';
@@ -517,6 +518,16 @@ interface Outcome {
   needsReview: boolean;
   /** The service's own one-line summary of what happens next. */
   detail: string;
+  /**
+   * Every document found in the upload. Always at least one — a file with no boundary
+   * evidence comes back as a single segment covering every page — so the panels below can
+   * read `segments[0]` without caring whether the user happened to pick a bundle.
+   */
+  segments: DocumentSegment[];
+  /** True when the upload held more than one document. */
+  segmented: boolean;
+  /** Why each split was made, so a segmentation can be argued with rather than trusted. */
+  boundaries: BoundaryEvidence[];
   /** Exactly what came back, for the raw disclosure. */
   raw: unknown;
   /** The request as sent, with the payload redacted. */
@@ -1883,6 +1894,79 @@ function FieldRow({ field, required }: { field: ExtractedField; required: boolea
 }
 
 /** The tier ledger. On a default deployment its lack of cost is the point, so it is stated. */
+/**
+ * What the upload turned out to contain.
+ *
+ * Shown only when a file held more than one document. For a single document the panels above
+ * already say everything, and a "1 of 1" banner would be noise on every ordinary run.
+ *
+ * The boundaries are printed with their evidence on purpose. A split is a claim — it decides
+ * which pages a doctype and its extracted fields are attributed to — and a reviewer who
+ * disagrees needs to see what proposed it, not just where it landed.
+ */
+function SegmentsPanel({
+  segments,
+  boundaries,
+}: {
+  segments: DocumentSegment[];
+  boundaries: BoundaryEvidence[];
+}) {
+  const reasonFor = (page: number) => boundaries.find((b) => b.page === page);
+  return (
+    <Panel title={`This file holds ${segments.length} documents`} stack>
+      <table className="az-table">
+        <thead>
+          <tr>
+            <th>pages</th>
+            <th>document</th>
+            <th className="num">confidence</th>
+            <th>split because</th>
+          </tr>
+        </thead>
+        <tbody>
+          {segments.map((segment) => {
+            const why = reasonFor(segment.start_page);
+            const abstained = segment.classification.abstained;
+            return (
+              <tr key={`${segment.start_page}-${segment.end_page}`}>
+                <td className="mono">
+                  {segment.start_page === segment.end_page
+                    ? segment.start_page
+                    : `${segment.start_page}–${segment.end_page}`}
+                </td>
+                <td>
+                  {abstained ? (
+                    <span className="az-abstain">abstained — sent to review</span>
+                  ) : (
+                    <>
+                      <span className="mono">{segment.classification.doctype_id}</span>{' '}
+                      <span className="az-muted">{segment.classification.label}</span>
+                    </>
+                  )}
+                </td>
+                <td className="num mono">
+                  {abstained ? '—' : segment.classification.confidence.toFixed(3)}
+                </td>
+                <td className="az-muted">
+                  {why ? why.detail : <span className="az-muted">first document in the file</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="az-note">
+        Boundaries are proposed from <strong>structure</strong> — a change of page stock, a page
+        that stops carrying its own text, an anchor that only ever appears on a document&rsquo;s
+        first page — and never from classifying pages one at a time. Each span above was then
+        classified <em>whole</em>, which is the only scope this cascade&rsquo;s precision has been
+        measured at. Splitting happens only on positive evidence: an abstaining or blank page
+        continues the document it is in rather than ending it.
+      </div>
+    </Panel>
+  );
+}
+
 function TiersPanel({ tiers, timings }: { tiers: TierRun[]; timings: Timings | null }) {
   const billed = tiers.filter((t) => t.cost_bearing);
   return (
@@ -2303,18 +2387,27 @@ export default function Analyze({ readiness }: PageProps) {
     const sent = redactRequest(request);
     try {
       if (mode === 'classify') {
-        const result = await api.classify(request, controller.signal);
+        // The segment endpoint, always — an upload may hold several documents and the user
+        // has no way to know before sending it. With no boundary evidence the reply is one
+        // segment carrying exactly what /classify would have returned, so this costs a
+        // single document nothing and stops a bundle being answered for as though it were
+        // one thing.
+        const result = await api.classifySegments(request, controller.signal);
+        const first = result.segments[0]?.classification ?? null;
         setOutcome({
           mode,
           source,
           ocrId,
-          classification: result,
+          classification: first,
           extraction: null,
           tiers: [],
           reviewIds: [],
           timings: null,
-          needsReview: api.isAbstention(result),
+          needsReview: first ? api.isAbstention(first) : false,
           detail: '',
+          segments: result.segments,
+          segmented: result.segmented,
+          boundaries: result.boundaries,
           raw: result,
           request: sent,
           at: new Date(),
@@ -2335,23 +2428,36 @@ export default function Analyze({ readiness }: PageProps) {
           timings: null,
           needsReview: result.needs_review,
           detail: '',
+          // /extract is single-document by nature: a field schema belongs to one doctype.
+          // A caller who wants a bundle extracted runs `process` and gets one extraction
+          // per segment.
+          segments: [],
+          segmented: false,
+          boundaries: [],
           raw: result,
           request: sent,
           at: new Date(),
         });
       } else {
-        const result: ProcessResponse = await api.process(request, controller.signal);
+        const result = await api.processSegments(request, controller.signal);
+        const first = result.segments[0];
         setOutcome({
           mode,
           source,
           ocrId,
-          classification: result.classification,
-          extraction: result.extraction ?? null,
-          tiers: result.tiers_used,
-          reviewIds: result.review_ids,
-          timings: result.timings,
-          needsReview: result.needs_review,
-          detail: result.detail,
+          classification: first?.classification ?? null,
+          extraction: first?.extraction ?? null,
+          tiers: [],
+          reviewIds: [],
+          timings: null,
+          needsReview: result.segments.some((s) => s.needs_review),
+          detail: result.segmented
+            ? `this file holds ${result.segments.length} documents; each was classified and ` +
+              'extracted against its own pages'
+            : '',
+          segments: result.segments,
+          segmented: result.segmented,
+          boundaries: result.boundaries,
           raw: result,
           request: sent,
           at: new Date(),
@@ -2776,6 +2882,10 @@ export default function Analyze({ readiness }: PageProps) {
                 entered={entered}
                 onEntered={setEntered}
               />
+            )}
+
+            {outcome.segmented && (
+              <SegmentsPanel segments={outcome.segments} boundaries={outcome.boundaries} />
             )}
 
             {classification && (

@@ -363,7 +363,11 @@ def test_adding_these_doctypes_changes_no_existing_verdict() -> None:
     """
     fitz = pytest.importorskip("fitz", reason="PyMuPDF is needed to read the corpus")
     corpus = Path(__file__).resolve().parents[1] / "corpus"
-    pdfs = sorted(corpus.glob("*/*.pdf"))
+    # Only the country packs. `corpus/bundles/` holds deliberately multi-document files whose
+    # ground truth is a set of page ranges, not one doctype — this test reads a doctype per
+    # file, so a bundle appears as a document with no expected answer and every verdict it
+    # produces reads as a change. It is measuring registry drift, not segmentation.
+    pdfs = sorted(p for p in corpus.glob("*/*.pdf") if p.parent.name != "bundles")
     if len(pdfs) < 20:
         pytest.skip(f"reference corpus not present at {corpus} (found {len(pdfs)} pdfs)")
 

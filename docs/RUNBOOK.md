@@ -170,6 +170,29 @@ their own documents was measured at **19.3%** false splits versus 6.0% with abso
 
 ---
 
+### Test bundles you already have
+
+`corpus/bundles/` holds real multi-document files built from corpus documents, with
+`bundles.jsonl` declaring which pages each constituent occupies. Drag any onto the console, or
+run `.venv/bin/python -m pytest tests/test_bundle_corpus.py`.
+
+| File | Shape | Today |
+|---|---|---|
+| `bundle_w9_bankstatement` | different page stock | splits at p4 (geometry) |
+| `bundle_w9_bankstatement_1040` | three documents | splits at p3 and p5 |
+| `bundle_w9_1040_sameshape` | same size, but the 1040 has an OMB number | splits at p3 (anchor) |
+| `bundle_bylaws_articles_noanchor` | same size, no marker | **one segment — the blind spot** |
+| `bundle_id_and_utility` | photo ID + proof of address | missed today |
+| `bundle_crosscountry` | CA + US + MX | finds 1 of 2 |
+| `single_w9_control` | not a bundle | one segment, `segmented=false` |
+
+**Do not add bundles to `corpus/<cc>/manifest.jsonl`.** That manifest maps one file to one
+`expected_doctype` and feeds the precision figure; a bundle there is scored as a wrong answer
+per bundle. Regenerate with `tools/make_bundles.py`. If you add a test that walks corpus PDFs,
+exclude `corpus/bundles/` — one already had to be fixed for exactly this.
+
+---
+
 ## 5. Symptom: extraction returns nothing, or wrong values
 
 1. `t1_local` runs against the doctype's locators. Empty usually means the locators do not

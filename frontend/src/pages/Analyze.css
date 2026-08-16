@@ -489,3 +489,26 @@ tr.az-required-missing td:first-child {
   color: var(--c-accent);
   font-weight: 600;
 }
+
+/* ---------------------------------------------------------------------------
+   The verdict's segment list — one line per document found in the upload.
+   Deliberately compact: the panels below carry the full trail for the first
+   segment, and this is the answer to "what is in this file", not a report.
+   --------------------------------------------------------------------------- */
+.az-verdict-segments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-2) 0 0;
+}
+.az-verdict-segment {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.az-seg-pages {
+  min-width: 4.5rem;
+  color: var(--fg-muted);
+  font-size: var(--t-sm);
+}

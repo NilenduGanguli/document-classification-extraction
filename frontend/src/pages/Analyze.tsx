@@ -1026,6 +1026,7 @@ function Verdict({
   timings,
   detail,
   needsReview,
+  segments = [],
 }: {
   classification: Classification;
   spec: DocTypeSpec | null;
@@ -1033,13 +1034,34 @@ function Verdict({
   timings: Timings | null;
   detail: string;
   needsReview: boolean;
+  /** Every document in the upload. More than one means the panels below describe only the
+   *  first, so the headline has to describe the file instead. */
+  segments?: DocumentSegment[];
 }) {
   const abstained = api.isAbstention(classification);
+  // A bundle's verdict is about the FILE, not about its first document. Reading segment one's
+  // ABSTAINED as the upload's answer would report a failure on a file that identified three
+  // documents out of four, and reading its ACCEPTED as the upload's answer would hide that
+  // three others were never mentioned.
+  const bundle = segments.length > 1;
+  const identified = segments.filter((s) => !s.classification.abstained).length;
   return (
-    <div className={`az-verdict ${abstained ? 'abstained' : 'accepted'}`}>
+    <div
+      className={`az-verdict ${bundle ? (identified ? 'accepted' : 'abstained') : abstained ? 'abstained' : 'accepted'}`}
+    >
       <div className="az-verdict-main">
         <div className="az-verdict-headline">
-          {abstained ? (
+          {bundle ? (
+            <>
+              <span>{segments.length} DOCUMENTS</span>
+              <Badge tone={identified === segments.length ? 'accept' : 'warn'}>
+                {identified} of {segments.length} identified
+              </Badge>
+              {segments.some((s) => s.needs_review) && (
+                <Badge tone="warn">some need review</Badge>
+              )}
+            </>
+          ) : abstained ? (
             <>
               <span>ABSTAINED</span>
               <Badge tone="abstain">routed to human review</Badge>
@@ -1057,7 +1079,42 @@ function Verdict({
           )}
         </div>
 
-        {abstained ? (
+        {bundle && (
+          <>
+            <div className="az-verdict-segments">
+              {segments.map((s) => (
+                <div className="az-verdict-segment" key={`${s.start_page}-${s.end_page}`}>
+                  <span className="mono az-seg-pages">
+                    {s.start_page === s.end_page
+                      ? `p${s.start_page}`
+                      : `p${s.start_page}–${s.end_page}`}
+                  </span>
+                  {s.classification.abstained ? (
+                    <span className="az-abstain">abstained &mdash; routed to review</span>
+                  ) : (
+                    <>
+                      <DocTypeBadge
+                        doctypeId={s.classification.doctype_id}
+                        label={s.classification.label}
+                        link
+                      />
+                      <span className="tabular faint">
+                        {fmt3(s.classification.confidence)}
+                      </span>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="az-note muted">
+              This file holds more than one document. Each was classified against{' '}
+              <strong>its own pages</strong>, and the evidence, gates and extraction panels
+              below describe the <strong>first</strong> segment only.
+            </div>
+          </>
+        )}
+
+        {bundle ? null : abstained ? (
           <p className="az-note" style={{ maxWidth: '68ch', margin: 0 }}>
             No doctype was accepted, and <strong>nothing downstream was told one</strong>. This is
             the service working as designed: four gates must hold together, one did not, and the
@@ -2525,10 +2582,9 @@ export default function Analyze({ readiness }: PageProps) {
           reviewIds: [],
           timings: null,
           needsReview: result.segments.some((s) => s.needs_review),
-          detail: result.segmented
-            ? `this file holds ${result.segments.length} documents; each was classified and ` +
-              'extracted against its own pages'
-            : '',
+          // No bundle summary here — the verdict panel's segment list says it, and better.
+          // Two sentences making the same point read as a service unsure it was heard.
+          detail: '',
           segments: result.segments,
           segmented: result.segmented,
           boundaries: result.boundaries,
@@ -2919,6 +2975,7 @@ export default function Analyze({ readiness }: PageProps) {
                 timings={outcome.timings}
                 detail={outcome.detail}
                 needsReview={outcome.needsReview}
+                segments={outcome.segments}
               />
             )}
 

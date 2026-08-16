@@ -860,6 +860,34 @@ def test_classify_pages_run_length_aggregates_a_merged_bundle():
     assert segments[1].classification.page_types == ["bank_statement", "bank_statement"]
 
 
+def test_a_gap_in_the_page_numbering_breaks_the_run():
+    """Pages 1-2 and 4-6 of one class are two segments, because page 3 is not evidence.
+
+    The run-length loop walks list positions, so without a discontinuity test this payload
+    collapsed into one segment reporting start=1, end=6, page_count=6 — while holding five
+    pages. A segment that claims a page it was never shown is worse than two honest ones.
+    """
+    statement = ["STATEMENT OF ACCOUNT", "ACCOUNT SUMMARY", "IBAN GB29 NWBK 6016 1331 9268 19"]
+    blocks = [
+        TextBlock(text=text, zone=Zone.body, page=page)
+        for page in (1, 2, 4, 5, 6)
+        for text in statement
+    ]
+    view = LayoutView(
+        doc_id="gapped",
+        pages=[
+            PageInfo(page=p, width=8.5, height=11.0, unit="inch") for p in (1, 2, 4, 5, 6)
+        ],
+        blocks=blocks,
+    )
+
+    segments = classify_pages(view, registry(), settings=SETTINGS)
+
+    assert [(s.start_page, s.end_page) for s in segments] == [(1, 2), (4, 6)]
+    for segment in segments:
+        assert segment.page_count == len(segment.classification.page_types)
+
+
 # ---------------------------------------------------------------------------
 # Structure, tables, key/values, accents
 # ---------------------------------------------------------------------------

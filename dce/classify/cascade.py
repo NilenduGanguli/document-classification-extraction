@@ -434,6 +434,7 @@ __all__ = [
     "classify_pages",
     "evidence_bits",
     "load_registry",
+    "page_range_view",
     "separation_of",
 ]
 
@@ -793,8 +794,14 @@ def classify_pages(
     segments: list[Segment] = []
     run_start = 0
     for i in range(1, len(per_page) + 1):
-        ends_run = i == len(per_page) or (
-            per_page[i][1].doctype_id != per_page[run_start][1].doctype_id
+        ends_run = (
+            i == len(per_page)
+            or per_page[i][1].doctype_id != per_page[run_start][1].doctype_id
+            # A gap in the numbering breaks the run, whatever the doctypes say. This loop
+            # walks list positions, so without this test pages 1-2 and 4-6 of one class
+            # collapse into a single segment reporting start=1, end=6, page_count=6 while
+            # holding five pages — a segment claiming a page it was never shown.
+            or per_page[i][0] != per_page[i - 1][0] + 1
         )
         if not ends_run:
             continue
@@ -1857,24 +1864,58 @@ def _spec_by_id(specs: Sequence[DocTypeSpec], doctype_id: str) -> DocTypeSpec | 
 
 
 def _page_numbers(view: LayoutView) -> list[int]:
-    """Ordered page numbers present in the payload."""
+    """Ordered page numbers present in the payload.
+
+    Every page-bearing collection, not only the three that carry prose. ``marks`` and
+    ``key_values`` were once omitted, which deleted a whole class of page from every
+    downstream segment: a scanned form page whose only content is a checkbox and a
+    provider-detected key/value pair — ordinary Document Intelligence output — was never
+    enumerated, never classified and appeared nowhere, with nothing in the result a caller
+    could have used to notice it was gone.
+    """
     pages = {p.page for p in view.pages}
-    pages.update(b.page for b in view.blocks)
-    pages.update(t.page for t in view.tables)
+    for collection in (view.blocks, view.tables, view.marks, view.key_values):
+        pages.update(item.page for item in collection)
     return sorted(pages)
+
+
+def page_range_view(view: LayoutView, start: int, end: int) -> LayoutView:
+    """Pages ``start``..``end`` (inclusive, 1-based) as a standalone view.
+
+    **Deep-copied.** The single-page slicer this generalises shared :class:`TextBlock` objects
+    with its parent, so mutating a slice mutated the bundle. Nothing relied on that, and
+    anything that came to rely on it would be a bug no test could see.
+
+    **``raw`` is carried through.** It is where provider provenance lives — the dict the API
+    reads to report which recogniser read a document — and a segment that cannot say what read
+    it is not auditable.
+
+    **Page numbers stay absolute.** A slice of pages 4-6 reports pages 4, 5 and 6, never 1, 2
+    and 3. "Page 4" in a response has to mean page 4 of the file the caller uploaded;
+    renumbering would make every page reference true only relative to a slice the caller never
+    sees. Nothing downstream needs them contiguous — :func:`classify` reads only
+    ``len(view.pages)``.
+    """
+
+    def keep(page: int) -> bool:
+        return start <= page <= end
+
+    label = f"p{start}" if start == end else f"p{start}-{end}"
+    return LayoutView(
+        doc_id=f"{view.doc_id}#{label}" if view.doc_id else "",
+        pages=[p.model_copy(deep=True) for p in view.pages if keep(p.page)],
+        blocks=[b.model_copy(deep=True) for b in view.blocks if keep(b.page)],
+        tables=[t.model_copy(deep=True) for t in view.tables if keep(t.page)],
+        marks=[m.model_copy(deep=True) for m in view.marks if keep(m.page)],
+        key_values=[kv.model_copy(deep=True) for kv in view.key_values if keep(kv.page)],
+        languages=list(view.languages),
+        raw=dict(view.raw),
+    )
 
 
 def _page_view(view: LayoutView, page: int) -> LayoutView:
     """Slice a single page out of a multi-page payload."""
-    return LayoutView(
-        doc_id=f"{view.doc_id}#p{page}" if view.doc_id else "",
-        pages=[p for p in view.pages if p.page == page],
-        blocks=[b for b in view.blocks if b.page == page],
-        tables=[t for t in view.tables if t.page == page],
-        marks=[m for m in view.marks if m.page == page],
-        key_values=[kv for kv in view.key_values if kv.page == page],
-        languages=list(view.languages),
-    )
+    return page_range_view(view, page, page)
 
 
 def _elapsed_ms(started: float) -> int:

@@ -34,15 +34,19 @@ Two consequences worth stating plainly:
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import pairwise
 
+from dce import logs
 from dce.classify.cascade import Segment, classify, load_registry, page_range_view
 from dce.classify.profiles import ProfileSet, build_profiles
 from dce.config import Settings, get_settings
 from dce.models import UNKNOWN, Classification, Controls, DocTypeSpec, LayoutView
+
+logger = logging.getLogger(__name__)
 
 #: Controls whose anchors mark the FIRST page of a document and essentially never a later one.
 #:
@@ -236,6 +240,15 @@ def segment_document(
 
     boundaries = candidate_boundaries(view, spec_list)
     starts = {b.page for b in boundaries}
+    logs.event(
+        logger,
+        "segment.boundaries",
+        pages=len(pages),
+        proposed=len(boundaries),
+        # Which signal fired where. The whole segmentation argument in one line: a split a
+        # reviewer disagrees with traces to the signal named here.
+        signals=",".join(f"p{b.page}:{b.signal}" for b in boundaries) or None,
+    )
 
     spans: list[tuple[int, int]] = []
     span_start = pages[0]
@@ -343,7 +356,19 @@ def segment_document(
         index = step
 
     surviving = {s.start_page for s in segments}
-    return segments, [b for b in boundaries if b.page in surviving]
+    kept = [b for b in boundaries if b.page in surviving]
+    logs.event(
+        logger,
+        "segment.done",
+        documents=len(segments),
+        # proposed vs kept is the absorb/merge story: the difference is boundaries that
+        # whole-span classification then rejected.
+        proposed=len(boundaries),
+        kept=len(kept),
+        spans=",".join(f"{s.start_page}-{s.end_page}:{s.doctype_id}" for s in segments) or None,
+        abstained=sum(1 for s in segments if s.classification.abstained),
+    )
+    return segments, kept
 
 
 __all__ = [

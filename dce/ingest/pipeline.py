@@ -8,10 +8,12 @@ parser's internals escapes.
 from __future__ import annotations
 
 import contextlib
+import logging
 import time
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from dce import logs
 from dce.ingest.builder import LayoutBuilder
 from dce.ingest.detect import IMAGE_TYPES, MediaType, decode_text, detect
 from dce.ingest.errors import (
@@ -338,6 +340,8 @@ def _service_ingest(
 
 #: Container members that are pictures. An OOXML package puts them under ``word/media/``,
 #: ``xl/media/`` or ``ppt/media/``; ODF uses ``Pictures/``.
+logger = logging.getLogger(__name__)
+
 _MEDIA_SUFFIXES = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp")
 
 #: Embedded pictures examined in one container. A deck of a hundred photographs is a scan
@@ -502,6 +506,23 @@ def ingest(
     provider = _resolve_local_provider(settings, selected, declined=declined)
     service = _resolve_service_provider(settings, selected, declined=declined)
 
+    logs.bind_doc(doc_id)
+    logs.event(
+        logger,
+        "ingest.start",
+        media_type=media_type,
+        detected_by=detection.basis,
+        bytes=len(data),
+        read_channel=read_channel,
+        policy=settings.text_layer(),
+        selected_provider=selected,
+        # WHY a recogniser will or will not run, which is the question every needs_ocr
+        # investigation starts from and which no single flag answers on its own.
+        declined=declined,
+        local_engine=provider.name if provider else None,
+        ocr_service=service.name if service else None,
+    )
+
     builder = LayoutBuilder(limits, deadline)
     result = IngestResult(
         media_type=media_type,
@@ -517,6 +538,20 @@ def ingest(
         result.reason = reason + _why_no_engine(settings, selected, declined=declined)
         result.remedy = NEEDS_OCR_REMEDY
         result.ms = int((time.perf_counter() - started) * 1000)
+        # WARNING, not INFO: needs_ocr is a valid answer but it means a document was not
+        # classified, and on a scan-heavy deployment a run of these is the first sign that a
+        # recogniser is misconfigured. The reason is service-composed prose about
+        # configuration, not document content, so it is safe to carry.
+        logs.event(
+            logger,
+            "ingest.needs_ocr",
+            level=logging.WARNING,
+            media_type=media_type,
+            selected_provider=selected,
+            declined=declined,
+            ms=result.ms,
+            reason=result.reason[:200],
+        )
         return result
 
     # -- images: the decision point -----------------------------------------
@@ -679,9 +714,41 @@ def ingest(
     if not view.blocks and not view.tables:
         # A parseable file with no text at all. Not an abstention and not a scan: the file
         # really is empty, and saying so beats classifying nothing and reporting "unknown".
+        logs.event(
+            logger, "ingest.empty", level=logging.WARNING, media_type=media_type, ms=result.ms
+        )
         raise UnsupportedFormat(
             f"{media_type} parsed cleanly but contains no text — an empty document cannot "
             "be classified, and an empty classification would read as a model decision"
+        )
+
+    # Counts only. `blocks` and `chars` say how much was read; the text itself never appears.
+    logs.event(
+        logger,
+        "ingest.done",
+        media_type=media_type,
+        text_source=result.text_source,
+        pages=result.page_count,
+        pages_read=result.pages_read,
+        blocks=result.block_count,
+        chars=result.char_count,
+        truncated=result.truncated,
+        limits_hit=",".join(result.limits_hit) or None,
+        ocr_engine=result.ocr_engine or None,
+        via_service=result.ocr_via_service or None,
+        ocr_host=result.ocr_endpoint_host or None,
+        ms=result.ms,
+    )
+    if result.truncated:
+        # Separate and louder: a truncated read is a partial answer, and `unread_pages` in
+        # particular means content was dropped because nothing could recognise it.
+        logs.event(
+            logger,
+            "ingest.truncated",
+            level=logging.WARNING,
+            limits_hit=",".join(result.limits_hit) or None,
+            pages=result.page_count,
+            pages_read=result.pages_read,
         )
     return result
 

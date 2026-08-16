@@ -82,7 +82,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from dce import SERVICE_NAME, __version__, adapters, observability, visual
+from dce import SERVICE_NAME, __version__, adapters, logs, observability, visual
 from dce.config import Settings
 from dce.ingest import IngestError, IngestOptions
 from dce.ingest import ingest as ingest_bytes
@@ -2475,6 +2475,18 @@ def run_tier_cascade(
         except Exception as exc:  # a paid tier must not take down the request
             elapsed = time.perf_counter() - started
             logger.warning("%s raised; continuing without it", tier.tier, exc_info=True)
+            # Billed anyway: the call was made. A failed paid tier that logged nothing would
+            # make spend invisible at exactly the moment it is least expected.
+            logs.event(
+                logger,
+                "tier.failed",
+                level=logging.WARNING,
+                tier=tier.tier,
+                provider=tier.provider,
+                error=type(exc).__name__,
+                billed=True,
+                ms=int(elapsed * 1000),
+            )
             runs.append(
                 TierRun(
                     tier=tier.tier,
@@ -2496,6 +2508,19 @@ def run_tier_cascade(
 
         elapsed = time.perf_counter() - started
         filled = _merge_tier_fields(result, produced, missing, tier.tier, spec)
+        # A COST-BEARING call completed. Field NAMES, never values — a filled field's value is
+        # the customer's name or account number. This line is what lets an operator answer
+        # "what did this request spend" from logs alone.
+        logs.event(
+            logger,
+            "tier.billed",
+            tier=tier.tier,
+            provider=tier.provider,
+            doctype=spec.doctype_id,
+            fields_filled=len(filled),
+            fields=",".join(filled) or None,
+            ms=int(elapsed * 1000),
+        )
         runs.append(
             TierRun(
                 tier=tier.tier,

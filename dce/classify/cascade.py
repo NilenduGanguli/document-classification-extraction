@@ -412,6 +412,7 @@ leave the process, and "ask an LLM what this is" is that leak wearing a differen
 from __future__ import annotations
 
 import importlib
+import logging
 import math
 import pkgutil
 import time
@@ -419,6 +420,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from dce import logs
 from dce.config import Settings, get_settings
 from dce.egress import EgressViolation, classification_scope
 from dce.models import UNKNOWN, Classification, DocTypeSpec, Evidence, LayoutView, Zone
@@ -427,6 +429,8 @@ from . import anchors as anchors_tier
 from . import structural as structural_tier
 from .lexical import LexicalOutcome, PlattCalibration, lexical_scores, softmax
 from .profiles import ProfileSet, build_profiles
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Segment",
@@ -741,6 +745,22 @@ def classify(
             )
 
         spec = _spec_by_id(spec_list, candidate)
+        # The accepted verdict and what it beat. Doctype ids and scores only — an anchor's
+        # matched string is a quotation from the document and never appears here.
+        logs.event(
+            logger,
+            "classify.accept",
+            doctype=candidate,
+            confidence=round(verdict.confidence, 4),
+            margin=round(verdict.lead, 4),
+            coverage=round(verdict.coverage, 4),
+            runner_up=runners_up[0][0] if runners_up else None,
+            runner_up_score=round(runners_up[0][1], 4) if runners_up else None,
+            evidence_entries=len(evidence),
+            pages=len(view.pages),
+            blocks=len(view.blocks),
+            ms=_elapsed_ms(started),
+        )
         return Classification(
             doctype_id=candidate,
             label=spec.label if spec else "",
@@ -1839,6 +1859,21 @@ def _abstain(
     coverage: float = 0.0,
 ) -> Classification:
     """Build the ``UNKNOWN`` result. The candidate we declined is kept in ``runners_up``."""
+    # WHICH GATE FAILED, and what it nearly was. This is the single most useful line in the
+    # log for tuning: `reason` is the service's own explanation of the failing gate, and
+    # `declined` names the candidate that led but did not clear it. Both are doctype ids and
+    # service prose — no document content.
+    logs.event(
+        logger,
+        "classify.abstain",
+        declined=runners_up[0][0] if runners_up else None,
+        declined_score=round(runners_up[0][1], 4) if runners_up else None,
+        confidence=round(confidence, 4),
+        margin=round(margin, 4),
+        coverage=round(coverage, 4),
+        reason=reason[:200],
+        ms=_elapsed_ms(started),
+    )
     return Classification(
         doctype_id=UNKNOWN,
         label="",

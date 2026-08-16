@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from dce import SERVICE_NAME, __version__, observability
+from dce import SERVICE_NAME, __version__, logs, observability
 from dce.api.routes import (
     load_classifier_port,
     load_extractor_port,
@@ -252,13 +252,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         The metric is labelled with the *route template*, never the raw path — an unmatched
         path is attacker-controlled and would blow up cardinality.
         """
-        started = time.perf_counter()
-        response = await call_next(request)
-        elapsed = time.perf_counter() - started
-        response.headers["X-Elapsed-Ms"] = str(int(elapsed * 1000))
-        route = getattr(request.scope.get("route"), "path", None) or "unmatched"
-        observability.observe_http(request.method, route, response.status_code, elapsed)
-        return response
+        # One correlation id per request, echoed on the response so a caller reporting a
+        # problem can quote it and an operator can grep straight to that request's lines.
+        # An inbound X-Request-Id is honoured, so a trace started upstream stays one trace.
+        inbound = (request.headers.get("X-Request-Id") or "").strip()[:64]
+        # A SCOPE, not a bare bind: worker threads are reused, and an id left set after a
+        # request ends stamps the next thing logged on that thread with a request it has
+        # nothing to do with.
+        with logs.request_scope(inbound) as request_id:
+            started = time.perf_counter()
+            # The raw path is attacker-controlled — but this is a log line, not a metric
+            # label, so cardinality is not the risk; it is truncated instead.
+            logs.event(
+                logger,
+                "http.request",
+                level=logging.DEBUG,
+                method=request.method,
+                path=str(request.url.path)[:200],
+            )
+            response = await call_next(request)
+            elapsed = time.perf_counter() - started
+            response.headers["X-Elapsed-Ms"] = str(int(elapsed * 1000))
+            response.headers["X-Request-Id"] = request_id
+            route = getattr(request.scope.get("route"), "path", None) or "unmatched"
+            logs.event(
+                logger,
+                "http.response",
+                level=logging.INFO if response.status_code >= 400 else logging.DEBUG,
+                method=request.method,
+                route=route,
+                status=response.status_code,
+                ms=int(elapsed * 1000),
+            )
+            observability.observe_http(request.method, route, response.status_code, elapsed)
+            return response
 
     dist = _frontend_dist()
     app.state.frontend_dist = dist

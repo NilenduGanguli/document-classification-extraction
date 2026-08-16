@@ -43,6 +43,61 @@ EOF
 
 ---
 
+### The whole trace for one request
+
+Every log line carries `req=<id>` and, once ingestion knows one, `doc=<hash>`. The request id
+is echoed on the response as `X-Request-Id`, so a caller reporting a problem can quote it and
+you grep straight to their request:
+
+```bash
+docker logs dce 2>&1 | grep 'req=demo-trace'
+```
+
+```
+http.request       method=POST path=/api/v1/process/segments
+ingest.start       media_type=pdf detected_by=magic bytes=1597534 read_channel=auto
+                   policy=verify selected_provider=azure_layout declined=false ocr_service=azure_layout
+ingest.done        text_source=native_text pages=6 pages_read=6 blocks=641 chars=29760 truncated=false ms=134
+segment.boundaries pages=6 proposed=1 signals=p4:geometry
+classify.accept    doctype=us_w9 confidence=0.7657 margin=0.9895 coverage=1
+                   runner_up=us_1099 runner_up_score=0.0685 pages=3 blocks=400 ms=97
+classify.accept    doctype=us_bank_statement confidence=0.7039 margin=0.511 …
+segment.done       documents=2 proposed=1 kept=1 spans=1-3:us_w9,4-6:us_bank_statement abstained=0
+http.response      status=200 ms=428
+```
+
+An inbound `X-Request-Id` is honoured, so a trace started upstream stays one trace.
+
+**The events worth knowing:**
+
+| Event | Level | Says |
+|---|---|---|
+| `ingest.start` | INFO | why a recogniser will or will not run — `declined`, `policy`, `selected_provider` |
+| `ingest.needs_ocr` | **WARN** | a document was not classified, with the reason |
+| `ingest.truncated` | **WARN** | content was dropped; `limits_hit` names which cap |
+| `ingest.done` | INFO | counts — pages, blocks, chars, text_source |
+| `segment.boundaries` | INFO | which signal fired at which page |
+| `segment.done` | INFO | the spans and their doctypes |
+| `classify.accept` | INFO | doctype, confidence, margin, coverage, and what it beat |
+| `classify.abstain` | INFO | **which gate failed**, and what it nearly was |
+| `ocr.submit` / `ocr.done` | INFO | the network call and what came back, in counts |
+| `tier.billed` | INFO | a **cost-bearing** call completed — field names, never values |
+| `tier.failed` | **WARN** | a paid tier failed **and was still billed** |
+
+### What is deliberately not in there
+
+**No document text, ever, at any level.** Verified by test and again live: a `doc_id` of
+`john-smith-kyc-bundle.pdf` appears in logs as `doc=e1b9f384` — hashed, because a correlation
+key repeats on every line and a filename is personal data. Extracted field **names** are
+logged; **values** never are. A failed stage logs the exception *type*, not its message,
+because an exception message can quote the document that caused it.
+
+Containers are counted rather than dumped (`blocks=<list:2>`), and any value over 120
+characters is reported by length (`<400chars>`) — so a log line cannot grow document text by
+accident.
+
+The one exception is opt-in and separate: `DCE_INGEST_OCR_LOG_BODIES=true`, below.
+
 ### Seeing the Azure calls themselves
 
 `DCE_LOG_LEVEL` raises the level of the `dce` loggers only, so uvicorn's access log stays

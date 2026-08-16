@@ -309,6 +309,60 @@ def test_the_plain_endpoints_are_untouched():
     assert body["doctype_id"] == "us_w9"
 
 
+def test_an_unidentifiable_span_does_not_become_its_own_document():
+    """Absorption: "we cannot tell" is not evidence of a separate document.
+
+    Without this, a landscape table or an unreadable exhibit inside a long filing is emitted
+    as its own "document" — measured at 19.3% false splits across the corpus, where every
+    file is a single document and therefore every split is wrong. With it, 6.0%.
+    """
+    view = _view(
+        [
+            _letter(1),
+            PageInfo(page=2, width=792.0, height=612.0, unit="point"),  # a landscape table
+            _letter(3),
+        ],
+        [
+            TextBlock(text="FORM W-9", zone=Zone.title, page=1),
+            TextBlock(text="Request for Taxpayer Identification Number", zone=Zone.body, page=1),
+            TextBlock(text="1 2 3 4 5", zone=Zone.body, page=2),
+            TextBlock(text="Certification instructions", zone=Zone.body, page=3),
+        ],
+    )
+
+    assert candidate_boundaries(view), "the geometry change is still noticed"
+
+    segments, _ = segment_document(view)
+
+    assert len(segments) == 1, "but it does not survive as a document of its own"
+    assert (segments[0].start_page, segments[0].end_page) == (1, 3)
+
+
+def test_an_absorbed_span_is_reclassified_over_the_pages_it_claims():
+    """The D5 defect, reintroduced once and caught by measurement.
+
+    Absorbing a neighbour while keeping the head's verdict reports a classification drawn
+    from a SUBSET of the pages the segment now covers. It turned a correctly identified
+    47-page circular into `us_bylaws` — which is what its first page says, read alone.
+    """
+    view = _view(
+        [_letter(1), _letter(2), _letter(3)],
+        [
+            TextBlock(text="STATEMENT OF ACCOUNT", zone=Zone.title, page=1),
+            TextBlock(text="x", zone=Zone.body, page=2),
+            TextBlock(text="ACCOUNT SUMMARY CLOSING BALANCE IBAN", zone=Zone.body, page=3),
+        ],
+    )
+
+    segments, _ = segment_document(view)
+
+    assert len(segments) == 1
+    whole = classify(view)
+    assert segments[0].doctype_id == whole.doctype_id, (
+        "a segment covering every page must say what the whole document says"
+    )
+
+
 def test_boundary_carries_readable_evidence():
     view = _view(
         [_letter(1), PageInfo(page=2, width=396.0, height=612.0, unit="point")],

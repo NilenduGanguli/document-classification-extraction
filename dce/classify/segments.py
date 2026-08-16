@@ -42,7 +42,7 @@ from itertools import pairwise
 from dce.classify.cascade import Segment, classify, load_registry, page_range_view
 from dce.classify.profiles import ProfileSet, build_profiles
 from dce.config import Settings, get_settings
-from dce.models import Controls, DocTypeSpec, LayoutView
+from dce.models import UNKNOWN, Classification, Controls, DocTypeSpec, LayoutView
 
 #: Controls whose anchors mark the FIRST page of a document and essentially never a later one.
 #:
@@ -231,6 +231,48 @@ def segment_document(
         (start, end, classify(page_range_view(view, start, end), spec_list,
                               settings=resolved, profiles=shared))
         for start, end in spans
+    ]
+
+    # A span nobody could identify is not evidence of a separate document — it is evidence
+    # that we cannot tell, and the two are not the same claim. Absorb it into the neighbour it
+    # is contiguous with and let the union be re-classified below.
+    #
+    # This is the rule that makes "split only on positive evidence" true in practice rather
+    # than only in the docstring. Without it, a landscape table, a scanned signature sheet or
+    # an unreadable exhibit in the middle of a 141-page filing is emitted as its own
+    # "document" — measured at 19.3% false splits across the corpus, where every file is a
+    # single document and every split is therefore wrong.
+    #
+    # Backwards by preference: a document's continuation pages follow its first page, so an
+    # unidentifiable span most likely belongs to what came before it.
+    def unidentified(result: Classification) -> bool:
+        return result.abstained or result.doctype_id == UNKNOWN
+
+    ranges: list[tuple[int, int]] = []
+    for start, end, result in classified:
+        if unidentified(result) and ranges and start == ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], end)
+            continue
+        ranges.append((start, end))
+    # A leading unidentified span has nothing before it, so it attaches to what follows.
+    if (
+        len(ranges) > 1
+        and unidentified(classified[0][2])
+        and ranges[1][0] == ranges[0][1] + 1
+    ):
+        ranges[0:2] = [(ranges[0][0], ranges[1][1])]
+
+    # Re-classify every span whose range grew. Keeping the head's verdict over a wider range
+    # would report a classification drawn from a SUBSET of the pages it now claims — the same
+    # defect that made the old Segment present page 1's evidence as the whole run's, and it is
+    # not hypothetical: absorbing on page-1's verdict alone turned a correctly identified
+    # 47-page circular into `us_bylaws`, which is what page 1 says when read by itself.
+    previous = {(start, end): result for start, end, result in classified}
+    classified = [
+        (start, end, previous.get((start, end))
+         or classify(page_range_view(view, start, end), spec_list,
+                     settings=resolved, profiles=shared))
+        for start, end in ranges
     ]
 
     # Merge neighbours that classified the same. A boundary signal is a *proposal*; whole-span

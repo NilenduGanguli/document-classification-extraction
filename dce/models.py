@@ -101,6 +101,25 @@ class PageInfo(BaseModel):
     unit: str = "pixel"
     angle: float = 0.0
 
+    # ---- how this page was read -------------------------------------------
+    # Set by the PDF parser, which already measures all three per page to decide whether a
+    # page's text layer is worth classifying on, and until now threw them away.
+    #
+    # They live HERE rather than in ``LayoutView.raw`` because a page-scoped question needs a
+    # page-scoped answer: ``raw`` is document-wide, so a slice of one page out of a bundle
+    # cannot carry it without describing pages it does not contain.
+    #
+    # Their second use is boundary detection. A typed cover page followed by a photographed
+    # ID differs on ``text_adequate`` and on ``image_fraction`` at exactly the page where one
+    # document ends and the next begins — structural evidence that costs no classification.
+    #: Alphanumeric characters in this page's own text layer.
+    alnum_chars: int = 0
+    #: Whether that text was judged worth classifying on. ``None`` means nothing measured it,
+    #: which is not the same as ``False`` — that is a finding.
+    text_adequate: bool | None = None
+    #: Share of the page covered by its largest single image; 0.0 when it carries none.
+    image_fraction: float = 0.0
+
 
 class LayoutView(BaseModel):
     """Everything the classifier and extractors are allowed to see.

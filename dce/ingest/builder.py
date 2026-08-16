@@ -215,6 +215,31 @@ class LayoutBuilder:
             number, PageInfo(page=max(1, number), width=width, height=height, unit=unit)
         )
 
+    def page_read(
+        self,
+        number: int,
+        *,
+        alnum_chars: int,
+        text_adequate: bool,
+        image_fraction: float,
+    ) -> None:
+        """Record how a declared page was read: characters, adequacy, image coverage.
+
+        Separate from :meth:`page` because the two are known at different moments — geometry
+        before a page's text is extracted, this after that text has been judged — and because
+        :meth:`page` is idempotent on purpose, so folding these into it would let the first
+        declaration win over the measured answer.
+
+        A page that was never declared is ignored rather than invented: this reports on a
+        page, it does not bring one into existence.
+        """
+        existing = self._pages.get(number)
+        if existing is None:
+            return
+        existing.alnum_chars = alnum_chars
+        existing.text_adequate = text_adequate
+        existing.image_fraction = image_fraction
+
     # -- output -------------------------------------------------------------
     @property
     def block_count(self) -> int:

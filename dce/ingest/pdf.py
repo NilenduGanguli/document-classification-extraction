@@ -312,8 +312,17 @@ def parse_pdf(
             except Exception:  # noqa: BLE001 - a broken page costs that page, not the file
                 text = ""
             page_texts.append(text)
-            outcome.page_verdicts.append(
-                _page_verdict(fitz, page, index + 1, text, strict=strict)
+            verdict = _page_verdict(fitz, page, index + 1, text, strict=strict)
+            outcome.page_verdicts.append(verdict)
+            # Onto the page itself, not just this outcome. The verdict is the only per-page
+            # record of how a page was read, and a bundle's segmenter needs it after ingestion
+            # has returned — a document that changes from typed to photographed mid-file
+            # changes on exactly these fields at exactly the boundary.
+            builder.page_read(
+                index + 1,
+                alnum_chars=verdict.alnum,
+                text_adequate=verdict.adequate,
+                image_fraction=verdict.image_fraction,
             )
         outcome.pages_read = limit
         outcome.alnum_chars = sum(_count_alnum(t) for t in page_texts)

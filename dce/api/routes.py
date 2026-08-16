@@ -1266,6 +1266,51 @@ class ProcessResponse(BaseModel):
     timings: Timings = Field(default_factory=Timings)
 
 
+class BoundaryEvidence(BaseModel):
+    """Why one split was proposed. Present so a segmentation can be argued with."""
+
+    #: First page of the new document, 1-based.
+    page: int
+    #: ``adequacy`` | ``geometry`` | ``first_page_anchor``.
+    signal: str
+    detail: str = ""
+
+
+class DocumentSegment(BaseModel):
+    """One document found inside an upload, and what it turned out to be."""
+
+    start_page: int
+    end_page: int
+    page_count: int
+    #: The classification of **these pages alone**, produced by classifying the span whole.
+    #: Not a page's classification promoted to stand for its neighbours.
+    classification: Classification
+    #: Populated on ``/process/segments``; ``None`` when the span abstained, because nothing
+    #: is extracted from a document nobody has identified.
+    extraction: ExtractionResult | None = None
+    needs_review: bool = False
+
+
+class SegmentsResponse(BaseModel):
+    """What an upload turned out to contain.
+
+    ``segments`` always holds at least one entry: a file with no boundary evidence comes back
+    as a single segment covering every page, classified exactly as ``/classify`` would have
+    classified it. That uniformity is deliberate — a caller never needs to branch on whether
+    the upload happened to be a bundle.
+    """
+
+    segments: list[DocumentSegment] = Field(default_factory=list)
+    #: True when more than one document was found. The plain answer to "is this a bundle?",
+    #: so a caller does not have to infer it from a list length.
+    segmented: bool = False
+    #: Every surviving split and what proposed it. Empty for a single-document upload.
+    boundaries: list[BoundaryEvidence] = Field(default_factory=list)
+    source: DocumentSource = Field(default_factory=DocumentSource)
+    page_count: int = 0
+    ms: int = 0
+
+
 class ReviewItem(BaseModel):
     """One document waiting for (or already seen by) a human.
 
@@ -2708,6 +2753,71 @@ def classify_document(
     return result
 
 
+def _segment_response(
+    view: LayoutView, settings: Settings, started: float
+) -> SegmentsResponse:
+    """Split ``view`` into documents and classify each span whole.
+
+    A separate path rather than a flag on ``/classify`` because there is no version header,
+    no ``Accept`` negotiation and no media-type variance anywhere in this service — the
+    ``/api/v1`` prefix is the only versioning lever, so a second response shape cannot
+    coexist with the first on one path without breaking every existing caller.
+    """
+    from dce.classify.segments import segment_document
+
+    segments, boundaries = segment_document(view, settings=settings)
+    pages = [p.page for p in view.pages] or [b.page for b in view.blocks]
+    return SegmentsResponse(
+        segments=[
+            DocumentSegment(
+                start_page=s.start_page,
+                end_page=s.end_page,
+                page_count=s.page_count,
+                classification=s.classification,
+                needs_review=s.classification.abstained,
+            )
+            for s in segments
+        ],
+        segmented=len(segments) > 1,
+        boundaries=[
+            BoundaryEvidence(page=b.page, signal=b.signal, detail=b.detail)
+            for b in boundaries
+        ],
+        page_count=max(pages) if pages else 0,
+        ms=_ms(started),
+    )
+
+
+@router.post("/classify/segments", response_model=SegmentsResponse)
+def classify_segments(
+    response: Response,
+    req: DocumentRequest,
+    settings: Settings = Depends(get_app_settings),
+) -> SegmentsResponse:
+    """Classify an upload that may hold more than one document.
+
+    A KYC upload is routinely a bundle — a passport, two utility bills and a bank statement in
+    one PDF — and classifying that whole answers the wrong question. Sending such a file to
+    ``/classify`` returns one doctype, silently omitting everything else in it.
+
+    **Boundaries are proposed from structure, never from per-page classification.** Page-scope
+    classification was built and measured: against the real registry on 78 single-document
+    corpus files it emitted 791 segments and dropped precision from 100% to 71.3%, because the
+    cascade's accept gates were calibrated against whole-document evidence. So each candidate
+    span here is classified *whole*, at the scope where those gates hold.
+
+    **A single document costs nothing.** With no boundary evidence the response is one segment
+    covering every page, carrying the same classification ``/classify`` would have returned —
+    so a caller who does not know whether an upload is a bundle can always send it here.
+    """
+    started = time.perf_counter()
+    view = _to_layout(req)
+    source = _report_source(response, view)
+    out = _segment_response(view, settings, started)
+    out.source = source
+    return out
+
+
 @router.post("/classify/compare", response_model=ComparisonResponse)
 def classify_compare(
     response: Response,
@@ -2842,6 +2952,63 @@ def extract_document(
     result.ms = result.ms or _ms(started)
     observability.observe_extraction(result, time.perf_counter() - extract_started)
     return result
+
+
+@router.post("/process/segments", response_model=SegmentsResponse)
+def process_segments(
+    response: Response,
+    req: DocumentRequest,
+    registry: RegistryPort = Depends(get_registry),
+    extractor: ExtractorPort = Depends(get_extractor),
+    settings: Settings = Depends(get_app_settings),
+) -> SegmentsResponse:
+    """Segment an upload, then classify and extract each document in it separately.
+
+    Extraction is per document by nature — a field schema belongs to one doctype — so a bundle
+    yields one extraction per segment, each run against that segment's pages alone.
+
+    **A segment that abstained is not extracted.** Extraction needs a doctype to know what to
+    look for, and running it against a document nobody has identified would produce fields
+    attributed to a guess. Those segments come back with ``extraction: null`` and
+    ``needs_review: true``, which is the same posture ``/process`` takes for a whole document.
+
+    Paid tiers are deliberately **not** run here. T2/T3 bill per call, and a bundle multiplies
+    the call count by its segment count; turning that on silently would let one upload cost
+    what an operator budgeted for one document. Use ``/extract`` per segment when a bundle
+    should escalate.
+    """
+    started = time.perf_counter()
+    view = _to_layout(req)
+    source = _report_source(response, view)
+    out = _segment_response(view, settings, started)
+    out.source = source
+
+    from dce.classify.cascade import page_range_view
+
+    for segment in out.segments:
+        if segment.classification.abstained:
+            continue
+        spec = registry.get(segment.classification.doctype_id)
+        if spec is None:
+            # Classified as something the registry does not hold. Not a 404 as it would be on
+            # /extract — one odd segment must not fail the other three — so the segment keeps
+            # its classification, carries no extraction, and goes to review.
+            segment.needs_review = True
+            continue
+        extract_started = time.perf_counter()
+        result = extractor.extract(
+            page_range_view(view, segment.start_page, segment.end_page),
+            spec,
+            settings=settings,
+        )
+        result.doctype_id = result.doctype_id or spec.doctype_id
+        result.schema_version = result.schema_version or _schema_version_for(spec)
+        result.ms = result.ms or _ms(extract_started)
+        observability.observe_extraction(result, time.perf_counter() - extract_started)
+        segment.extraction = result
+        segment.needs_review = result.needs_review
+    out.ms = _ms(started)
+    return out
 
 
 @router.post("/process", response_model=ProcessResponse)

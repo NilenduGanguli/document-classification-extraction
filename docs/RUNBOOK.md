@@ -140,8 +140,19 @@ EOF
 ```
 
 If `candidate_boundaries` is empty, the documents in the bundle are structurally
-indistinguishable — same page size, all text-bearing, no first-page markers. That is a
-**recall** limitation, and the honest fix is a new signal, not loosening an existing one.
+indistinguishable — same page size, all text-bearing, no first-page markers. **That is the
+known blind spot and it is total: measured recall on that shape is 0% (0 of 17 boundaries).**
+No threshold change reveals a signal that is not there. Expect it, and do not spend time
+hunting for a misconfiguration.
+
+Overall measured recall is **35.3%** with **100% precision** — when it proposes a split, the
+split is real; it simply misses seams it cannot see. Run `tools/bundle_recall.py` for the
+current numbers and the by-shape breakdown.
+
+Recall is much better when documents *differ physically* (different paper size, one scanned)
+or when one carries a form or control number — 75% on mixed-size bundles with anchors. If
+your real bundles are mostly same-size typed documents, **segmentation will mostly return one
+segment**, and that is the honest limit of the current signals rather than a bug.
 
 If boundaries were proposed but the segments merged, the spans classified the same or one was
 unidentifiable and got absorbed (§3 of ARCHITECTURE). Check what each span classifies as on

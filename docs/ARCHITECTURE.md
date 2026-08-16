@@ -165,8 +165,36 @@ not a boundary. An unmeasured payload proposes none.
 |---|---|
 | false splits on single documents | **3 / 83 (3.6%)** |
 | documents that stayed whole and changed their answer | **0 / 80** |
-| four-document-bundle junction recall | **92 / 120 (76.7%)** |
-| real 2-document bundle (`us_w9` + `us_bank_statement`) | both found, split on geometry |
+| boundary **precision** on synthetic bundles | **24 / 24 (100%)** — no false splits |
+| boundary **recall** on synthetic bundles | **24 / 68 (35.3%)** |
+| bundles returned as one segment (total miss) | **18 / 36 (50%)** |
+
+Reproduce with `tools/bundle_recall.py`.
+
+### Recall is the weak half, and it is weak in a knowable way
+
+Precision is excellent — on 36 synthetic bundles it proposed 24 boundaries and **every one was
+real**. Recall is 35%, and the by-shape breakdown says exactly where it fails:
+
+| bundle shape | recall |
+|---|---|
+| same size / all text / no anchors | **0%** (0 of 17) |
+| mixed size / all text / no anchors | 36% |
+| same size / all text / some anchors | 38% |
+| same size / text + scan | 50% |
+| mixed size / text + scan | 46% |
+| mixed size / all text / **some anchors** | **75%** |
+
+**This is not a tuning problem.** Two documents of the same page size, both text-bearing,
+neither carrying a first-page marker, are structurally indistinguishable — there is no signal
+to find, and no threshold change reveals one. 47% of true boundaries had **no signal fire at
+all**.
+
+The honest consequence: segmentation currently finds a bundle when the documents *differ*
+physically (different paper, one scanned) or when one carries a form/control number. It does
+not find a seam between two same-size typed documents. **Raising recall means a new signal**
+— per-page classification is the obvious one and is exactly what was measured and rejected
+(71.3% precision) — not loosening what is here.
 
 ### The three that still split, and why they are left alone
 
@@ -185,11 +213,17 @@ the real pages:
 | Candidate | False splits | Cost |
 |---|---|---|
 | (e) treat a landscape/portrait flip as furniture | — | **breaks the shipped bundle test outright** — `us_w9`→`us_bank_statement` is itself an exact w/h swap |
-| (i) suppress a geometry boundary that returns to earlier stock | 3.7% | 4-doc junction recall **76.7% → 58.3%**; destroys `bill / landscape statement / bill`, an ordinary KYC upload |
-| (k) inside a long document, only a first-page anchor may split | **0.0%** | recall **76.7% → 7.5%**, exact answers 9/40 → **0/40** |
+| (i) suppress a geometry boundary that returns to earlier stock | 3.7% | destroys `bill / landscape statement / bill`, an ordinary KYC upload: the outer two sharing stock makes the middle read as an insert |
+| (k) inside a long document, only a first-page anchor may split | **0.0%** | near-total recall collapse |
 
 A 0.0% false-split rate is available and is not worth having. Each of these buys precision on
-long filings by destroying the ability to detect the bundles the feature exists for.
+long filings by destroying the ability to detect the bundles the feature exists for. Given
+that recall is already the weak half at 35%, spending more of it is the wrong direction.
+
+*The recall costs in this table were measured by a one-off script during diagnosis, not by
+`tools/bundle_recall.py`, and their absolute values disagreed with the harness. The ordering
+and the direction held under both; treat the specific percentages as indicative and re-measure
+with the committed harness before acting on any of them.*
 
 **The corpus contains no real KYC bundles**, so every number here is measured on synthetic
 joins and long filings — the least favourable material available.

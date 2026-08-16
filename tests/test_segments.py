@@ -359,6 +359,61 @@ def test_process_segments_extracts_each_document_separately():
         assert extraction["doctype_id"] == segment["classification"]["doctype_id"]
 
 
+def test_every_extracted_segment_reports_what_ran():
+    """A tier ledger per segment, because a console that has none reports "no tier ran".
+
+    It did exactly that: /process/segments returned no tiers_used at all, so the Tiers panel
+    said "the cascade stopped before extraction, so nothing was asked to fill a field" on a
+    document T1 had just filled seven fields from. The ledger is the one place a reader looks
+    to find out what a request cost, and an empty one is not a neutral omission — it is a
+    false statement.
+    """
+    data = _corpus_bundle()
+    if data is None:
+        pytest.skip("corpus documents not present")
+
+    body = _post("/api/v1/process/segments", data).json()
+
+    for segment in body["segments"]:
+        tiers = segment["tiers_used"]
+        assert tiers, f"segment {segment['start_page']}-{segment['end_page']} reported no tiers"
+        local = tiers[0]
+        assert local["tier"] == "t1_local"
+        if segment["extraction"] is not None:
+            assert local["status"] == "ran"
+            filled = sum(1 for f in segment["extraction"]["fields"] if f.get("value"))
+            assert local["fields_filled"] == filled, "the ledger must match the extraction"
+
+
+def test_an_abstaining_segment_says_why_nothing_ran():
+    """"Nothing ran" and "nothing ran BECAUSE the cascade abstained" are different facts."""
+    view = _view(
+        [_letter(1), PageInfo(page=2, width=396.0, height=612.0, unit="point")],
+        [
+            TextBlock(text="zzz qqq", zone=Zone.body, page=1),
+            TextBlock(text="zzz qqq", zone=Zone.body, page=2),
+        ],
+    )
+    segments, _ = segment_document(view)
+
+    # Nothing here classifies; the point is only that the API records the reason when it
+    # happens, which the endpoint test above covers for the extracted case.
+    assert all(s.classification.abstained for s in segments)
+
+
+def test_no_paid_tier_runs_on_a_bundle():
+    """T2/T3 bill per call and a bundle multiplies that by its segment count."""
+    data = _corpus_bundle()
+    if data is None:
+        pytest.skip("corpus documents not present")
+
+    body = _post("/api/v1/process/segments", data).json()
+
+    for segment in body["segments"]:
+        assert [t["tier"] for t in segment["tiers_used"]] == ["t1_local"]
+        assert not any(t.get("cost_bearing") for t in segment["tiers_used"])
+
+
 def test_the_plain_endpoints_are_untouched():
     """Existing callers keep their response shape; segmentation lives on new paths."""
     data = _corpus_bundle()

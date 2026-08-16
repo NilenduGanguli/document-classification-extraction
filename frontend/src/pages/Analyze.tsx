@@ -1107,9 +1107,10 @@ function Verdict({
               ))}
             </div>
             <div className="az-note muted">
-              This file holds more than one document. Each was classified against{' '}
-              <strong>its own pages</strong>, and the evidence, gates and extraction panels
-              below describe the <strong>first</strong> segment only.
+              This file holds more than one document. Each was classified and extracted
+              against <strong>its own pages</strong>. The evidence, gates, extraction and
+              tier panels below describe the <strong>first</strong> segment only — every
+              other document&rsquo;s result is in the raw response.
             </div>
           </>
         )}
@@ -2578,7 +2579,11 @@ export default function Analyze({ readiness }: PageProps) {
           ocrId,
           classification: first?.classification ?? null,
           extraction: first?.extraction ?? null,
-          tiers: [],
+          // The FIRST segment's ledger, matching the evidence and extraction panels, which
+          // also describe the first segment. Hardcoding [] here made the Tiers panel report
+          // "no tier ran" on a document T1 had just extracted seven fields from — a false
+          // statement, and the one place a reader looks to find out what a request cost.
+          tiers: first?.tiers_used ?? [],
           reviewIds: [],
           timings: null,
           needsReview: result.segments.some((s) => s.needs_review),

@@ -332,6 +332,9 @@ export interface DocumentSegment {
    */
   extraction?: ExtractionResult | null;
   needs_review: boolean;
+  /** What ran for THIS document. Per segment, because a bundle's tiers are per document:
+   *  one segment can abstain and run nothing while its neighbour extracts seven fields. */
+  tiers_used: TierRun[];
 }
 
 /**

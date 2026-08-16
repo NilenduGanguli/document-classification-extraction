@@ -1289,6 +1289,11 @@ class DocumentSegment(BaseModel):
     #: is extracted from a document nobody has identified.
     extraction: ExtractionResult | None = None
     needs_review: bool = False
+    #: What ran for THIS document, and what it cost. Reported per segment rather than once
+    #: per file because a bundle's tiers are per document: one segment can abstain and run
+    #: nothing while its neighbour extracts seven fields, and a single ledger would have to
+    #: pick one of those to describe. An empty list means the segment abstained.
+    tiers_used: list[TierRun] = Field(default_factory=list)
 
 
 class PageRead(BaseModel):
@@ -3022,6 +3027,16 @@ def process_segments(
 
     for segment in out.segments:
         if segment.classification.abstained:
+            # Recorded rather than left blank. "Nothing ran" and "nothing ran BECAUSE the
+            # cascade abstained here" are different facts, and only the second tells a reader
+            # that the silence was a decision.
+            segment.tiers_used = [
+                TierRun(
+                    tier=TIER_LOCAL,
+                    status="skipped",
+                    detail="classification abstained for these pages; nothing was extracted",
+                )
+            ]
             continue
         spec = registry.get(segment.classification.doctype_id)
         if spec is None:
@@ -3042,6 +3057,19 @@ def process_segments(
         observability.observe_extraction(result, time.perf_counter() - extract_started)
         segment.extraction = result
         segment.needs_review = result.needs_review
+        # The ledger, per segment. T1 ran; saying so is the difference between "nothing was
+        # asked to fill a field" and "the free tier filled four of seven". Omitting it made a
+        # console report no tier activity on a document it had just extracted.
+        filled = [f.name for f in result.fields if f.value]
+        segment.tiers_used = [
+            TierRun(
+                tier=TIER_LOCAL,
+                status="ran",
+                fields_filled=len(filled),
+                fields=filled,
+                ms=result.ms,
+            )
+        ]
     out.ms = _ms(started)
     return out
 

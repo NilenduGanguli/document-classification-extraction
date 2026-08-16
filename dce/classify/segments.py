@@ -133,9 +133,20 @@ def _adequacy_differs(view: LayoutView, left: int, right: int) -> tuple[bool, st
         return False, ""
     both_measured = a.text_adequate is not None and b.text_adequate is not None
     if both_measured and a.text_adequate != b.text_adequate:
-        was = "carried usable text" if a.text_adequate else "was a picture"
-        now = "carries usable text" if b.text_adequate else "is a picture"
-        return True, f"page {left} {was} and page {right} {now}"
+        # `text_adequate=False` means only "fewer than MIN_ALNUM_CHARS characters". That is
+        # true of a photographed page AND of a blank one, and only the first is evidence a new
+        # document began. A cover sheet, a section divider, an EDGAR "TABLE OF CONTENTS" link
+        # anchor — these are furniture inside one document, and treating them as boundaries
+        # split a 119-page proxy statement at its own table of contents.
+        #
+        # So the inadequate side must actually carry pixels. Without this the module's own
+        # stated rule — "a blank page is not a boundary" — was false in the shipped code and
+        # true only in a test that built pages carrying no verdicts at all.
+        picture = a if not a.text_adequate else b
+        if picture.image_fraction > 0.0:
+            was = "carried usable text" if a.text_adequate else "was a picture"
+            now = "carries usable text" if b.text_adequate else "is a picture"
+            return True, f"page {left} {was} and page {right} {now}"
     dominant_before = a.image_fraction >= IMAGE_DOMINANCE
     dominant_after = b.image_fraction >= IMAGE_DOMINANCE
     if dominant_before != dominant_after:
@@ -147,20 +158,26 @@ def _adequacy_differs(view: LayoutView, left: int, right: int) -> tuple[bool, st
 
 
 def _first_page_anchor(
-    view: LayoutView, specs: list[DocTypeSpec], left: int, right: int
+    view: LayoutView, specs: list[DocTypeSpec], earlier: str, right: int
 ) -> tuple[bool, str]:
-    """A first-page-only marker appearing on ``right`` and not on ``left``.
+    """A first-page-only marker appearing on ``right`` and on no page before it.
 
-    The ``and not on left`` half matters: a marker present on both pages is a running header,
-    not the head of a new instrument, and treating it as a boundary would split a document at
-    every page of itself.
+    ``earlier`` is the text of **every** page already seen, not just the immediately preceding
+    one, and that is the whole rule. Comparing against the previous page alone made a marker
+    that had already appeared three times read as new the moment one page happened not to
+    carry it: a 6-page IRS 1099 whose page 5 is "INSTRUCTIONS FOR RECIPIENT" split at page 6,
+    because "OMB NO. 1545-0116" was on pages 2, 3, 4 and 6 but not on 5.
+
+    The cost is real but narrow: a bundle holding two copies of the same form loses the second
+    copy's boundary. Measured across 59 two- and three-document bundles and 40 four-document
+    bundles, that case does not occur and recall is byte-identical.
     """
     markers = _first_page_markers(tuple(s.doctype_id for s in specs))
     if not markers:
         return False, ""
-    before, after = _page_text(view, left), _page_text(view, right)
+    after = _page_text(view, right)
     for marker in markers:
-        if marker and marker in after and marker not in before:
+        if marker and marker in after and marker not in earlier:
             return True, f"page {right} carries {marker!r}, which marks a document's first page"
     return False, ""
 
@@ -177,16 +194,20 @@ def candidate_boundaries(
     spec_list = list(specs) if specs is not None else load_registry()
     pages = sorted({p.page for p in view.pages} | {b.page for b in view.blocks})
     found: list[Boundary] = []
+    # Accumulated as we walk, so a first-page marker is tested against everything already
+    # seen rather than only against the page immediately before it.
+    earlier = _page_text(view, pages[0]) if pages else ""
     for left, right in pairwise(pages):
         for signal, test in (
             ("adequacy", _adequacy_differs(view, left, right)),
             ("geometry", _geometry_differs(view, left, right)),
-            ("first_page_anchor", _first_page_anchor(view, spec_list, left, right)),
+            ("first_page_anchor", _first_page_anchor(view, spec_list, earlier, right)),
         ):
             hit, detail = test
             if hit:
                 found.append(Boundary(page=right, signal=signal, detail=detail))
                 break
+        earlier = f"{earlier} {_page_text(view, right)}"
     return found
 
 
@@ -248,32 +269,43 @@ def segment_document(
     def unidentified(result: Classification) -> bool:
         return result.abstained or result.doctype_id == UNKNOWN
 
-    ranges: list[tuple[int, int]] = []
-    for start, end, result in classified:
-        if unidentified(result) and ranges and start == ranges[-1][1] + 1:
-            ranges[-1] = (ranges[-1][0], end)
-            continue
-        ranges.append((start, end))
-    # A leading unidentified span has nothing before it, so it attaches to what follows.
-    if (
-        len(ranges) > 1
-        and unidentified(classified[0][2])
-        and ranges[1][0] == ranges[0][1] + 1
-    ):
-        ranges[0:2] = [(ranges[0][0], ranges[1][1])]
+    # To a fixpoint, because absorbing changes the very verdict absorption is decided on:
+    # re-classifying a grown span can itself return `unknown`, and a single pass then emits
+    # that as a document. A 6-page 1099 did exactly this — spans [1-1] [2-5] [6-6], the
+    # leading [1-1] absorbed forward, the grown [1-5] re-classified to unknown, and the pass
+    # never ran again. Iterating is cheap: each round strictly reduces the span count, so it
+    # terminates in at most len(spans) rounds and almost always in one.
+    while True:
+        ranges: list[tuple[int, int]] = []
+        for start, end, result in classified:
+            if unidentified(result) and ranges and start == ranges[-1][1] + 1:
+                ranges[-1] = (ranges[-1][0], end)
+                continue
+            ranges.append((start, end))
+        # A leading unidentified span has nothing before it, so it attaches to what follows.
+        if (
+            len(ranges) > 1
+            and unidentified(classified[0][2])
+            and ranges[1][0] == ranges[0][1] + 1
+        ):
+            ranges[0:2] = [(ranges[0][0], ranges[1][1])]
 
-    # Re-classify every span whose range grew. Keeping the head's verdict over a wider range
-    # would report a classification drawn from a SUBSET of the pages it now claims — the same
-    # defect that made the old Segment present page 1's evidence as the whole run's, and it is
-    # not hypothetical: absorbing on page-1's verdict alone turned a correctly identified
-    # 47-page circular into `us_bylaws`, which is what page 1 says when read by itself.
-    previous = {(start, end): result for start, end, result in classified}
-    classified = [
-        (start, end, previous.get((start, end))
-         or classify(page_range_view(view, start, end), spec_list,
-                     settings=resolved, profiles=shared))
-        for start, end in ranges
-    ]
+        if len(ranges) == len(classified):
+            break
+
+        # Re-classify every span whose range grew. Keeping the head's verdict over a wider
+        # range would report a classification drawn from a SUBSET of the pages it now claims —
+        # the same defect that made the old Segment present page 1's evidence as the whole
+        # run's, and it is not hypothetical: absorbing on page-1's verdict alone turned a
+        # correctly identified 47-page circular into `us_bylaws`, which is what page 1 says
+        # when read by itself.
+        previous = {(start, end): result for start, end, result in classified}
+        classified = [
+            (start, end, previous.get((start, end))
+             or classify(page_range_view(view, start, end), spec_list,
+                         settings=resolved, profiles=shared))
+            for start, end in ranges
+        ]
 
     # Merge neighbours that classified the same. A boundary signal is a *proposal*; whole-span
     # classification is the check on it, and two adjacent spans agreeing on the doctype means

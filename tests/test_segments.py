@@ -119,6 +119,68 @@ def test_a_blank_page_is_not_a_boundary():
     assert candidate_boundaries(view) == []
 
 
+def test_a_blank_page_carrying_real_verdicts_is_still_not_a_boundary():
+    """The version with teeth. The test above passed on pages carrying NO verdicts at all.
+
+    `text_adequate=False` means only "fewer than MIN_ALNUM_CHARS characters", which is true of
+    a photographed page and equally true of a blank one — and only the first is evidence a new
+    document began. A 119-page proxy statement split at its own table of contents, whose pages
+    hold the string "TABLE OF CONTENTS" (15 characters, an EDGAR link anchor) and no image at
+    all. The module claimed "a blank page is not a boundary" while the shipped code did the
+    opposite.
+    """
+    view = _view(
+        [
+            _letter(1, text_adequate=True, alnum_chars=2600, image_fraction=0.0),
+            # blank: below the floor, but no pixels on it
+            _letter(2, text_adequate=False, alnum_chars=15, image_fraction=0.0),
+            _letter(3, text_adequate=True, alnum_chars=2400, image_fraction=0.0),
+        ],
+        [
+            TextBlock(text="STATEMENT OF ACCOUNT", zone=Zone.title, page=1),
+            TextBlock(text="TABLE OF CONTENTS", zone=Zone.body, page=2),
+            TextBlock(text="CLOSING BALANCE", zone=Zone.body, page=3),
+        ],
+    )
+
+    assert candidate_boundaries(view) == []
+
+
+def test_a_photographed_page_among_typed_ones_still_is_a_boundary():
+    """The other half: the fix must not have disabled the adequacy signal outright."""
+    view = _view(
+        [
+            _letter(1, text_adequate=True, alnum_chars=2600, image_fraction=0.0),
+            _letter(2, text_adequate=False, alnum_chars=0, image_fraction=0.95),
+        ],
+        [TextBlock(text="COVER LETTER", zone=Zone.title, page=1)],
+    )
+
+    found = candidate_boundaries(view)
+
+    assert [b.page for b in found] == [2]
+    assert found[0].signal == "adequacy"
+
+
+def test_a_marker_seen_on_any_earlier_page_is_not_a_first_page_marker():
+    """Comparing against the previous page alone is not enough.
+
+    A 6-page IRS 1099 carries "OMB No. 1545-0116" on pages 2, 3, 4 and 6 — but not on page 5,
+    which is "Instructions for Recipient". Testing only the immediately preceding page made
+    the marker read as new at page 6 and split the form off from itself.
+    """
+    view = _view(
+        [_letter(p) for p in (1, 2, 3)],
+        [
+            TextBlock(text="OMB No. 1545-0116", zone=Zone.body, page=1),
+            TextBlock(text="Instructions for Recipient", zone=Zone.body, page=2),
+            TextBlock(text="OMB No. 1545-0116", zone=Zone.body, page=3),
+        ],
+    )
+
+    assert candidate_boundaries(view) == []
+
+
 # ---------------------------------------------------------------------------
 # The signals it does act on
 # ---------------------------------------------------------------------------

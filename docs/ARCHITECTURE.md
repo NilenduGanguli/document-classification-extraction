@@ -163,12 +163,36 @@ not a boundary. An unmeasured payload proposes none.
 
 | | |
 |---|---|
-| false splits on single documents | **5 / 83 (6.0%)** |
-| documents that stayed whole and changed their answer | **0 / 78** |
+| false splits on single documents | **3 / 83 (3.6%)** |
+| documents that stayed whole and changed their answer | **0 / 80** |
+| four-document-bundle junction recall | **92 / 120 (76.7%)** |
 | real 2-document bundle (`us_w9` + `us_bank_statement`) | both found, split on geometry |
 
-The 5 remaining are all long regulatory filings (19–141 pages). **The corpus contains no real
-KYC bundles**, so this is measured on the least favourable material available.
+### The three that still split, and why they are left alone
+
+All three are long regulatory filings split by **geometry**, and each was diagnosed against
+the real pages:
+
+- `ca_business_acquisition_report.pdf` (19p) — page 9 is landscape because *"Statement of
+  Changes in Shareholders' Deficiency"* is a wide table. Pages 8–19 are one continuous set of
+  financial statements, internally numbered, with the company name as a running header.
+- `mx_reporte_anual_cnbv.pdf` (141p) — pages 118–120 are 1224pt wide, **exactly 2× the 612pt
+  page**: fold-out spreads. Pages 117–141 carry one continuous run of note numbers.
+- `us_sec_form5.pdf` (13p) — same shape.
+
+**Four candidate fixes were built and measured. All were rejected**, and the numbers are why:
+
+| Candidate | False splits | Cost |
+|---|---|---|
+| (e) treat a landscape/portrait flip as furniture | — | **breaks the shipped bundle test outright** — `us_w9`→`us_bank_statement` is itself an exact w/h swap |
+| (i) suppress a geometry boundary that returns to earlier stock | 3.7% | 4-doc junction recall **76.7% → 58.3%**; destroys `bill / landscape statement / bill`, an ordinary KYC upload |
+| (k) inside a long document, only a first-page anchor may split | **0.0%** | recall **76.7% → 7.5%**, exact answers 9/40 → **0/40** |
+
+A 0.0% false-split rate is available and is not worth having. Each of these buys precision on
+long filings by destroying the ability to detect the bundles the feature exists for.
+
+**The corpus contains no real KYC bundles**, so every number here is measured on synthetic
+joins and long filings — the least favourable material available.
 
 ---
 

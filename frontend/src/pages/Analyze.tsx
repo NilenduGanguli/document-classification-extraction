@@ -101,14 +101,15 @@ import {
 } from '../ocr';
 import type {
   Anchor,
-  Classification,
   BoundaryEvidence,
+  Classification,
   DocTypeSpec,
   DocumentRequest,
   DocumentSegment,
   Evidence,
   ExtractedField,
   ExtractionResult,
+  PageRead,
   TierRun,
   Timings,
 } from '../types';
@@ -528,6 +529,8 @@ interface Outcome {
   segmented: boolean;
   /** Why each split was made, so a segmentation can be argued with rather than trusted. */
   boundaries: BoundaryEvidence[];
+  /** How each page was read — the answer to "did the reader see this page at all". */
+  pages: PageRead[];
   /** Exactly what came back, for the raw disclosure. */
   raw: unknown;
   /** The request as sent, with the payload redacted. */
@@ -1967,6 +1970,75 @@ function SegmentsPanel({
   );
 }
 
+/**
+ * How each page was read, before anything classified it.
+ *
+ * The first question in any real debugging session is not "why did it pick that doctype" but
+ * "did the reader see the page at all". A page that contributed nothing looks, in every other
+ * panel, exactly like a page that genuinely held nothing — and the difference between those
+ * two is the difference between a registry problem and an OCR problem.
+ *
+ * Shown only for a multi-page document: on a one-page upload the row says nothing the panels
+ * above have not already said.
+ */
+function PagesPanel({ pages }: { pages: PageRead[] }) {
+  const unread = pages.filter((p) => p.text_adequate === false);
+  return (
+    <Panel title="How each page was read" stack>
+      {unread.length > 0 && (
+        <div className="az-note">
+          <strong>
+            {unread.length} of {pages.length} page(s) carried no usable text of their own.
+          </strong>{' '}
+          Where a recogniser was available they were read optically; where none was, they are
+          reported as unread rather than dropped, and the classification above was made without
+          them.
+        </div>
+      )}
+      <table className="az-table">
+        <thead>
+          <tr>
+            <th>page</th>
+            <th className="num">characters</th>
+            <th>text layer</th>
+            <th className="num">largest image</th>
+            <th className="num">size</th>
+          </tr>
+        </thead>
+        <tbody>
+          {pages.map((p) => (
+            <tr key={p.page}>
+              <td className="mono">{p.page}</td>
+              <td className="num mono">{p.alnum_chars}</td>
+              <td>
+                {p.text_adequate === null ? (
+                  <span className="az-muted">not measured</span>
+                ) : p.text_adequate ? (
+                  'usable'
+                ) : (
+                  <span className="az-abstain">a picture</span>
+                )}
+              </td>
+              <td className="num mono">
+                {p.image_fraction > 0 ? `${(p.image_fraction * 100).toFixed(0)}%` : '—'}
+              </td>
+              <td className="num mono az-muted">
+                {p.width > 0 ? `${p.width.toFixed(0)}×${p.height.toFixed(0)}` : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="az-note">
+        <code>not measured</code> means nothing looked — a caller-supplied layout payload
+        carries no page verdicts — which is not the same as a page having been judged and
+        found wanting. These same measurements are what proposes a document boundary in a
+        bundle, so a split you disagree with can be traced to the row that caused it.
+      </div>
+    </Panel>
+  );
+}
+
 function TiersPanel({ tiers, timings }: { tiers: TierRun[]; timings: Timings | null }) {
   const billed = tiers.filter((t) => t.cost_bearing);
   return (
@@ -2408,6 +2480,7 @@ export default function Analyze({ readiness }: PageProps) {
           segments: result.segments,
           segmented: result.segmented,
           boundaries: result.boundaries,
+          pages: result.pages,
           raw: result,
           request: sent,
           at: new Date(),
@@ -2434,6 +2507,7 @@ export default function Analyze({ readiness }: PageProps) {
           segments: [],
           segmented: false,
           boundaries: [],
+          pages: [],
           raw: result,
           request: sent,
           at: new Date(),
@@ -2458,6 +2532,7 @@ export default function Analyze({ readiness }: PageProps) {
           segments: result.segments,
           segmented: result.segmented,
           boundaries: result.boundaries,
+          pages: result.pages,
           raw: result,
           request: sent,
           at: new Date(),
@@ -2887,6 +2962,8 @@ export default function Analyze({ readiness }: PageProps) {
             {outcome.segmented && (
               <SegmentsPanel segments={outcome.segments} boundaries={outcome.boundaries} />
             )}
+
+            {outcome.pages.length > 1 && <PagesPanel pages={outcome.pages} />}
 
             {classification && (
               <EvidencePanel

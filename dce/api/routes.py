@@ -1291,6 +1291,27 @@ class DocumentSegment(BaseModel):
     needs_review: bool = False
 
 
+class PageRead(BaseModel):
+    """How one page was read, as the reader measured it.
+
+    Reported because "is the view right?" has to be answerable before "is the classifier
+    right?", and until now the only way to ask it was from a Python shell. A page that
+    contributed nothing to a classification looks identical, in every other field of every
+    other response, to a page that genuinely held nothing.
+    """
+
+    page: int
+    width: float = 0.0
+    height: float = 0.0
+    #: Alphanumeric characters in this page's own text layer.
+    alnum_chars: int = 0
+    #: Whether that text was judged worth classifying on. ``None`` means nothing measured it,
+    #: which is not the same as ``false``.
+    text_adequate: bool | None = None
+    #: Share of the page covered by its largest single image.
+    image_fraction: float = 0.0
+
+
 class SegmentsResponse(BaseModel):
     """What an upload turned out to contain.
 
@@ -1307,6 +1328,9 @@ class SegmentsResponse(BaseModel):
     #: Every surviving split and what proposed it. Empty for a single-document upload.
     boundaries: list[BoundaryEvidence] = Field(default_factory=list)
     source: DocumentSource = Field(default_factory=DocumentSource)
+    #: How each page was read. The answer to "did the reader see this page at all", which has
+    #: to come before any question about the classifier.
+    pages: list[PageRead] = Field(default_factory=list)
     page_count: int = 0
     ms: int = 0
 
@@ -2782,6 +2806,17 @@ def _segment_response(
         boundaries=[
             BoundaryEvidence(page=b.page, signal=b.signal, detail=b.detail)
             for b in boundaries
+        ],
+        pages=[
+            PageRead(
+                page=p.page,
+                width=p.width,
+                height=p.height,
+                alnum_chars=p.alnum_chars,
+                text_adequate=p.text_adequate,
+                image_fraction=p.image_fraction,
+            )
+            for p in view.pages
         ],
         page_count=max(pages) if pages else 0,
         ms=_ms(started),

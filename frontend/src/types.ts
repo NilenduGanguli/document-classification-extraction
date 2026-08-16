@@ -341,11 +341,29 @@ export interface DocumentSegment {
  * one segment covering every page. That uniformity is the point — nothing in the console has
  * to branch on whether the user happened to pick a bundle.
  */
+/**
+ * How one page was read.
+ *
+ * "Is the view right?" has to be answerable before "is the classifier right?", and a page
+ * that contributed nothing to a classification is otherwise indistinguishable from a page
+ * that genuinely held nothing.
+ */
+export interface PageRead {
+  page: number;
+  width: number;
+  height: number;
+  alnum_chars: number;
+  /** `null` means nothing measured it — not the same as `false`. */
+  text_adequate: boolean | null;
+  image_fraction: number;
+}
+
 export interface SegmentsResponse {
   segments: DocumentSegment[];
   /** The plain answer to "is this a bundle?", so it need not be inferred from a list length. */
   segmented: boolean;
   boundaries: BoundaryEvidence[];
+  pages: PageRead[];
   page_count: number;
   ms: number;
 }

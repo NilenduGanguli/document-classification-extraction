@@ -72,6 +72,8 @@ comparable to a reviewer.
 """
 from __future__ import annotations
 
+import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -99,6 +101,52 @@ _CONTENT_TYPES: dict[MediaType, str] = {
     MediaType.webp: "image/webp",
     MediaType.gif: "image/gif",
 }
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log_bodies() -> bool:
+    """Whether to log whole OCR responses. Off unless explicitly asked for.
+
+    Separate from the log level on purpose. ``DEBUG`` is a verbosity choice; logging a
+    document's recognised text is a *disclosure* choice, and the two should not be the same
+    switch — nobody raising a level to see poll counts should discover afterwards that they
+    shipped customer names to a log aggregator.
+    """
+    return os.environ.get("DCE_INGEST_OCR_LOG_BODIES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _shape_of(job: dict[str, Any]) -> str:
+    """What came back, counted rather than quoted — no document text.
+
+    Enough to answer "did Azure read anything, and how much" without putting a single
+    recognised character into a log line.
+    """
+    result = job.get("analyzeResult") or job.get("analyze_result") or {}
+    if not isinstance(result, dict):
+        return "shape=unreadable"
+    pages = result.get("pages") or result.get("readResults") or []
+    paragraphs = result.get("paragraphs") or []
+    tables = result.get("tables") or []
+    lines = sum(len(p.get("lines") or []) for p in pages if isinstance(p, dict))
+    return (
+        f"pages={len(pages) if isinstance(pages, list) else 0} "
+        f"lines={lines} paragraphs={len(paragraphs) if isinstance(paragraphs, list) else 0} "
+        f"tables={len(tables) if isinstance(tables, list) else 0}"
+    )
+
+
+def _safe_error_body(response: Any, limit: int = 400) -> str:
+    """A truncated error body. Errors carry a reason, not a document — but bound it anyway."""
+    try:
+        return (response.text or "")[:limit].replace("\n", " ")
+    except Exception:  # noqa: BLE001 - a body we cannot read must not mask the HTTP status
+        return "<unreadable>"
 
 
 def content_type_for(media_type: MediaType) -> str:
@@ -267,13 +315,34 @@ class _AzureAsyncProvider:
 
     def _submit(self, client: Any, data: bytes, media_type: MediaType) -> str:
         self._permit()
+        logger.info(
+            "ocr.submit provider=%s host=%s media_type=%s bytes=%d url=%s",
+            self.name,
+            self._config.host,
+            media_type,
+            len(data),
+            self._analyze_url(),
+        )
+        started = time.monotonic()
         response = client.post(
             self._analyze_url(),
             content=data,
             params=self._analyze_params() or None,
             headers=self._headers(content_type=self._submit_content_type(media_type)),
         )
+        logger.info(
+            "ocr.submit provider=%s status=%s ms=%d",
+            self.name,
+            response.status_code,
+            int((time.monotonic() - started) * 1000),
+        )
         if response.status_code != 202:
+            logger.warning(
+                "ocr.submit provider=%s refused: HTTP %s body=%s",
+                self.name,
+                response.status_code,
+                _safe_error_body(response),
+            )
             raise EngineUnavailable(
                 f"OCR service provider {self.name!r} answered the analyse request with HTTP "
                 f"{response.status_code} rather than 202"
@@ -288,7 +357,7 @@ class _AzureAsyncProvider:
 
     def _poll(self, client: Any, operation_url: str, started: float, budget: float) -> dict:
         """Poll to a terminal status under two independent bounds."""
-        for _ in range(max(1, self._config.max_polls)):
+        for attempt in range(max(1, self._config.max_polls)):
             elapsed = time.monotonic() - started
             if elapsed > budget:
                 break
@@ -301,7 +370,29 @@ class _AzureAsyncProvider:
                 raise MalformedDocument(
                     f"OCR service provider {self.name!r} returned a non-object job document"
                 )
-            if str(job.get("status") or "").lower() in _TERMINAL:
+            status = str(job.get("status") or "").lower()
+            logger.debug(
+                "ocr.poll provider=%s attempt=%d status=%s elapsed_ms=%d",
+                self.name,
+                attempt + 1,
+                status or "unknown",
+                int((time.monotonic() - started) * 1000),
+            )
+            if status in _TERMINAL:
+                logger.info(
+                    "ocr.done provider=%s status=%s polls=%d ms=%d %s",
+                    self.name,
+                    status,
+                    attempt + 1,
+                    int((time.monotonic() - started) * 1000),
+                    _shape_of(job),
+                )
+                if logger.isEnabledFor(logging.DEBUG) and _log_bodies():
+                    # Opt-in, and off by default for a reason: an OCR response IS the
+                    # document's text. On a KYC deployment that is customer PII going to
+                    # wherever logs are shipped. DCE_INGEST_OCR_LOG_BODIES=true is a
+                    # debugging switch for a desk, never a production setting.
+                    logger.debug("ocr.body provider=%s job=%s", self.name, job)
                 return job
         raise IngestTimeout(
             f"OCR service provider {self.name!r} at {self._config.host!r} did not finish "

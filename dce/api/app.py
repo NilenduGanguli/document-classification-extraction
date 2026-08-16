@@ -35,6 +35,29 @@ from dce.observability import READINESS
 
 logger = logging.getLogger(__name__)
 
+def _configure_logging() -> None:
+    """Set this package's log level from ``DCE_LOG_LEVEL``.
+
+    Uvicorn configures the root logger for its own loggers and leaves everything else at
+    WARNING, so before this existed the only way to see a ``logger.info`` from ``dce`` was to
+    raise uvicorn's own level and take its access log with it. ``DCE_LOG_LEVEL=DEBUG`` raises
+    this package alone.
+
+    Deliberately narrow: it sets the level on the ``dce`` logger and adds a handler only if
+    nothing upstream has one, so a deployment that configures logging centrally — a JSON
+    formatter, a log shipper — keeps its own configuration and only the level moves.
+    """
+    level = os.environ.get("DCE_LOG_LEVEL", "").strip().upper()
+    if not level:
+        return
+    package = logging.getLogger("dce")
+    package.setLevel(getattr(logging, level, logging.INFO))
+    if not package.handlers and not logging.getLogger().handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+        package.addHandler(handler)
+
+
 #: Client-side routes of the console. A deep link or a refresh on one of these has to be
 #: answered with ``index.html`` — the browser router, not the server, resolves the rest.
 _UI_ROUTES = ("/analyze", "/registry", "/review", "/posture")
@@ -200,6 +223,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         A configured :class:`fastapi.FastAPI` instance.
     """
     resolved = settings or get_settings()
+    _configure_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

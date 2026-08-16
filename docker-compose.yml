@@ -88,6 +88,17 @@ services:
       #     HTTP client. /readyz then reports every configured provider, its endpoint host,
       #     ocr.network=true, egress.preclassification_ocr=true and the declared boundary.
       DCE_INGEST_OCR_SERVICE_ENABLED: "${DCE_INGEST_OCR_SERVICE_ENABLED:-true}"
+
+      # --- Seeing what the OCR service was asked and what it answered ---------
+      # Raises the level of the `dce` loggers only, so uvicorn's access log stays where it is.
+      # At INFO: one line per submit (provider, host, media type, bytes, URL) and one per
+      # completion (status, poll count, ms, and COUNTS of pages/lines/paragraphs/tables).
+      # At DEBUG: every poll as well.
+      DCE_LOG_LEVEL: "${DCE_LOG_LEVEL:-}"
+      # Logs the WHOLE OCR response body. Deliberately a separate switch from the level: an
+      # OCR response *is* the document's text, so on a KYC deployment this ships customer PII
+      # to wherever logs go. A debugging switch for one desk, never a production setting.
+      DCE_INGEST_OCR_LOG_BODIES: "${DCE_INGEST_OCR_LOG_BODIES:-}"
       # azure_layout (Document Intelligence v4.0 prebuilt-layout) or azure_read (Vision Read
       # v3.2). Prefer layout: Read predicts no paragraph roles, so a Read payload can never
       # satisfy a title-gated decisive anchor and classifies on strictly less evidence. Both

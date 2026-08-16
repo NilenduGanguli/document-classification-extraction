@@ -43,6 +43,46 @@ EOF
 
 ---
 
+### Seeing the Azure calls themselves
+
+`DCE_LOG_LEVEL` raises the level of the `dce` loggers only, so uvicorn's access log stays
+where it is.
+
+```bash
+DCE_LOG_LEVEL=DEBUG docker compose up -d --force-recreate dce && docker logs -f dce
+```
+
+What you get on the ingest OCR path (the call that reads a document *before* its type is
+known):
+
+```
+INFO  ocr.submit provider=azure_layout host=… media_type=jpeg bytes=277206 url=http://…:5007/documentintelligence/documentModels/prebuilt-layout:analyze
+INFO  ocr.submit provider=azure_layout status=202 ms=190
+DEBUG ocr.poll   provider=azure_layout attempt=1 status=succeeded elapsed_ms=708
+INFO  ocr.done   provider=azure_layout status=succeeded polls=1 ms=708 pages=1 lines=7 paragraphs=6 tables=0
+```
+
+`INFO` gives submit and completion; `DEBUG` adds every poll. The completion line reports
+**counts** — pages, lines, paragraphs, tables — which answers "did Azure read anything, and
+how much" without putting one recognised character in a log.
+
+For the **whole response body**:
+
+```bash
+DCE_LOG_LEVEL=DEBUG DCE_INGEST_OCR_LOG_BODIES=true docker compose up -d --force-recreate dce
+```
+
+**That is a separate switch from the level on purpose.** An OCR response *is* the document's
+text: on a KYC deployment it is customer PII going wherever your logs go. Nobody raising a
+level to count polls should discover afterwards that they shipped names and ID numbers to a
+log aggregator. Use it at a desk, on a test document, and turn it off.
+
+For the **paid extraction tiers** (T2/T3), the same `DCE_LOG_LEVEL=DEBUG` surfaces
+`dce.extract.azure_specialist` — the analyse call, poll counts and how many documents came
+back.
+
+---
+
 ## 1. Symptom: HTTP 422 `needs_ocr`
 
 The file carries no usable text and nothing here could read it. **This is a correct answer,

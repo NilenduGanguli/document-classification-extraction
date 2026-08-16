@@ -35,26 +35,34 @@ from dce.observability import READINESS
 
 logger = logging.getLogger(__name__)
 
-def _configure_logging() -> None:
-    """Set this package's log level from ``DCE_LOG_LEVEL``.
+#: Level for the ``dce`` loggers when ``DCE_LOG_LEVEL`` says nothing.
+#:
+#: **DEBUG, deliberately.** Uvicorn configures the root logger for its own loggers and leaves
+#: everything else at WARNING, so the previous default — do nothing unless asked — meant every
+#: stage event this service emits was invisible until somebody already knew the variable
+#: existed. A trace nobody can find is not a trace.
+#:
+#: The cost is volume, and it is bounded: no log line here carries document text, a field
+#: value or a filename (see :mod:`dce.logs`), so a verbose default cannot become a disclosure.
+#: A deployment that wants less sets ``DCE_LOG_LEVEL=INFO`` or ``WARNING``.
+DEFAULT_LOG_LEVEL = "DEBUG"
 
-    Uvicorn configures the root logger for its own loggers and leaves everything else at
-    WARNING, so before this existed the only way to see a ``logger.info`` from ``dce`` was to
-    raise uvicorn's own level and take its access log with it. ``DCE_LOG_LEVEL=DEBUG`` raises
-    this package alone.
+
+def _configure_logging() -> None:
+    """Set this package's log level from ``DCE_LOG_LEVEL``, defaulting to full tracing.
 
     Deliberately narrow: it sets the level on the ``dce`` logger and adds a handler only if
     nothing upstream has one, so a deployment that configures logging centrally — a JSON
     formatter, a log shipper — keeps its own configuration and only the level moves.
     """
-    level = os.environ.get("DCE_LOG_LEVEL", "").strip().upper()
-    if not level:
-        return
+    level = os.environ.get("DCE_LOG_LEVEL", "").strip().upper() or DEFAULT_LOG_LEVEL
     package = logging.getLogger("dce")
-    package.setLevel(getattr(logging, level, logging.INFO))
+    package.setLevel(getattr(logging, level, logging.DEBUG))
     if not package.handlers and not logging.getLogger().handlers:
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
         package.addHandler(handler)
 
 

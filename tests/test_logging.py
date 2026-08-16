@@ -154,6 +154,57 @@ def test_a_failed_stage_logs_the_exception_type_and_not_its_message(captured):
 # ---------------------------------------------------------------------------
 # Correlation
 # ---------------------------------------------------------------------------
+def test_tracing_is_on_by_default(monkeypatch):
+    """A trace nobody can find is not a trace.
+
+    Uvicorn leaves non-uvicorn loggers at WARNING, so before this default every stage event
+    was invisible until somebody already knew DCE_LOG_LEVEL existed. Verbose is the right
+    default here precisely because no line carries document text — see the PII tests above,
+    which are what make a loud default safe.
+    """
+    from dce.api.app import DEFAULT_LOG_LEVEL, _configure_logging
+
+    assert DEFAULT_LOG_LEVEL == "DEBUG"
+
+    monkeypatch.delenv("DCE_LOG_LEVEL", raising=False)
+    package = logging.getLogger("dce")
+    original = package.level
+    try:
+        package.setLevel(logging.NOTSET)
+        _configure_logging()
+        assert package.level == logging.DEBUG
+    finally:
+        package.setLevel(original)
+
+
+def test_an_explicit_level_still_wins(monkeypatch):
+    from dce.api.app import _configure_logging
+
+    monkeypatch.setenv("DCE_LOG_LEVEL", "WARNING")
+    package = logging.getLogger("dce")
+    original = package.level
+    try:
+        _configure_logging()
+        assert package.level == logging.WARNING
+    finally:
+        package.setLevel(original)
+
+
+def test_response_bodies_are_not_logged_by_default(monkeypatch):
+    """Raising a level must never silently export a document's text.
+
+    DCE_INGEST_OCR_LOG_BODIES stays off even with tracing at DEBUG, because an OCR response
+    IS the recognised document and that is a disclosure decision rather than a verbosity one.
+    """
+    from dce.ingest import ocr_service
+
+    monkeypatch.delenv("DCE_INGEST_OCR_LOG_BODIES", raising=False)
+    assert ocr_service._log_bodies() is False
+
+    monkeypatch.setenv("DCE_INGEST_OCR_LOG_BODIES", "true")
+    assert ocr_service._log_bodies() is True
+
+
 def test_a_request_scope_restores_what_it_replaced():
     """Worker threads are reused; an id left set mislabels the next thing logged on them."""
     with logs.request_scope("outer"):

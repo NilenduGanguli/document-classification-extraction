@@ -45,6 +45,16 @@ EOF
 
 ### The whole trace for one request
 
+**Tracing is on by default — DEBUG, no configuration needed.** Uvicorn leaves non-uvicorn
+loggers at WARNING, so the earlier opt-in default meant every stage event was invisible until
+somebody already knew the variable existed, and a trace nobody can find is not a trace. Turn
+it *down* if you want less:
+
+```bash
+DCE_LOG_LEVEL=INFO      # drop per-request and per-poll chatter
+DCE_LOG_LEVEL=WARNING   # refusals, truncation and billing failures only
+```
+
 Every log line carries `req=<id>` and, once ingestion knows one, `doc=<hash>`. The request id
 is echoed on the response as `X-Request-Id`, so a caller reporting a problem can quote it and
 you grep straight to their request:
@@ -100,15 +110,8 @@ The one exception is opt-in and separate: `DCE_INGEST_OCR_LOG_BODIES=true`, belo
 
 ### Seeing the Azure calls themselves
 
-`DCE_LOG_LEVEL` raises the level of the `dce` loggers only, so uvicorn's access log stays
-where it is.
-
-```bash
-DCE_LOG_LEVEL=DEBUG docker compose up -d --force-recreate dce && docker logs -f dce
-```
-
-What you get on the ingest OCR path (the call that reads a document *before* its type is
-known):
+Already on, since tracing defaults to DEBUG. `docker logs -f dce` shows the ingest OCR path —
+the call that reads a document *before* its type is known:
 
 ```
 INFO  ocr.submit provider=azure_layout host=… media_type=jpeg bytes=277206 url=http://…:5007/documentintelligence/documentModels/prebuilt-layout:analyze
@@ -124,13 +127,14 @@ how much" without putting one recognised character in a log.
 For the **whole response body**:
 
 ```bash
-DCE_LOG_LEVEL=DEBUG DCE_INGEST_OCR_LOG_BODIES=true docker compose up -d --force-recreate dce
+DCE_INGEST_OCR_LOG_BODIES=true docker compose up -d --force-recreate dce
 ```
 
-**That is a separate switch from the level on purpose.** An OCR response *is* the document's
-text: on a KYC deployment it is customer PII going wherever your logs go. Nobody raising a
-level to count polls should discover afterwards that they shipped names and ID numbers to a
-log aggregator. Use it at a desk, on a test document, and turn it off.
+**This is the one thing full tracing does NOT turn on, and that is deliberate.** An OCR
+response *is* the document's recognised text: on a KYC deployment it is customer names and ID
+numbers going wherever your logs go. Raising a level to see stages must never silently export
+that, so it stays a separate switch you have to mean. Use it at a desk, on one test document,
+then turn it off.
 
 For the **paid extraction tiers** (T2/T3), the same `DCE_LOG_LEVEL=DEBUG` surfaces
 `dce.extract.azure_specialist` — the analyse call, poll counts and how many documents came

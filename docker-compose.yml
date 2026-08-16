@@ -89,15 +89,21 @@ services:
       #     ocr.network=true, egress.preclassification_ocr=true and the declared boundary.
       DCE_INGEST_OCR_SERVICE_ENABLED: "${DCE_INGEST_OCR_SERVICE_ENABLED:-true}"
 
-      # --- Seeing what the OCR service was asked and what it answered ---------
-      # Raises the level of the `dce` loggers only, so uvicorn's access log stays where it is.
-      # At INFO: one line per submit (provider, host, media type, bytes, URL) and one per
-      # completion (status, poll count, ms, and COUNTS of pages/lines/paragraphs/tables).
-      # At DEBUG: every poll as well.
-      DCE_LOG_LEVEL: "${DCE_LOG_LEVEL:-}"
-      # Logs the WHOLE OCR response body. Deliberately a separate switch from the level: an
-      # OCR response *is* the document's text, so on a KYC deployment this ships customer PII
-      # to wherever logs go. A debugging switch for one desk, never a production setting.
+      # --- Tracing -----------------------------------------------------------
+      # DEBUG by default: full per-stage tracing of every request. One correlated line per
+      # stage — ingest.start/done, segment.boundaries/done, classify.accept/abstain,
+      # ocr.submit/poll/done, tier.billed — each prefixed req=<id> doc=<hash>, and the id is
+      # echoed on the response as X-Request-Id so a caller can quote it.
+      #
+      # Verbose by design, and safe to leave on: no line carries document text, an extracted
+      # field value or a filename. Set INFO to drop the per-poll and per-request chatter, or
+      # WARNING for refusals and billing failures only.
+      DCE_LOG_LEVEL: "${DCE_LOG_LEVEL:-DEBUG}"
+      # NOT enabled by the line above, and deliberately so. This logs the WHOLE OCR response,
+      # which IS the document's recognised text — on a KYC deployment that ships customer
+      # names and ID numbers to wherever logs go. Raising a level to see stages should never
+      # silently export PII, so it stays a separate, explicit switch: turn it on at a desk for
+      # one document, then turn it off.
       DCE_INGEST_OCR_LOG_BODIES: "${DCE_INGEST_OCR_LOG_BODIES:-}"
       # azure_layout (Document Intelligence v4.0 prebuilt-layout) or azure_read (Vision Read
       # v3.2). Prefer layout: Read predicts no paragraph roles, so a Read payload can never
